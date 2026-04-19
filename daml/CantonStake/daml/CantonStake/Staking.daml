@@ -1,0 +1,206 @@
+-- | CantonStake staking position lifecycle.
+--
+--   This is a HACKATHON-SCOPED, single-chain version of the CantonStake concept.
+--   The Daml layer is the canonical source of truth for each user's staking
+--   position. EVM events on Polygon Amoy (real buyVoucher/sellVoucher_new calls
+--   against our MockValidatorShare) trigger state transitions here.
+--
+--   State machine:
+--     Pending     -- user has signed StakingRequest, waiting for EVM confirmation
+--        v
+--     Bonded      -- EVM confirmed ShareMinted; delegation active; earns APY + CC
+--        v
+--     Unbonding   -- user requested unbond; 21-day (mock: 60s) WITHDRAWAL_DELAY
+--        v
+--     Released    -- tokens claimable; position closed
+--
+--   Economically meaningful events (per CIP-47 guidance):
+--     Bond, Unbond. We DO NOT mark the intermediate Request/Pending steps.
+module CantonStake.Staking where
+
+import DA.Time (Time, RelTime, addRelTime)
+import DA.Optional (isSome)
+
+-- Splice API imports for Featured App Activity Markers (CIP-47).
+-- See: https://docs.sync.global/app_dev/api/splice-api-featured-app-v1/
+import qualified Splice.Api.FeaturedAppRightV1 as Featured
+
+-- -----------------------------------------------------------------------------
+-- Types
+-- -----------------------------------------------------------------------------
+
+data PositionStatus
+  = Pending
+  | Bonded
+  | Unbonding
+  | Released
+  | Cancelled
+  deriving (Eq, Show)
+
+-- | EVM-side evidence that a transition has settled on Polygon.
+--   The backend orchestrator constructs this after reading on-chain events.
+data EvmProof = EvmProof
+  with
+    txHash : Text
+    blockNumber : Int
+    validatorShare : Text  -- Mock ValidatorShare contract address on Amoy
+  deriving (Eq, Show)
+
+-- -----------------------------------------------------------------------------
+-- StakingRequest: user-initiated, pre-EVM-settlement intent.
+-- -----------------------------------------------------------------------------
+
+template StakingRequest
+  with
+    delegator      : Party           -- The end user staking their POL
+    appProvider    : Party           -- CantonStake (us)
+    evmAddress     : Text            -- Delegator's Polygon address (0x...)
+    amountPol      : Decimal         -- Amount of POL to delegate
+    requestedAt    : Time
+  where
+    signatory delegator
+    observer appProvider
+
+    -- Delegator can cancel before it's accepted.
+    choice StakingRequest_Cancel : ()
+      controller delegator
+      do pure ()
+
+    -- AppProvider accepts after observing ShareMinted on the EVM side.
+    -- This is where Bonded state is first entered AND where we emit the
+    -- FeaturedAppActivityMarker (bond is an economically meaningful event).
+    choice StakingRequest_Accept : ContractId StakingPosition
+      with
+        proof : EvmProof
+        featuredRightCid : Optional (ContractId Featured.FeaturedAppRight)
+      controller appProvider
+      do
+        now <- getTime
+        positionCid <- create StakingPosition
+          with
+            delegator = delegator
+            appProvider = appProvider
+            evmAddress = evmAddress
+            amountPol = amountPol
+            status = Bonded
+            bondedAt = Some now
+            unbondingStartedAt = None
+            unbondingReadyAt = None
+            releasedAt = None
+            lastBondProof = Some proof
+            lastUnbondProof = None
+            markersEmitted = 1
+
+        -- Emit activity marker for the BOND event.
+        -- This is the on-ledger evidence that our app enabled economic activity.
+        -- On DevNet, the app party can be self-featured via the wallet UI, so the
+        -- FeaturedAppRight contract will exist and this choice will succeed.
+        --
+        -- NOTE: The exact field names on AppRewardBeneficiary may differ across
+        -- Splice versions. If compilation fails here, check the version of
+        -- splice-api-featured-app-v1.dar in .daml/dars/ against:
+        -- https://docs.sync.global/app_dev/api/splice-api-featured-app-v1/
+        case featuredRightCid of
+          None -> pure ()
+          Some rightCid -> do
+            _ <- exercise rightCid Featured.FeaturedAppRight_CreateActivityMarker
+              with
+                beneficiaries = [ Featured.AppRewardBeneficiary with
+                                    beneficiary = appProvider
+                                    weight = 0.25
+                                , Featured.AppRewardBeneficiary with
+                                    beneficiary = delegator
+                                    weight = 0.75 ]
+                numMarkers = 1
+            pure ()
+        pure positionCid
+
+-- -----------------------------------------------------------------------------
+-- StakingPosition: the canonical record of an active/unwinding delegation.
+-- -----------------------------------------------------------------------------
+
+template StakingPosition
+  with
+    delegator          : Party
+    appProvider        : Party
+    evmAddress         : Text
+    amountPol          : Decimal
+    status             : PositionStatus
+    bondedAt           : Optional Time
+    unbondingStartedAt : Optional Time
+    unbondingReadyAt   : Optional Time
+    releasedAt         : Optional Time
+    lastBondProof      : Optional EvmProof
+    lastUnbondProof    : Optional EvmProof
+    markersEmitted     : Int
+  where
+    signatory appProvider
+    observer delegator
+
+    ensure amountPol > 0.0
+
+    -- User requests an unbond. This is a PROPOSE step, so NO marker is emitted
+    -- here (per CIP-47 guidance to avoid spam).
+    choice StakingPosition_RequestUnbond : ContractId StakingPosition
+      controller delegator
+      do
+        assertMsg "Position must be Bonded to unbond" (status == Bonded)
+        pure self  -- No state change until backend confirms EVM sellVoucher_new.
+
+    -- Backend confirms EVM sellVoucher_new succeeded. Transition to Unbonding.
+    -- This IS an economically meaningful event, so we emit an activity marker.
+    choice StakingPosition_ConfirmUnbond : ContractId StakingPosition
+      with
+        proof : EvmProof
+        unbondingPeriod : RelTime  -- e.g., 21 days on mainnet, 60s on our mock
+        featuredRightCid : Optional (ContractId Featured.FeaturedAppRight)
+      controller appProvider
+      do
+        assertMsg "Position must be Bonded" (status == Bonded)
+        now <- getTime
+        let readyAt = addRelTime now unbondingPeriod
+        newCid <- create this with
+          status = Unbonding
+          unbondingStartedAt = Some now
+          unbondingReadyAt = Some readyAt
+          lastUnbondProof = Some proof
+          markersEmitted = markersEmitted + 1
+
+        case featuredRightCid of
+          None -> pure ()
+          Some rightCid -> do
+            _ <- exercise rightCid Featured.FeaturedAppRight_CreateActivityMarker
+              with
+                beneficiaries = [ Featured.AppRewardBeneficiary with
+                                    beneficiary = appProvider
+                                    weight = 0.25
+                                , Featured.AppRewardBeneficiary with
+                                    beneficiary = delegator
+                                    weight = 0.75 ]
+                numMarkers = 1
+            pure ()
+        pure newCid
+
+    -- Once the unbonding period elapses and the EVM claim transaction settles,
+    -- the position is closed.
+    choice StakingPosition_Release : ContractId StakingPosition
+      with
+        proof : EvmProof
+      controller appProvider
+      do
+        assertMsg "Position must be Unbonding" (status == Unbonding)
+        now <- getTime
+        case unbondingReadyAt of
+          None -> abort "Unbonding not yet started"
+          Some readyAt -> do
+            assertMsg "Unbonding period not yet elapsed" (now >= readyAt)
+            create this with
+              status = Released
+              releasedAt = Some now
+
+    -- Archive an already-released position (cleanup).
+    choice StakingPosition_Archive : ()
+      controller delegator, appProvider
+      do
+        assertMsg "Can only archive Released positions" (status == Released)
+        pure ()

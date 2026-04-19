@@ -1,0 +1,15 @@
+sdk-version: 3.3.0
+name: cantonstake
+source: daml
+init-script: CantonStake.Setup:setup
+version: 0.0.1
+dependencies:
+  - daml-prim
+  - daml-stdlib
+data-dependencies:
+  # splice-api-featured-app-v1 provides FeaturedAppRight and FeaturedAppActivityMarker interfaces.
+  # Fetch the DAR from the Splice release bundle during `make setup` and place it here.
+  # See: https://docs.sync.global/app_dev/daml_api/index.html
+  - .daml/dars/splice-api-featured-app-v1.dar
+build-options:
+  - --target=2.1

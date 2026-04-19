@@ -1,0 +1,20 @@
+-- | Initial setup script for CantonStake.
+--
+--   On LocalNet/DevNet, this allocates parties and sets up a
+--   self-featured FeaturedAppRight so activity markers can be emitted.
+--   On MainNet, the FeaturedAppRight must be granted by governance vote —
+--   see https://docs.global.canton.network.sync.global/background/tokenomics/
+module CantonStake.Setup where
+
+import Daml.Script
+import CantonStake.Staking
+
+-- | Basic parties used in LocalNet demos.
+--   Real deployments read these from configuration.
+setup : Script ()
+setup = do
+  _appProvider <- allocatePartyByHint (PartyIdHint "CantonStake")
+  _alice       <- allocatePartyByHint (PartyIdHint "Alice")
+  _bob         <- allocatePartyByHint (PartyIdHint "Bob")
+  debug "CantonStake parties allocated. Ready for staking requests."
+  pure ()
