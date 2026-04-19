@@ -1,0 +1,105 @@
+-- | End-to-end test of the CantonStake state machine.
+--
+--   Run with: daml test (from daml/CantonStake)
+--
+--   This does NOT test FeaturedAppRight integration — that requires the
+--   splice-api-featured-app-v1.dar to be present, which only happens inside
+--   LocalNet. Here we test the happy path with featuredRightCid = None.
+module CantonStake.Test where
+
+import Daml.Script
+import DA.Time
+import DA.Optional (isSome)
+import DA.Assert
+import CantonStake.Staking
+
+testHappyPath : Script ()
+testHappyPath = do
+  app   <- allocateParty "CantonStake"
+  alice <- allocateParty "Alice"
+
+  -- 1. Alice submits a staking request for 100 POL.
+  now <- getTime
+  reqCid <- submit alice do
+    createCmd StakingRequest with
+      delegator   = alice
+      appProvider = app
+      evmAddress  = "0xAliceEthAddress"
+      amountPol   = 100.0
+      requestedAt = now
+
+  -- 2. Backend observes ShareMinted on Amoy; app accepts.
+  let bondProof = EvmProof
+        with
+          txHash = "0xBOND"
+          blockNumber = 1234
+          validatorShare = "0xMockValidatorShare"
+  posCid <- submit app do
+    exerciseCmd reqCid StakingRequest_Accept
+      with
+        proof = bondProof
+        featuredRightCid = None
+
+  Some pos <- queryContractId app posCid
+  pos.status === Bonded
+  pos.markersEmitted === 1
+
+  -- 3. Alice requests an unbond (no state change yet, no marker).
+  posCid2 <- submit alice do
+    exerciseCmd posCid StakingPosition_RequestUnbond
+  Some pos2 <- queryContractId app posCid2
+  pos2.status === Bonded  -- Still bonded; confirmation pending
+
+  -- 4. Backend observes ShareBurned; app confirms unbond.
+  let unbondProof = EvmProof
+        with
+          txHash = "0xUNBOND"
+          blockNumber = 1300
+          validatorShare = "0xMockValidatorShare"
+  posCid3 <- submit app do
+    exerciseCmd posCid2 StakingPosition_ConfirmUnbond
+      with
+        proof = unbondProof
+        unbondingPeriod = seconds 60  -- mock's 60s window
+        featuredRightCid = None
+  Some pos3 <- queryContractId app posCid3
+  pos3.status === Unbonding
+  pos3.markersEmitted === 2
+
+  -- 5. Fast forward past unbonding period.
+  passTime (seconds 61)
+
+  -- 6. Backend claims tokens on EVM; app releases position.
+  let releaseProof = EvmProof
+        with
+          txHash = "0xRELEASE"
+          blockNumber = 1400
+          validatorShare = "0xMockValidatorShare"
+  posCid4 <- submit app do
+    exerciseCmd posCid3 StakingPosition_Release
+      with proof = releaseProof
+  Some pos4 <- queryContractId app posCid4
+  pos4.status === Released
+  assert (isSome pos4.releasedAt)
+
+  pure ()
+
+testCannotUnbondFromPending : Script ()
+testCannotUnbondFromPending = do
+  app   <- allocateParty "CantonStake"
+  alice <- allocateParty "Alice"
+  now <- getTime
+
+  reqCid <- submit alice do
+    createCmd StakingRequest with
+      delegator = alice
+      appProvider = app
+      evmAddress = "0xA"
+      amountPol = 50.0
+      requestedAt = now
+
+  -- No accept yet, no StakingPosition exists, so RequestUnbond cannot be called.
+  -- But the request itself can be cancelled.
+  submit alice do
+    exerciseCmd reqCid StakingRequest_Cancel
+  pure ()
