@@ -1,0 +1,36 @@
+# dependencies
+node_modules/
+**/node_modules/
+
+# builds
+.next/
+dist/
+out/
+.daml/dist/
+.daml/dars/
+artifacts/
+cache/
+typechain-types/
+
+# env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# ide
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# logs
+*.log
+logs/
+
+# hardhat
+coverage/
+coverage.json
+
+# daml
+.daml/
