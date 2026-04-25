@@ -24,4 +24,10 @@ export const config = {
   cantonAuthToken: optional("CANTON_AUTH_TOKEN"),
 
   featuredAppRightCid: optional("FEATURED_APP_RIGHT_CID"),
+
+  // PostgreSQL + Prisma
+  databaseUrl: optional("DATABASE_URL", "postgresql://cantonstake:cantonstake@localhost:5432/cantonstake"),
+
+  // Redis + BullMQ
+  redisUrl: optional("REDIS_URL", "redis://localhost:6379"),
 } as const;
