@@ -67,6 +67,9 @@ function generateMockPartyId(displayName: string): string {
   return `${displayName}::1220${hex}`;
 }
 
+const BACKEND_URL =
+  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4000";
+
 /**
  * React hook for Loop Wallet connection.
  *
@@ -74,7 +77,8 @@ function generateMockPartyId(displayName: string): string {
  * For the hackathon it mocks the identity flow:
  *   - "Connect Loop Wallet" generates a random Party ID
  *   - Party ID is persisted in localStorage
- *   - CC balance is mocked (random small amount)
+ *   - On connect, registers identity with backend POST /api/users
+ *   - CC balance fetched from backend rewards API
  */
 export function useLoopWallet() {
   const [state, setState] = useState<LoopWalletState>({
@@ -94,7 +98,7 @@ export function useLoopWallet() {
         isConnected: true,
         partyId: stored.partyId,
         displayName: stored.displayName,
-        ccBalance: Math.random() * 5, // mock balance
+        ccBalance: 0,
         isConnecting: false,
         error: null,
       });
@@ -113,11 +117,22 @@ export function useLoopWallet() {
 
       storeIdentity(partyId, name);
 
+      // Notify backend about the new Loop wallet identity
+      try {
+        await fetch(`${BACKEND_URL}/api/users`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cantonPartyId: partyId, displayName: name }),
+        });
+      } catch (e) {
+        console.warn("[loop-wallet] failed to register with backend:", e);
+      }
+
       setState({
         isConnected: true,
         partyId,
         displayName: name,
-        ccBalance: Math.random() * 5,
+        ccBalance: 0,
         isConnecting: false,
         error: null,
       });
@@ -146,18 +161,24 @@ export function useLoopWallet() {
   }, []);
 
   /**
-   * Refresh CC balance from the backend.
-   * In production, Loop SDK would provide this directly.
+   * Refresh CC balance from the backend rewards API.
+   * Uses totalUserShare (75% of totalCcEarned) as the displayed balance.
    */
-  const refreshBalance = useCallback(async () => {
+  const refreshBalance = useCallback(async (evmAddress?: string) => {
     if (!state.partyId) return;
     try {
-      // In production: Loop SDK balance query or backend API call
-      // For hackathon: just randomize
-      setState((prev) => ({
-        ...prev,
-        ccBalance: Math.random() * 10,
-      }));
+      if (evmAddress) {
+        const res = await fetch(`${BACKEND_URL}/api/rewards/${evmAddress}`);
+        if (res.ok) {
+          const data = await res.json();
+          setState((prev) => ({
+            ...prev,
+            ccBalance: data.totalUserShare ?? data.totalCcEarned ?? 0,
+          }));
+          return;
+        }
+      }
+      // Fallback: keep current balance
     } catch {
       // silently fail
     }

@@ -5,9 +5,19 @@ import { usePathname } from "next/navigation";
 import { useAccount, useConnect, useDisconnect, useChainId } from "wagmi";
 import { polygonAmoy } from "wagmi/chains";
 import { useState } from "react";
+import { useLoopWallet } from "@/lib/loop-wallet";
 
 function truncate(addr: string) {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
+
+function truncateParty(partyId: string) {
+  // Party IDs are like "Name::1220hash..." — show first segment + truncated hash
+  const parts = partyId.split("::");
+  if (parts.length >= 2) {
+    return `${parts[0]}::${parts[1].slice(0, 8)}…`;
+  }
+  return `${partyId.slice(0, 10)}…`;
 }
 
 /** Human-readable labels for wagmi connector types. */
@@ -26,6 +36,14 @@ export function TopNav() {
   const { disconnect } = useDisconnect();
   const chainId = useChainId();
   const [showPicker, setShowPicker] = useState(false);
+  const {
+    partyId,
+    isConnected: loopConnected,
+    ccBalance,
+    connect: connectLoop,
+    disconnect: disconnectLoop,
+    isConnecting: loopConnecting,
+  } = useLoopWallet();
 
   const nav = [
     { label: "Stake", href: "/stake" },
@@ -76,6 +94,36 @@ export function TopNav() {
           {isConnected && chainId !== polygonAmoy.id && (
             <span className="chip chip-dot text-danger">wrong network</span>
           )}
+
+          {/* Loop wallet (Canton identity) */}
+          {loopConnected && partyId ? (
+            <button
+              onClick={() => disconnectLoop()}
+              className="flex items-center gap-2 font-mono text-xs uppercase tracking-wider text-ink-300 hover:text-ink-100 hairline px-3 py-1.5"
+              title={`Loop: ${partyId}`}
+            >
+              <span className="text-amber-bright">◎</span>
+              <span>{truncateParty(partyId)}</span>
+              {ccBalance !== null && ccBalance > 0 && (
+                <span className="text-amber-bright ml-1">
+                  {ccBalance.toFixed(2)} CC
+                </span>
+              )}
+            </button>
+          ) : (
+            <button
+              onClick={() => connectLoop()}
+              disabled={loopConnecting}
+              className="font-mono text-xs uppercase tracking-wider hairline px-3 py-1.5 text-amber-bright hover:text-amber-glow disabled:opacity-50"
+            >
+              {loopConnecting ? "Connecting…" : "Connect Loop"}
+            </button>
+          )}
+
+          {/* Divider between wallet types */}
+          <span className="text-ink-600">|</span>
+
+          {/* EVM wallet */}
           {isConnected ? (
             <div className="flex items-center gap-2">
               <span className="font-mono text-xxs text-ink-400">

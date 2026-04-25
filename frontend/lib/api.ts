@@ -32,8 +32,12 @@ export interface RewardsSummary {
   totalBondedPol: number;
   totalMarkersEmitted: number;
   estimatedCcEarned: number;
+  totalCcEarned: number;
+  totalUserShare: number;
+  totalTreasuryShare: number;
   userShare: number;
   appShare: number;
+  rewardEventCount: number;
 }
 
 export async function createStakingRequest(body: {

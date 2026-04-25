@@ -62,9 +62,10 @@ export default function RewardsPage() {
               accent
             />
             <StatCell
-              caption="est. cc earned"
-              value={rewards.estimatedCcEarned.toFixed(3)}
-              subtitle="illustrative · devnet rate"
+              caption="cc earned"
+              value={(rewards.totalCcEarned ?? rewards.estimatedCcEarned).toFixed(4)}
+              subtitle={`${rewards.rewardEventCount ?? 0} reward rounds`}
+              accent
             />
           </section>
 
@@ -82,6 +83,26 @@ export default function RewardsPage() {
                 </div>
                 <div className="font-mono text-xs text-ink-400 pb-4">
                   delegator / app treasury
+                </div>
+              </div>
+
+              {/* Actual CC totals */}
+              <div className="grid grid-cols-2 gap-6 mb-6">
+                <div>
+                  <div className="font-mono text-xxs uppercase tracking-widest text-ink-400 mb-1">
+                    your share (cc)
+                  </div>
+                  <div className="font-display text-2xl text-amber-bright">
+                    {(rewards.totalUserShare ?? 0).toFixed(4)}
+                  </div>
+                </div>
+                <div>
+                  <div className="font-mono text-xxs uppercase tracking-widest text-ink-400 mb-1">
+                    treasury share (cc)
+                  </div>
+                  <div className="font-display text-2xl text-ink-300">
+                    {(rewards.totalTreasuryShare ?? 0).toFixed(4)}
+                  </div>
                 </div>
               </div>
 
