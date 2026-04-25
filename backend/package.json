@@ -10,11 +10,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "fastify": "^4.28.0",
-    "@fastify/cors": "^9.0.1",
-    "viem": "^2.21.0",
+    "@fastify/cors": "^11.0.0",
+    "@prisma/client": "^5.22.0",
+    "bullmq": "^5.74.1",
     "dotenv": "^16.4.5",
-    "pino-pretty": "^11.2.2"
+    "fastify": "^5.8.5",
+    "ioredis": "^5.10.1",
+    "pino-pretty": "^11.2.2",
+    "prisma": "^5.22.0",
+    "viem": "^2.21.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

@@ -1,0 +1,120 @@
+// CantonStake — Prisma Schema
+//
+// Persistent storage for staking positions, reward history, and user sessions.
+// Replaces the in-memory Map<string, ActivePosition> from the hackathon MVP.
+//
+// Relations:
+//   User 1:N StakingPosition
+//   User 1:N RewardRound
+//   StakingPosition 1:N RewardEvent
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// A user identified by their Canton Party ID (from Loop wallet)
+/// and optionally linked EVM addresses.
+model User {
+  id            String   @id @default(cuid())
+  cantonPartyId String   @unique
+  displayName   String?
+  evmAddress    String?  @unique
+
+  positions     StakingPosition[]
+  rewardEvents  RewardEvent[]
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+/// Mirrors the Daml StakingPosition lifecycle:
+///   Pending → Bonded → Unbonding → Released
+model StakingPosition {
+  id             String   @id @default(cuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id])
+
+  // Canton ledger reference
+  contractId     String   @unique
+  cantonTxId     String?
+
+  // EVM chain data
+  evmAddress     String
+  chain          String   @default("polygon-amoy")
+  evmTxHash      String?
+
+  // Staking amounts (stored as decimal strings for precision)
+  amountPol      String
+  amountShares   String?
+
+  // Lifecycle status matching Daml state machine
+  status         String   @default("Pending") // Pending | Bonded | Unbonding | Released
+
+  // CIP-47 marker tracking
+  markersEmitted Int      @default(0)
+  totalCcEarned  String   @default("0") // decimal string
+
+  // Unbonding schedule
+  unbondingStartedAt DateTime?
+  unbondingReadyAt   DateTime?
+  unbondingPeriod    String? // e.g. "60000000" microseconds
+
+  releasedAt     DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  rewardEvents   RewardEvent[]
+}
+
+/// Tracks each 10-minute CC reward round.
+model RewardRound {
+  id             String   @id @default(cuid())
+  roundNumber    Int      @unique
+  startedAt      DateTime
+  completedAt    DateTime?
+
+  // Total CC minted and distributed this round
+  totalCcMinted  String   @default("0")
+  totalTxns      Int      @default(0)
+
+  // Network share data for this round
+  networkTotalTxns Int?
+
+  // Round status
+  status         String   @default("pending") // pending | processing | completed | failed
+  error          String?
+
+  events         RewardEvent[]
+}
+
+/// Individual CC reward distribution within a round.
+model RewardEvent {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id])
+
+  positionId      String
+  position        StakingPosition @relation(fields: [positionId], references: [id])
+
+  roundId         String
+  round           RewardRound @relation(fields: [roundId], references: [id])
+
+  // CC amounts (decimal strings)
+  ccAmount        String   // total CC for this event
+  userShare       String   // 75% to user
+  treasuryShare   String   // 25% to app treasury
+
+  // Beneficiary split configuration
+  userWeight      Float    @default(0.75)
+  treasuryWeight  Float    @default(0.25)
+
+  // Canton transaction proving the distribution
+  cantonTxId      String?
+
+  createdAt       DateTime @default(now())
+}

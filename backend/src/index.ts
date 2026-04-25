@@ -16,6 +16,8 @@ import cors from "@fastify/cors";
 import { config } from "./config.js";
 import { canton, TEMPLATES } from "./canton.js";
 import { startWatchers, startReleaseChecker } from "./orchestrator.js";
+import { prisma } from "./db.js";
+import { startRewardScheduler, shutdownRewardSystem } from "./reward-rounds.js";
 
 const app = Fastify({
   logger: {
@@ -38,6 +40,26 @@ app.get("/api/health", async () => ({
   featuredAppRight: config.featuredAppRightCid ? "configured" : "missing",
   time: new Date().toISOString(),
 }));
+
+app.get("/api/health/detail", async () => {
+  let dbStatus = "unknown";
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    dbStatus = "connected";
+  } catch {
+    dbStatus = "disconnected";
+  }
+
+  return {
+    status: "ok",
+    cantonJsonApi: config.cantonJsonApiUrl,
+    validatorShare: config.mockValidatorShare,
+    featuredAppRight: config.featuredAppRightCid ? "configured" : "missing",
+    database: dbStatus,
+    redis: config.redisUrl,
+    time: new Date().toISOString(),
+  };
+});
 
 // --- Create a StakingRequest ---
 
@@ -178,3 +200,20 @@ app.log.info(`cantonstake backend listening on :${config.port}`);
 startWatchers();
 startReleaseChecker();
 app.log.info("orchestrator running");
+
+// Start the CC reward round scheduler (10-min rounds via BullMQ + Redis)
+try {
+  await startRewardScheduler();
+  app.log.info("CC reward scheduler started");
+} catch (err) {
+  app.log.warn({ err }, "CC reward scheduler failed to start — rewards paused");
+}
+
+// Graceful shutdown
+process.on("SIGTERM", async () => {
+  app.log.info("SIGTERM received, shutting down...");
+  await shutdownRewardSystem();
+  await prisma.$disconnect();
+  await app.close();
+  process.exit(0);
+});
