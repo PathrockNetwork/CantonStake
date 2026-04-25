@@ -17,7 +17,7 @@ import { config } from "./config.js";
 import { canton, TEMPLATES } from "./canton.js";
 import { startWatchers, startReleaseChecker } from "./orchestrator.js";
 import { prisma } from "./db.js";
-import { startRewardScheduler, shutdownRewardSystem } from "./reward-rounds.js";
+import { startRewardScheduler, shutdownRewardSystem, redisConnection, enqueueRound } from "./reward-rounds.js";
 
 const app = Fastify({
   logger: {
@@ -50,15 +50,74 @@ app.get("/api/health/detail", async () => {
     dbStatus = "disconnected";
   }
 
+  let redisStatus = "unknown";
+  try {
+    const pong = await redisConnection.ping();
+    redisStatus = pong === "PONG" ? "connected" : "disconnected";
+  } catch {
+    redisStatus = "disconnected";
+  }
+
   return {
     status: "ok",
     cantonJsonApi: config.cantonJsonApiUrl,
     validatorShare: config.mockValidatorShare,
     featuredAppRight: config.featuredAppRightCid ? "configured" : "missing",
     database: dbStatus,
-    redis: config.redisUrl,
+    redis: redisStatus,
     time: new Date().toISOString(),
   };
+});
+
+// --- Upsert user (Loop wallet identity) ---
+
+interface UpsertUserBody {
+  cantonPartyId: string;
+  evmAddress?: string;
+  displayName?: string;
+}
+
+app.post<{ Body: UpsertUserBody }>("/api/users", async (req, reply) => {
+  const { cantonPartyId, evmAddress, displayName } = req.body;
+  if (!cantonPartyId) {
+    return reply.code(400).send({ error: "missing cantonPartyId" });
+  }
+  try {
+    // Try upsert by cantonPartyId first
+    const user = await prisma.user.upsert({
+      where: { cantonPartyId },
+      update: {
+        evmAddress: evmAddress?.toLowerCase(),
+        displayName,
+      },
+      create: {
+        cantonPartyId,
+        evmAddress: evmAddress?.toLowerCase(),
+        displayName,
+      },
+    });
+    return { user };
+  } catch (err) {
+    // If unique constraint on evmAddress fails, try updating existing user
+    if (evmAddress && err instanceof Error && err.message.includes("Unique")) {
+      try {
+        const existing = await prisma.user.findUnique({
+          where: { evmAddress: evmAddress.toLowerCase() },
+        });
+        if (existing) {
+          const updated = await prisma.user.update({
+            where: { id: existing.id },
+            data: { cantonPartyId, displayName },
+          });
+          return { user: updated };
+        }
+      } catch {
+        // fall through
+      }
+    }
+    req.log.error(err);
+    return reply.code(500).send({ error: String(err) });
+  }
 });
 
 // --- Create a StakingRequest ---
@@ -141,49 +200,61 @@ app.get<{ Querystring: { address?: string } }>(
   }
 );
 
-// --- Rewards summary (count markers emitted across all user's positions) ---
+// --- Rewards summary (Postgres-backed with actual CC distributed) ---
 
 app.get<{ Params: { address: string } }>(
   "/api/rewards/:address",
   async (req, reply) => {
-    const { address } = req.params;
+    const address = req.params.address.toLowerCase();
     try {
-      const contracts = await canton.activeContracts(TEMPLATES.StakingPosition);
-      const userPositions = contracts.filter((c) => {
-        const a = c.argument as { evmAddress?: string };
-        return a.evmAddress?.toLowerCase() === address.toLowerCase();
+      // Find user by EVM address
+      const user = await prisma.user.findFirst({
+        where: { evmAddress: address },
       });
 
-      let totalMarkers = 0;
-      let totalStaked = 0;
-      for (const p of userPositions) {
-        const arg = p.argument as {
-          markersEmitted?: number;
-          amountPol?: string;
-          status?: string;
+      if (!user) {
+        return {
+          address,
+          totalPositions: 0,
+          totalBondedPol: 0,
+          totalMarkersEmitted: 0,
+          estimatedCcEarned: 0,
+          totalCcEarned: 0,
+          totalUserShare: 0,
+          totalTreasuryShare: 0,
+          userShare: 0.75,
+          appShare: 0.25,
+          rewardEventCount: 0,
         };
-        totalMarkers += arg.markersEmitted ?? 0;
-        if (arg.status === "Bonded") {
-          totalStaked += Number(arg.amountPol ?? "0");
-        }
       }
 
-      // Illustrative CC estimate using the reward mechanics from the
-      // original business plan: 62% of ~516M CC monthly pool, share
-      // proportional to transaction activity. For the hackathon this is
-      // a mock calculation — the real per-round allocation depends on
-      // network-wide activity and the burn-mint equilibrium.
-      const mockCcPerMarker = 0.1; // dev illustration only
-      const estimatedCc = totalMarkers * mockCcPerMarker;
+      const positions = await prisma.stakingPosition.findMany({
+        where: { userId: user.id },
+      });
+      const events = await prisma.rewardEvent.findMany({
+        where: { userId: user.id },
+      });
+
+      const totalCc = events.reduce((s, e) => s + Number(e.ccAmount), 0);
+      const totalUser = events.reduce((s, e) => s + Number(e.userShare), 0);
+      const totalTreasury = events.reduce((s, e) => s + Number(e.treasuryShare), 0);
+      const bondedPol = positions
+        .filter((p) => p.status === "Bonded")
+        .reduce((s, p) => s + Number(p.amountPol), 0);
+      const totalMarkers = positions.reduce((s, p) => s + p.markersEmitted, 0);
 
       return {
         address,
-        totalPositions: userPositions.length,
-        totalBondedPol: totalStaked,
+        totalPositions: positions.length,
+        totalBondedPol: bondedPol,
         totalMarkersEmitted: totalMarkers,
-        estimatedCcEarned: estimatedCc,
+        estimatedCcEarned: totalCc, // keep backward compat
+        totalCcEarned: totalCc,
+        totalUserShare: totalUser,
+        totalTreasuryShare: totalTreasury,
         userShare: 0.75,
         appShare: 0.25,
+        rewardEventCount: events.length,
       };
     } catch (err) {
       req.log.error(err);
@@ -191,6 +262,29 @@ app.get<{ Params: { address: string } }>(
     }
   }
 );
+
+// --- Manual round trigger (demo aid) ---
+
+app.post("/api/admin/rounds/trigger", async (req, reply) => {
+  try {
+    // Compute next round number from DB
+    const latestRound = await prisma.rewardRound.findFirst({
+      orderBy: { roundNumber: "desc" },
+    });
+    const roundNumber = (latestRound?.roundNumber ?? 0) + 1;
+
+    await enqueueRound(roundNumber);
+
+    return {
+      ok: true,
+      roundNumber,
+      message: `Round #${roundNumber} enqueued`,
+    };
+  } catch (err) {
+    req.log.error(err);
+    return reply.code(500).send({ error: String(err) });
+  }
+});
 
 // --- Start ---
 

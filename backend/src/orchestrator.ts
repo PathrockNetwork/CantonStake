@@ -25,6 +25,7 @@ import {
 import { polygonAmoy } from "viem/chains";
 import { config } from "./config.js";
 import { canton, TEMPLATES, type ActiveContract } from "./canton.js";
+import { prisma } from "./db.js";
 
 // --- Viem client ---
 
@@ -96,6 +97,89 @@ async function findUnbondingPosition(
   });
 }
 
+// --- Postgres mirror helpers ---
+
+async function upsertUserByEvm(evmAddress: string, partyId: string) {
+  const normalizedAddress = evmAddress.toLowerCase();
+
+  const existingByParty = await prisma.user.findUnique({
+    where: { cantonPartyId: partyId },
+  });
+  if (existingByParty) {
+    return prisma.user.update({
+      where: { id: existingByParty.id },
+      data: { evmAddress: normalizedAddress },
+    });
+  }
+
+  const existingByAddress = await prisma.user.findUnique({
+    where: { evmAddress: normalizedAddress },
+  });
+  if (existingByAddress) {
+    return prisma.user.update({
+      where: { id: existingByAddress.id },
+      data: { cantonPartyId: partyId },
+    });
+  }
+
+  return prisma.user.create({
+    data: { evmAddress: normalizedAddress, cantonPartyId: partyId },
+  });
+}
+
+async function mirrorPosition(args: {
+  contractId: string;
+  evmAddress: string;
+  partyId: string;
+  amountPol: string;
+  status: "Pending" | "Bonded" | "Unbonding" | "Released";
+  evmTxHash?: string;
+  cantonTxId?: string;
+  unbondingReadyAt?: Date;
+}) {
+  const user = await upsertUserByEvm(args.evmAddress, args.partyId);
+  return prisma.stakingPosition.upsert({
+    where: { contractId: args.contractId },
+    update: {
+      status: args.status,
+      cantonTxId: args.cantonTxId,
+      evmTxHash: args.evmTxHash,
+      unbondingReadyAt: args.unbondingReadyAt,
+    },
+    create: {
+      contractId: args.contractId,
+      userId: user.id,
+      evmAddress: args.evmAddress.toLowerCase(),
+      amountPol: args.amountPol,
+      status: args.status,
+      cantonTxId: args.cantonTxId,
+      evmTxHash: args.evmTxHash,
+      unbondingReadyAt: args.unbondingReadyAt,
+    },
+  });
+}
+
+/**
+ * Extract the createdEvent.contractId from a submit-and-wait response.
+ * The JSON Ledger API returns events as an array of CreatedEvent / ArchivedEvent objects.
+ */
+function extractCreatedContractId(events: unknown[]): string | null {
+  for (const ev of events) {
+    const created = (ev as Record<string, unknown>)?.CreatedEvent as Record<string, unknown> | undefined;
+    if (created?.contractId) return created.contractId as string;
+    // Some API versions nest it differently
+    const archived = (ev as Record<string, unknown>)?.ArchivedEvent as Record<string, unknown> | undefined;
+    if (archived?.contractId) continue; // archived, not created
+  }
+  // Try flat array format
+  for (const ev of events) {
+    if (typeof ev === "object" && ev !== null && "contractId" in ev) {
+      return (ev as Record<string, unknown>).contractId as string;
+    }
+  }
+  return null;
+}
+
 // --- Event handlers ---
 
 async function handleShareMinted(log: Log) {
@@ -132,6 +216,22 @@ async function handleShareMinted(log: Log) {
       },
     });
     console.log(`  -> accepted. tx=${result.transactionId}`);
+
+    // Mirror to Postgres: the Accept choice archives StakingRequest and
+    // creates a new StakingPosition. Extract the new contractId from events.
+    const reqArg = req.argument as { evmAddress?: string; amountPol?: string; delegator?: string };
+    const newContractId = extractCreatedContractId(result.events) || `pending-${Date.now()}`;
+
+    await mirrorPosition({
+      contractId: newContractId,
+      evmAddress: reqArg.evmAddress || args.user,
+      partyId: reqArg.delegator || "unknown",
+      amountPol: reqArg.amountPol || formatEther(args.amount),
+      status: "Bonded",
+      evmTxHash: transactionHash,
+      cantonTxId: result.transactionId,
+    });
+    console.log(`  -> mirrored Bonded position to Postgres (contractId=${newContractId.slice(0, 16)}…)`);
   } catch (err) {
     console.error(`  failed to accept StakingRequest:`, err);
   }
@@ -173,6 +273,21 @@ async function handleShareBurned(log: Log) {
       },
     });
     console.log(`  -> unbonding confirmed. tx=${result.transactionId}`);
+
+    // Mirror to Postgres: update position to Unbonding
+    const posArg = position.argument as { evmAddress?: string; delegator?: string; amountPol?: string };
+    const unbondingReadyAt = new Date(Date.now() + 60_000); // 60s from now
+    await mirrorPosition({
+      contractId: position.contractId,
+      evmAddress: posArg.evmAddress || args.user,
+      partyId: posArg.delegator || "unknown",
+      amountPol: posArg.amountPol || formatEther(args.amount),
+      status: "Unbonding",
+      evmTxHash: transactionHash,
+      cantonTxId: result.transactionId,
+      unbondingReadyAt,
+    });
+    console.log(`  -> mirrored Unbonding position to Postgres`);
   } catch (err) {
     console.error(`  failed to confirm unbond:`, err);
   }
@@ -232,7 +347,7 @@ export function startReleaseChecker(): void {
 
         console.log(`[release-checker] releasing position for ${arg.evmAddress}`);
         try {
-          await canton.exerciseChoice({
+          const result = await canton.exerciseChoice({
             templateId: TEMPLATES.StakingPosition,
             contractId: p.contractId,
             choice: "StakingPosition_Release",
@@ -244,6 +359,18 @@ export function startReleaseChecker(): void {
               },
             },
           });
+
+          // Mirror to Postgres: update position to Released
+          const posArg = p.argument as { evmAddress?: string; delegator?: string; amountPol?: string };
+          await mirrorPosition({
+            contractId: p.contractId,
+            evmAddress: posArg.evmAddress || "unknown",
+            partyId: posArg.delegator || "unknown",
+            amountPol: posArg.amountPol || "0",
+            status: "Released",
+            cantonTxId: result.transactionId,
+          });
+          console.log(`  -> mirrored Released position to Postgres`);
         } catch (err) {
           console.error(`  release failed:`, err);
         }
