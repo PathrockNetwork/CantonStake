@@ -1,0 +1,81 @@
+# CantonStake — AI Assistant Rules
+# These rules are loaded automatically when working in this repo.
+
+## Project Overview
+CantonStake is a cross-chain staking platform: users stake POL on Polygon Amoy via EVM smart contracts,
+receive rewards in Canton Coin (CC) on a Hyperledger Canton ledger, managed through Daml smart contracts.
+The revenue model is based on Featured App activity on the Canton Coin Network (CC burn-mint equilibrium).
+
+## Monorepo Structure
+- `daml/`      — Daml 3.3 smart contracts (Canton ledger templates)
+- `evm/`       — Solidity contracts + Hardhat deployment scripts
+- `frontend/`  — Next.js 14 App Router + wagmi v2 + Tailwind CSS
+- `backend/`   — Fastify API + Prisma ORM + BullMQ + Canton JSON Ledger API client
+- `docs/`      — Architecture decisions and skill documentation
+
+## Key Conventions
+
+### TypeScript
+- Strict mode, ESM modules (`"type": "module"` in backend), ES2022 target
+- Use `import type` for type-only imports
+- Path aliases: `@/` maps to `frontend/` root, `./src/` in backend
+
+### Daml
+- Templates follow the lifecycle: StakingRequest → StakingPosition (Bonded → Unbonding → Released)
+- Controller pattern: only `appProvider` exercises most choices (app-party acts on behalf of delegator)
+- All monetary amounts stored as `Text` (decimal strings) for precision
+
+### Frontend
+- All components are `"use client"` unless purely static HTML
+- wagmi v2 hooks: `useAccount`, `useConnect`, `useDisconnect`, `useChainId`
+- Two wallet systems: wagmi (EVM/MetaMask/Ledger) + useLoopWallet (Canton Party ID mock)
+- Tailwind custom classes: `hairline`, `hairline-b`, `chip`, `amber-bright`, `ink-*`
+- Font: `font-display` (italic) for logo, `font-mono` for data/addresses
+
+### Backend
+- Fastify with ESM: all imports use `.js` extension (`"./config.js"`)
+- Prisma for PostgreSQL, BullMQ for job queues (Redis)
+- Canton client wraps JSON Ledger API at `config.cantonJsonApiUrl`
+- CC reward rounds run every 10 minutes via BullMQ scheduler
+
+### EVM
+- Solidity 0.8.24, Hardhat, OpenZeppelin contracts
+- Deploy to Polygon Amoy testnet only
+- MockValidatorShare simulates the validator's share distribution
+
+### Docker
+- PostgreSQL 16 + Redis 7 + backend + frontend in docker-compose
+- Canton LocalNet runs separately via cn-quickstart
+- Backend connects to Canton via `host.docker.internal:2975`
+
+## Common Patterns
+
+### Adding a new API endpoint
+1. Add route in `backend/src/index.ts` following existing patterns
+2. Add request/response types inline
+3. Use `canton` client for ledger operations, `prisma` for DB operations
+4. Return `{ error: string }` on failure with appropriate HTTP status
+
+### Adding a new Daml template choice
+1. Define choice in `daml/CantonStake/daml/CantonStake/*.daml`
+2. Add template ID to `TEMPLATES` in `backend/src/canton.ts`
+3. Exercise via `canton.exerciseChoice()` in backend
+4. Add watcher in `backend/src/orchestrator.ts` if event-driven
+
+### Adding a new frontend page
+1. Create `frontend/app/<route>/page.tsx` as `"use client"`
+2. Import from `@/components/`, `@/lib/`
+3. Use wagmi hooks for EVM state, `useLoopWallet` for Canton state
+4. Follow existing styling conventions (see `app/globals.css`)
+
+## Testing
+- No test framework configured yet — when adding tests:
+  - Frontend: Vitest + React Testing Library
+  - Backend: Vitest + Prisma test client
+  - Daml: Daml test scripts in `daml/CantonStake/daml/`
+  - EVM: Hardhat + ethers test scripts
+
+## Environment
+- All config via env vars, see `.env.example` files
+- Never commit `.env` files (in `.gitignore`)
+- WalletConnect requires a project ID from https://cloud.walletconnect.com
