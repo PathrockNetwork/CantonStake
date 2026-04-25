@@ -37,6 +37,9 @@ const connection = new IORedis(config.redisUrl, {
   maxRetriesPerRequest: null, // BullMQ requirement
 });
 
+/** Export Redis connection for health checks */
+export { connection as redisConnection };
+
 // --- Queue ---
 
 export const rewardQueue = new Queue(QUEUE_NAME, { connection });
@@ -49,8 +52,16 @@ interface RoundPayload {
 }
 
 async function processRound(job: Job<RoundPayload>) {
-  const { roundNumber } = job.data;
+  let { roundNumber } = job.data;
   const startedAt = new Date();
+
+  // Auto-compute round number for recurring jobs (which send roundNumber: 0)
+  if (!roundNumber) {
+    const latest = await prisma.rewardRound.findFirst({
+      orderBy: { roundNumber: "desc" },
+    });
+    roundNumber = (latest?.roundNumber ?? 0) + 1;
+  }
 
   console.log(
     `[reward-rounds] starting round #${roundNumber} (job ${job.id})`
@@ -199,10 +210,6 @@ export const rewardWorker = new Worker<RoundPayload>(
   {
     connection,
     concurrency: 1, // one round at a time
-    limiter: {
-      max: 1,
-      duration: ROUND_INTERVAL_MS,
-    },
   }
 );
 
@@ -214,52 +221,61 @@ rewardWorker.on("failed", (job, err) => {
   console.error(`[reward-rounds] job ${job?.id} failed:`, err.message);
 });
 
-// --- Scheduler: enqueue a round every 10 minutes ---
-
-let roundCounter = 0;
+// --- Scheduler: BullMQ repeatable job every 10 minutes ---
 
 export async function startRewardScheduler() {
-  // Find the latest round number to resume from
+  // Remove any existing repeatable jobs to avoid duplicates
+  const existing = await rewardQueue.getRepeatableJobs();
+  for (const job of existing) {
+    await rewardQueue.removeRepeatableByKey(job.key);
+  }
+
+  // Find the latest round number to know where we are
   const latestRound = await prisma.rewardRound.findFirst({
     orderBy: { roundNumber: "desc" },
   });
-  roundCounter = latestRound?.roundNumber ?? 0;
+  const nextRound = (latestRound?.roundNumber ?? 0) + 1;
 
   console.log(
-    `[reward-scheduler] starting from round #${roundCounter + 1} ` +
-      `(interval: ${ROUND_INTERVAL_MS / 1000}s)`
+    `[reward-scheduler] starting from round #${nextRound} ` +
+      `(interval: ${ROUND_INTERVAL_MS / 1000}s, BullMQ repeatable)`
   );
 
-  // Enqueue immediately for first round
-  await enqueueNextRound();
+  // Enqueue first round immediately
+  await enqueueRound(nextRound);
 
-  // Then schedule every 10 minutes
-  setInterval(async () => {
-    await enqueueNextRound();
-  }, ROUND_INTERVAL_MS);
+  // Schedule recurring rounds via BullMQ repeatable jobs
+  await rewardQueue.add(
+    "round-recurring",
+    { roundNumber: 0, triggeredAt: new Date().toISOString() },
+    {
+      repeat: { every: ROUND_INTERVAL_MS },
+      jobId: "cc-round-recurring",
+      attempts: 3,
+      backoff: { type: "exponential", delay: 5_000 },
+      removeOnComplete: { count: 100 },
+      removeOnFail: { count: 50 },
+    }
+  );
 }
 
-async function enqueueNextRound() {
-  roundCounter += 1;
-
+/** Enqueue a single round with a specific round number */
+export async function enqueueRound(roundNumber: number) {
   await rewardQueue.add(
     "round",
     {
-      roundNumber: roundCounter,
+      roundNumber,
       triggeredAt: new Date().toISOString(),
     },
     {
       attempts: 3,
-      backoff: {
-        type: "exponential",
-        delay: 5_000,
-      },
+      backoff: { type: "exponential", delay: 5_000 },
       removeOnComplete: { count: 100 },
       removeOnFail: { count: 50 },
     }
   );
 
-  console.log(`[reward-scheduler] enqueued round #${roundCounter}`);
+  console.log(`[reward-scheduler] enqueued round #${roundNumber}`);
 }
 
 // --- Graceful shutdown ---
