@@ -12,17 +12,16 @@ import { polygonAmoy } from "wagmi/chains";
 import { parseEther, formatEther } from "viem";
 import { mockValidatorShareAbi } from "@/lib/abi";
 import { createStakingRequest } from "@/lib/api";
+import { useLoopWallet } from "@/lib/loop-wallet";
 
 const VALIDATOR_ADDRESS = process.env
   .NEXT_PUBLIC_MOCK_VALIDATOR_SHARE as `0x${string}`;
-
-const DELEGATOR_PARTY =
-  process.env.NEXT_PUBLIC_CANTON_DELEGATOR_PARTY || "Alice";
 
 export default function StakePage() {
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
   const { data: balance } = useBalance({ address });
+  const { partyId, isConnected: loopConnected } = useLoopWallet();
 
   const [amount, setAmount] = useState("1.0");
   const [cantonStage, setCantonStage] = useState<
@@ -43,7 +42,12 @@ export default function StakePage() {
 
   const wrongNetwork = isConnected && chainId !== polygonAmoy.id;
   const canStake =
-    isConnected && !wrongNetwork && !writePending && !evmConfirming;
+    isConnected &&
+    loopConnected &&
+    !!partyId &&
+    !wrongNetwork &&
+    !writePending &&
+    !evmConfirming;
 
   async function onStake() {
     if (!address) return;
@@ -55,7 +59,7 @@ export default function StakePage() {
       const { transactionId } = await createStakingRequest({
         evmAddress: address,
         amountPol: amount,
-        delegator: DELEGATOR_PARTY,
+        delegator: partyId!,
       });
       setCantonTxId(transactionId);
       setCantonStage("created");
@@ -150,7 +154,9 @@ export default function StakePage() {
             className="w-full bg-amber hover:bg-amber-bright disabled:bg-ink-700 disabled:text-ink-400 disabled:cursor-not-allowed text-ink-950 font-mono text-sm uppercase tracking-wider font-semibold py-4 transition-colors"
           >
             {!isConnected
-              ? "Connect wallet to stake"
+              ? "Connect EVM wallet to stake"
+              : !loopConnected || !partyId
+              ? "Connect Loop wallet for Canton identity"
               : wrongNetwork
               ? "Switch to Amoy"
               : writePending
