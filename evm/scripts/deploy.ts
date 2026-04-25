@@ -4,6 +4,12 @@ import * as path from "path";
 
 async function main() {
   const [deployer] = await ethers.getSigners();
+  if (!deployer) {
+    throw new Error(
+      "No deployer signer available for network 'amoy'. " +
+      "Set DEPLOYER_PRIVATE_KEY in evm/.env to a 0x-prefixed private key."
+    );
+  }
   console.log("Deploying with:", deployer.address);
 
   const balance = await ethers.provider.getBalance(deployer.address);
