@@ -7,7 +7,7 @@
 # Usage:
 #   1. Start LocalNet: cd ../cn-quickstart/quickstart && make start
 #   2. Deploy MockValidatorShare to Amoy: cd evm && npm run deploy:amoy
-#   3. Copy the deployed address into backend/.env and frontend/.env.local
+#   3. Copy the deployed address, party IDs, and FeaturedAppRight CID into .env
 #   4. From the cantonstake root: docker compose up --build
 #
 # The backend connects to LocalNet's App Provider participant on
@@ -62,7 +62,7 @@ services:
       - LOG_LEVEL=info
       - AMOY_RPC_URL=${AMOY_RPC_URL:-https://rpc-amoy.polygon.technology}
       - MOCK_VALIDATOR_SHARE_ADDRESS=${MOCK_VALIDATOR_SHARE_ADDRESS}
-      - CANTON_JSON_API_URL=http://host.docker.internal:2975
+      - CANTON_JSON_API_URL=${CANTON_JSON_API_URL:-http://host.docker.internal:2975}
       - CANTON_APP_PROVIDER_PARTY=${CANTON_APP_PROVIDER_PARTY}
       - CANTON_AUTH_TOKEN=${CANTON_AUTH_TOKEN:-}
       - FEATURED_APP_RIGHT_CID=${FEATURED_APP_RIGHT_CID:-}
@@ -81,11 +81,16 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-http://localhost:4000}
+        NEXT_PUBLIC_MOCK_VALIDATOR_SHARE: ${MOCK_VALIDATOR_SHARE_ADDRESS}
+        NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: ${NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID:-}
+        NEXT_PUBLIC_CANTON_DELEGATOR_PARTY: ${CANTON_DELEGATOR_PARTY}
     container_name: cantonstake-frontend
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_BACKEND_URL=http://localhost:4000
+      - NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL:-http://localhost:4000}
       - NEXT_PUBLIC_MOCK_VALIDATOR_SHARE=${MOCK_VALIDATOR_SHARE_ADDRESS}
       - NEXT_PUBLIC_CANTON_DELEGATOR_PARTY=${CANTON_DELEGATOR_PARTY}
       - NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=${NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID:-}
