@@ -5,6 +5,7 @@ import {
   useAccount,
   useChainId,
   useBalance,
+  useSwitchChain,
   useWriteContract,
   useWaitForTransactionReceipt,
 } from "wagmi";
@@ -21,6 +22,7 @@ export default function StakePage() {
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
   const { data: balance } = useBalance({ address });
+  const { switchChainAsync, isPending: switchPending } = useSwitchChain();
   const { partyId, isConnected: loopConnected } = useLoopWallet();
 
   const [amount, setAmount] = useState("1.0");
@@ -45,7 +47,7 @@ export default function StakePage() {
     isConnected &&
     loopConnected &&
     !!partyId &&
-    !wrongNetwork &&
+    !switchPending &&
     !writePending &&
     !evmConfirming;
 
@@ -54,6 +56,10 @@ export default function StakePage() {
     try {
       setCantonStage("creating");
       setCantonError(null);
+
+      if (chainId !== polygonAmoy.id) {
+        await switchChainAsync({ chainId: polygonAmoy.id });
+      }
 
       // 1. Create StakingRequest on Canton.
       const { transactionId } = await createStakingRequest({
@@ -157,8 +163,10 @@ export default function StakePage() {
               ? "Connect EVM wallet to stake"
               : !loopConnected || !partyId
               ? "Connect Loop wallet for Canton identity"
+              : switchPending
+              ? "Switching to Amoy..."
               : wrongNetwork
-              ? "Switch to Amoy"
+              ? "Stake on Amoy"
               : writePending
               ? "Waiting on wallet signature…"
               : evmConfirming
