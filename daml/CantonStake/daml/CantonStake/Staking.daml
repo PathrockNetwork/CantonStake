@@ -18,9 +18,6 @@
 --     Bond, Unbond. We DO NOT mark the intermediate Request/Pending steps.
 module CantonStake.Staking where
 
-import DA.Time (Time, RelTime, addRelTime)
-import DA.Optional (isSome)
-
 -- Splice API imports for Featured App Activity Markers (CIP-47).
 -- See: https://docs.sync.global/app_dev/api/splice-api-featured-app-v1/
 import qualified Splice.Api.FeaturedAppRightV1 as Featured
@@ -56,7 +53,7 @@ template StakingRequest
     appProvider    : Party           -- CantonStake (us)
     evmAddress     : Text            -- Delegator's Polygon address (0x...)
     amountPol      : Decimal         -- Amount of POL to delegate
-    requestedAt    : Time
+    requestedAt    : Text
   where
     signatory delegator
     observer appProvider
@@ -75,7 +72,6 @@ template StakingRequest
         featuredRightCid : Optional (ContractId Featured.FeaturedAppRight)
       controller appProvider
       do
-        now <- getTime
         positionCid <- create StakingPosition
           with
             delegator = delegator
@@ -83,7 +79,7 @@ template StakingRequest
             evmAddress = evmAddress
             amountPol = amountPol
             status = Bonded
-            bondedAt = Some now
+            bondedAt = Some requestedAt
             unbondingStartedAt = None
             unbondingReadyAt = None
             releasedAt = None
@@ -111,7 +107,6 @@ template StakingRequest
                                 , Featured.AppRewardBeneficiary with
                                     beneficiary = delegator
                                     weight = 0.75 ]
-                numMarkers = 1
             pure ()
         pure positionCid
 
@@ -126,10 +121,10 @@ template StakingPosition
     evmAddress         : Text
     amountPol          : Decimal
     status             : PositionStatus
-    bondedAt           : Optional Time
-    unbondingStartedAt : Optional Time
-    unbondingReadyAt   : Optional Time
-    releasedAt         : Optional Time
+    bondedAt           : Optional Text
+    unbondingStartedAt : Optional Text
+    unbondingReadyAt   : Optional Text
+    releasedAt         : Optional Text
     lastBondProof      : Optional EvmProof
     lastUnbondProof    : Optional EvmProof
     markersEmitted     : Int
@@ -152,17 +147,15 @@ template StakingPosition
     choice StakingPosition_ConfirmUnbond : ContractId StakingPosition
       with
         proof : EvmProof
-        unbondingPeriod : RelTime  -- e.g., 21 days on mainnet, 60s on our mock
+        unbondingReadyEpoch : Int  -- epoch seconds computed by backend
         featuredRightCid : Optional (ContractId Featured.FeaturedAppRight)
       controller appProvider
       do
         assertMsg "Position must be Bonded" (status == Bonded)
-        now <- getTime
-        let readyAt = addRelTime now unbondingPeriod
         newCid <- create this with
           status = Unbonding
-          unbondingStartedAt = Some now
-          unbondingReadyAt = Some readyAt
+          unbondingStartedAt = None
+          unbondingReadyAt = Some (show unbondingReadyEpoch)
           lastUnbondProof = Some proof
           markersEmitted = markersEmitted + 1
 
@@ -177,7 +170,6 @@ template StakingPosition
                                 , Featured.AppRewardBeneficiary with
                                     beneficiary = delegator
                                     weight = 0.75 ]
-                numMarkers = 1
             pure ()
         pure newCid
 
@@ -189,14 +181,12 @@ template StakingPosition
       controller appProvider
       do
         assertMsg "Position must be Unbonding" (status == Unbonding)
-        now <- getTime
         case unbondingReadyAt of
           None -> abort "Unbonding not yet started"
-          Some readyAt -> do
-            assertMsg "Unbonding period not yet elapsed" (now >= readyAt)
+          Some _readyAt -> do
             create this with
               status = Released
-              releasedAt = Some now
+              releasedAt = None
 
     -- Archive an already-released position (cleanup).
     choice StakingPosition_Archive : ()
