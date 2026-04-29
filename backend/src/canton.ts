@@ -52,20 +52,26 @@ class CantonClient {
     argument: Record<string, unknown>;
   }): Promise<SubmitAndWaitResult> {
     const body = {
-      commands: [
-        {
-          ExerciseCommand: {
-            templateId: args.templateId,
-            contractId: args.contractId,
-            choice: args.choice,
-            choiceArgument: args.argument,
+      commands: {
+        commands: [
+          {
+            ExerciseCommand: {
+              templateId: args.templateId,
+              contractId: args.contractId,
+              choice: args.choice,
+              choiceArgument: args.argument,
+            },
           },
-        },
-      ],
-      commandId: `cantonstake-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      actAs: [this.party],
-      readAs: [],
-      workflowId: "cantonstake",
+        ],
+        commandId: `cantonstake-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        actAs: [this.party],
+        readAs: [],
+        workflowId: "cantonstake",
+        deduplicationPeriod: { Empty: {} },
+        disclosedContracts: [],
+        domainId: "",
+        packageIdSelectionPreference: [],
+      },
     };
 
     const res = await fetch(
@@ -92,18 +98,24 @@ class CantonClient {
     argument: Record<string, unknown>;
   }): Promise<SubmitAndWaitResult> {
     const body = {
-      commands: [
-        {
-          CreateCommand: {
-            templateId: args.templateId,
-            createArguments: args.argument,
+      commands: {
+        commands: [
+          {
+            CreateCommand: {
+              templateId: args.templateId,
+              createArguments: args.argument,
+            },
           },
-        },
-      ],
-      commandId: `cantonstake-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      actAs: [this.party],
-      readAs: [],
-      workflowId: "cantonstake",
+        ],
+        commandId: `cantonstake-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        actAs: [this.party],
+        readAs: [],
+        workflowId: "cantonstake",
+        deduplicationPeriod: { Empty: {} },
+        disclosedContracts: [],
+        domainId: "",
+        packageIdSelectionPreference: [],
+      },
     };
 
     const res = await fetch(
