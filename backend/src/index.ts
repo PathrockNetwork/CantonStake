@@ -14,7 +14,7 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { config } from "./config.js";
-import { canton, TEMPLATES } from "./canton.js";
+import { canton, cantonDelegator, TEMPLATES } from "./canton.js";
 import { startWatchers, startReleaseChecker } from "./orchestrator.js";
 import { prisma } from "./db.js";
 import { startRewardScheduler, shutdownRewardSystem, redisConnection, enqueueRound } from "./reward-rounds.js";
@@ -61,6 +61,7 @@ app.get("/api/health/detail", async () => {
   return {
     status: "ok",
     cantonJsonApi: config.cantonJsonApiUrl,
+    cantonDelegatorParty: config.cantonDelegatorParty,
     validatorShare: config.mockValidatorShare,
     featuredAppRight: config.featuredAppRightCid ? "configured" : "missing",
     database: dbStatus,
@@ -125,13 +126,13 @@ app.post<{ Body: UpsertUserBody }>("/api/users", async (req, reply) => {
 interface CreateRequestBody {
   evmAddress: string;
   amountPol: string; // decimal string, e.g. "1.5"
-  delegator: string; // Canton party ID
+  delegator?: string; // ignored; backend uses configured delegator party
 }
 
 app.post<{ Body: CreateRequestBody }>("/api/requests", async (req, reply) => {
-  const { evmAddress, amountPol, delegator } = req.body;
+  const { evmAddress, amountPol } = req.body;
 
-  if (!evmAddress || !amountPol || !delegator) {
+  if (!evmAddress || !amountPol) {
     return reply.code(400).send({ error: "missing required fields" });
   }
   if (!/^0x[a-fA-F0-9]{40}$/.test(evmAddress)) {
@@ -139,10 +140,10 @@ app.post<{ Body: CreateRequestBody }>("/api/requests", async (req, reply) => {
   }
 
   try {
-    const result = await canton.createContract({
+    const result = await cantonDelegator.createContract({
       templateId: TEMPLATES.StakingRequest,
       argument: {
-        delegator,
+        delegator: config.cantonDelegatorParty,
         appProvider: config.cantonAppProviderParty,
         evmAddress,
         amountPol,

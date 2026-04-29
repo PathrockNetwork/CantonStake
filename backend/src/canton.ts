@@ -50,6 +50,7 @@ class CantonClient {
     contractId: string;
     choice: string;
     argument: Record<string, unknown>;
+    actAs?: string[];
   }): Promise<SubmitAndWaitResult> {
     const body = {
       commands: {
@@ -64,7 +65,7 @@ class CantonClient {
           },
         ],
         commandId: `cantonstake-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        actAs: [this.party],
+        actAs: args.actAs ?? [this.party],
         readAs: [],
         workflowId: "cantonstake",
         deduplicationPeriod: { Empty: {} },
@@ -87,7 +88,7 @@ class CantonClient {
       const errText = await res.text();
       throw new Error(`Canton exercise failed (${res.status}): ${errText}`);
     }
-    return (await res.json()) as SubmitAndWaitResult;
+    return normalizeSubmitResult(await res.json());
   }
 
   /**
@@ -96,6 +97,7 @@ class CantonClient {
   async createContract(args: {
     templateId: string;
     argument: Record<string, unknown>;
+    actAs?: string[];
   }): Promise<SubmitAndWaitResult> {
     const body = {
       commands: {
@@ -108,7 +110,7 @@ class CantonClient {
           },
         ],
         commandId: `cantonstake-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        actAs: [this.party],
+        actAs: args.actAs ?? [this.party],
         readAs: [],
         workflowId: "cantonstake",
         deduplicationPeriod: { Empty: {} },
@@ -131,13 +133,39 @@ class CantonClient {
       const errText = await res.text();
       throw new Error(`Canton create failed (${res.status}): ${errText}`);
     }
-    return (await res.json()) as SubmitAndWaitResult;
+    return normalizeSubmitResult(await res.json());
+  }
+
+  private async ledgerEndOffset(): Promise<string> {
+    const res = await fetch(`${this.baseUrl}/v2/state/ledger-end`, {
+      method: "GET",
+      headers: this.headers(),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Canton ledger-end failed (${res.status}): ${errText}`);
+    }
+
+    const json = (await res.json()) as Record<string, unknown>;
+    const offset = findString(json, [
+      "offset",
+      "ledgerEnd",
+      "ledgerEndOffset",
+      "currentLedgerEnd",
+      "absolute",
+    ]);
+    if (!offset) {
+      throw new Error(`Canton ledger-end response missing offset: ${JSON.stringify(json)}`);
+    }
+    return offset;
   }
 
   /**
    * Query active contracts for a given template.
    */
   async activeContracts(templateId: string): Promise<ActiveContract[]> {
+    const activeAtOffset = await this.ledgerEndOffset();
     const body = {
       filter: {
         filtersByParty: {
@@ -155,7 +183,7 @@ class CantonClient {
         },
       },
       verbose: false,
-      activeAtOffset: "",
+      activeAtOffset,
     };
 
     const res = await fetch(`${this.baseUrl}/v2/state/active-contracts`, {
@@ -170,20 +198,12 @@ class CantonClient {
     }
 
     const json = (await res.json()) as {
-      contractEntries?: Array<{
-        activeContract?: {
-          createdEvent?: {
-            contractId: string;
-            templateId: string;
-            createArgument: Record<string, unknown>;
-          };
-        };
-      }>;
+      contractEntries?: Array<Record<string, unknown>>;
     };
 
     return (json.contractEntries ?? [])
-      .map((entry) => entry.activeContract?.createdEvent)
-      .filter((e): e is NonNullable<typeof e> => e !== undefined)
+      .map(extractCreatedEvent)
+      .filter((e): e is CreatedEvent => e !== undefined)
       .map((e) => ({
         contractId: e.contractId,
         templateId: e.templateId,
@@ -192,10 +212,102 @@ class CantonClient {
   }
 }
 
+interface CreatedEvent {
+  contractId: string;
+  templateId: string;
+  createArgument: Record<string, unknown>;
+}
+
+function normalizeSubmitResult(json: unknown): SubmitAndWaitResult {
+  const root = asRecord(json) ?? {};
+  const transaction = asRecord(root.transaction) ?? {};
+  const completion = asRecord(root.completion) ?? {};
+  const events = Array.isArray(root.events)
+    ? root.events
+    : Array.isArray(transaction.events)
+    ? transaction.events
+    : [];
+
+  return {
+    transactionId:
+      stringValue(root.transactionId) ??
+      stringValue(transaction.transactionId) ??
+      stringValue(completion.transactionId) ??
+      "",
+    completionOffset:
+      stringValue(root.completionOffset) ??
+      stringValue(transaction.offset) ??
+      stringValue(completion.offset) ??
+      "",
+    events,
+  };
+}
+
+function extractCreatedEvent(entry: Record<string, unknown>): CreatedEvent | undefined {
+  const contractEntry = asRecord(entry.contractEntry) ?? {};
+  const activeContract = asRecord(entry.activeContract) ?? {};
+  const jsActiveContract = asRecord(contractEntry.JsActiveContract) ?? {};
+  const createdEvent =
+    asRecord(activeContract.createdEvent) ??
+    asRecord(jsActiveContract.createdEvent) ??
+    asRecord(entry.createdEvent);
+
+  const contractId = stringValue(createdEvent?.contractId);
+  const templateId = stringValue(createdEvent?.templateId);
+  const createArgument = asRecord(createdEvent?.createArgument);
+
+  if (!contractId || !templateId || !createArgument) return undefined;
+  return { contractId, templateId, createArgument };
+}
+
+function findString(value: unknown, keys: string[]): string | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+
+  for (const key of keys) {
+    const found = stringValue(record[key]);
+    if (found) return found;
+  }
+  for (const child of Object.values(record)) {
+    const found = findString(child, keys);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  if (typeof value === "string" && value.length > 0) return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "bigint") return value.toString();
+  return undefined;
+}
+
+function urlWithPort(rawUrl: string, port: string): string {
+  try {
+    const url = new URL(rawUrl);
+    url.port = port;
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return rawUrl.replace(/:\d+(?=\/|$)/, `:${port}`);
+  }
+}
+
 export const canton = new CantonClient(
   config.cantonJsonApiUrl,
   config.cantonAuthToken,
   config.cantonAppProviderParty
+);
+
+export const cantonDelegator = new CantonClient(
+  urlWithPort(config.cantonJsonApiUrl, "2975"),
+  config.cantonDelegatorAuthToken,
+  config.cantonDelegatorParty
 );
 
 // Template IDs — replace with your actual package id after `daml build`.

@@ -1,5 +1,5 @@
 /**
- * Event orchestrator: watches MockValidatorShare events on Amoy and
+ * Event orchestrator: polls MockValidatorShare events on Amoy and
  * translates them into Canton Daml choices.
  *
  * Flow:
@@ -44,23 +44,34 @@ const shareBurnedAbi = parseAbiItem(
   "event ShareBurnedWithId(address indexed user, uint256 amount, uint256 tokens, uint256 nonce)"
 );
 
+const EVENT_POLL_MS = 5_000;
+const INITIAL_LOOKBACK_BLOCKS = 200n;
+const UNBONDING_PERIOD_SECONDS = 60;
+
 // --- Matching logic ---
+
+function normalizeDecimal(value: string | number | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return undefined;
+  return n.toFixed(12).replace(/\.?0+$/, "");
+}
 
 /**
  * Find a pending StakingRequest for a given EVM address + amount.
- * We match by exact amount (1:1) since the mock is 1:1 shares:POL.
+ * We match by normalized amount (1:1) since the mock is 1:1 shares:POL.
  */
 async function findPendingRequest(
   evmAddress: string,
   amountPol: bigint
 ): Promise<ActiveContract | undefined> {
   const requests = await canton.activeContracts(TEMPLATES.StakingRequest);
-  const amountDecimal = formatEther(amountPol);
+  const amountDecimal = normalizeDecimal(formatEther(amountPol));
   return requests.find((r) => {
-    const arg = r.argument as { evmAddress?: string; amountPol?: string };
+    const arg = r.argument as { evmAddress?: string; amountPol?: string | number };
     return (
       arg.evmAddress?.toLowerCase() === evmAddress.toLowerCase() &&
-      arg.amountPol === amountDecimal
+      normalizeDecimal(arg.amountPol) === amountDecimal
     );
   });
 }
@@ -165,10 +176,20 @@ async function mirrorPosition(args: {
  */
 function extractCreatedContractId(events: unknown[]): string | null {
   for (const ev of events) {
-    const created = (ev as Record<string, unknown>)?.CreatedEvent as Record<string, unknown> | undefined;
+    const event = ev as Record<string, unknown>;
+    const nestedEvent = event.event as Record<string, unknown> | undefined;
+    const created =
+      (event?.CreatedEvent as Record<string, unknown> | undefined) ??
+      (event?.createdEvent as Record<string, unknown> | undefined) ??
+      (nestedEvent?.CreatedEvent as Record<string, unknown> | undefined) ??
+      (nestedEvent?.createdEvent as Record<string, unknown> | undefined);
     if (created?.contractId) return created.contractId as string;
     // Some API versions nest it differently
-    const archived = (ev as Record<string, unknown>)?.ArchivedEvent as Record<string, unknown> | undefined;
+    const archived =
+      (event?.ArchivedEvent as Record<string, unknown> | undefined) ??
+      (event?.archivedEvent as Record<string, unknown> | undefined) ??
+      (nestedEvent?.ArchivedEvent as Record<string, unknown> | undefined) ??
+      (nestedEvent?.archivedEvent as Record<string, unknown> | undefined);
     if (archived?.contractId) continue; // archived, not created
   }
   // Try flat array format
@@ -255,9 +276,10 @@ async function handleShareBurned(log: Log) {
   }
 
   // 60 seconds = unbondingPeriodSeconds in the mock contract.
-  // On production this would be 21 days = 1814400 microseconds in RelTime form.
-  // Daml's RelTime is represented as {microseconds: number}.
+  // On production this would be 21 days.
   try {
+    const unbondingReadyAt = new Date(Date.now() + UNBONDING_PERIOD_SECONDS * 1_000);
+    const unbondingReadyEpoch = Math.floor(unbondingReadyAt.getTime() / 1_000);
     const result = await canton.exerciseChoice({
       templateId: TEMPLATES.StakingPosition,
       contractId: position.contractId,
@@ -268,7 +290,7 @@ async function handleShareBurned(log: Log) {
           blockNumber: Number(blockNumber),
           validatorShare: config.mockValidatorShare,
         },
-        unbondingPeriod: { microseconds: "60000000" }, // 60s
+        unbondingReadyEpoch,
         featuredRightCid: config.featuredAppRightCid || null,
       },
     });
@@ -276,7 +298,6 @@ async function handleShareBurned(log: Log) {
 
     // Mirror to Postgres: update position to Unbonding
     const posArg = position.argument as { evmAddress?: string; delegator?: string; amountPol?: string };
-    const unbondingReadyAt = new Date(Date.now() + 60_000); // 60s from now
     await mirrorPosition({
       contractId: position.contractId,
       evmAddress: posArg.evmAddress || args.user,
@@ -293,32 +314,61 @@ async function handleShareBurned(log: Log) {
   }
 }
 
-// --- Watchers ---
+// --- Event polling ---
 
 export function startWatchers(): void {
-  console.log(`[orchestrator] watching ${config.mockValidatorShare} on Amoy`);
+  console.log(`[orchestrator] polling ${config.mockValidatorShare} on Amoy`);
 
-  client.watchEvent({
-    address: config.mockValidatorShare as Address,
-    event: shareMintedAbi,
-    onLogs: async (logs) => {
-      for (const log of logs) {
-        await handleShareMinted(log);
-      }
-    },
-    onError: (err) => console.error("[watcher:ShareMinted]", err),
-  });
+  let lastScannedBlock: bigint | undefined;
+  const poll = async () => {
+    try {
+      const latestBlock = await client.getBlockNumber();
+      const fromBlock =
+        lastScannedBlock === undefined
+          ? latestBlock > INITIAL_LOOKBACK_BLOCKS
+            ? latestBlock - INITIAL_LOOKBACK_BLOCKS
+            : 0n
+          : lastScannedBlock + 1n;
+      if (fromBlock > latestBlock) return;
 
-  client.watchEvent({
-    address: config.mockValidatorShare as Address,
-    event: shareBurnedAbi,
-    onLogs: async (logs) => {
-      for (const log of logs) {
-        await handleShareBurned(log);
+      const [mintedLogs, burnedLogs] = await Promise.all([
+        client.getLogs({
+          address: config.mockValidatorShare as Address,
+          event: shareMintedAbi,
+          fromBlock,
+          toBlock: latestBlock,
+        }),
+        client.getLogs({
+          address: config.mockValidatorShare as Address,
+          event: shareBurnedAbi,
+          fromBlock,
+          toBlock: latestBlock,
+        }),
+      ]);
+
+      for (const log of mintedLogs) {
+        await handleShareMinted(log as unknown as Log);
       }
-    },
-    onError: (err) => console.error("[watcher:ShareBurned]", err),
-  });
+      for (const log of burnedLogs) {
+        await handleShareBurned(log as unknown as Log);
+      }
+
+      lastScannedBlock = latestBlock;
+    } catch (err) {
+      console.error("[event-poller]", err);
+    }
+  };
+
+  void poll();
+  setInterval(() => void poll(), EVENT_POLL_MS);
+}
+
+function readyAtMillis(value: string): number {
+  if (/^\d+$/.test(value)) {
+    const epoch = Number(value);
+    return epoch < 1_000_000_000_000 ? epoch * 1_000 : epoch;
+  }
+  return new Date(value).getTime();
 }
 
 /**
@@ -342,7 +392,8 @@ export function startReleaseChecker(): void {
         };
         if (arg.status !== "Unbonding") continue;
         if (!arg.unbondingReadyAt) continue;
-        const readyAt = new Date(arg.unbondingReadyAt).getTime();
+        const readyAt = readyAtMillis(arg.unbondingReadyAt);
+        if (!Number.isFinite(readyAt)) continue;
         if (now < readyAt) continue;
 
         console.log(`[release-checker] releasing position for ${arg.evmAddress}`);
