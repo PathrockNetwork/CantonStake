@@ -27,5 +27,8 @@
     "postcss": "^8.4.40",
     "tailwindcss": "^3.4.7",
     "typescript": "^5.4.0"
+  },
+  "overrides": {
+    "@noble/hashes": "1.7.1"
   }
 }
