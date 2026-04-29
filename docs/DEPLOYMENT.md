@@ -33,6 +33,7 @@ When `make setup` asks, use these demo-friendly choices:
 Verify:
 
 ```bash
+curl http://localhost:3975/v2/state/ledger-end
 curl http://localhost:2975/v2/state/ledger-end
 ```
 
@@ -135,12 +136,13 @@ Fill:
 ```dotenv
 MOCK_VALIDATOR_SHARE_ADDRESS=0x...
 AMOY_RPC_URL=https://rpc-amoy.polygon.technology
-CANTON_JSON_API_URL=http://host.docker.internal:2975
+CANTON_JSON_API_URL=http://host.docker.internal:3975
 CANTON_APP_PROVIDER_PARTY=CantonStake::1220...
 CANTON_DELEGATOR_PARTY=Alice::1220...
 CANTON_AUTH_TOKEN=
+CANTON_DELEGATOR_AUTH_TOKEN=
 FEATURED_APP_RIGHT_CID=00...
-NEXT_PUBLIC_BACKEND_URL=http://localhost:4000
+NEXT_PUBLIC_BACKEND_URL=http://localhost:4001
 NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=
 ```
 
@@ -153,14 +155,14 @@ docker compose up --build
 Open:
 
 ```text
-http://localhost:3000
+http://localhost:3001
 ```
 
 Smoke checks:
 
 ```bash
-curl http://localhost:4000/api/health
-curl http://localhost:4000/api/health/detail
+curl http://localhost:4001/api/health
+curl http://localhost:4001/api/health/detail
 ```
 
 ## VPS Testing
@@ -177,16 +179,16 @@ Use this if the VPS has enough memory for CN Quickstart plus the app stack. Budg
 4. In root `.env`, keep:
 
 ```dotenv
-CANTON_JSON_API_URL=http://host.docker.internal:2975
+CANTON_JSON_API_URL=http://host.docker.internal:3975
 ```
 
 5. Set the browser-visible backend URL for your VPS:
 
 ```dotenv
-NEXT_PUBLIC_BACKEND_URL=http://YOUR_VPS_IP:4000
+NEXT_PUBLIC_BACKEND_URL=http://YOUR_VPS_IP:4001
 ```
 
-For a quick private test, open ports `3000` and `4000`. For anything shared, put Nginx or Caddy in front and use HTTPS.
+For a quick private test, open ports `3001` and `4001`. For anything shared, put Nginx or Caddy in front and use HTTPS.
 
 ### Option B: VPS Runs Only CantonStake
 
@@ -196,7 +198,8 @@ Set:
 
 ```dotenv
 CANTON_JSON_API_URL=https://YOUR_PARTICIPANT_JSON_API
-CANTON_AUTH_TOKEN=YOUR_BEARER_TOKEN_IF_REQUIRED
+CANTON_AUTH_TOKEN=YOUR_APP_PROVIDER_BEARER_TOKEN_IF_REQUIRED
+CANTON_DELEGATOR_AUTH_TOKEN=YOUR_DELEGATOR_BEARER_TOKEN_IF_REQUIRED
 NEXT_PUBLIC_BACKEND_URL=https://api.your-domain.example
 ```
 
@@ -217,7 +220,7 @@ server {
   server_name cantonstake.example.com;
 
   location / {
-    proxy_pass http://127.0.0.1:3000;
+    proxy_pass http://127.0.0.1:3001;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -228,7 +231,7 @@ server {
   server_name api.cantonstake.example.com;
 
   location / {
-    proxy_pass http://127.0.0.1:4000;
+    proxy_pass http://127.0.0.1:4001;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

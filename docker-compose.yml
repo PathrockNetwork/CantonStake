@@ -11,7 +11,7 @@
 #   4. From the cantonstake root: docker compose up --build
 #
 # The backend connects to LocalNet's App Provider participant on
-# host.docker.internal:2975 (JSON Ledger API).
+# host.docker.internal:3975 (JSON Ledger API).
 
 services:
   # ── Persistence ──────────────────────────────────────────────
@@ -20,7 +20,7 @@ services:
     image: postgres:16-alpine
     container_name: cantonstake-postgres
     ports:
-      - "5432:5432"
+      - "5433:5432"
     environment:
       POSTGRES_USER: cantonstake
       POSTGRES_PASSWORD: cantonstake
@@ -56,15 +56,17 @@ services:
       dockerfile: Dockerfile
     container_name: cantonstake-backend
     ports:
-      - "4000:4000"
+      - "4001:4001"
     environment:
-      - PORT=4000
+      - PORT=4001
       - LOG_LEVEL=info
       - AMOY_RPC_URL=${AMOY_RPC_URL:-https://rpc-amoy.polygon.technology}
       - MOCK_VALIDATOR_SHARE_ADDRESS=${MOCK_VALIDATOR_SHARE_ADDRESS}
-      - CANTON_JSON_API_URL=${CANTON_JSON_API_URL:-http://host.docker.internal:2975}
+      - CANTON_JSON_API_URL=${CANTON_JSON_API_URL:-http://host.docker.internal:3975}
       - CANTON_APP_PROVIDER_PARTY=${CANTON_APP_PROVIDER_PARTY}
       - CANTON_AUTH_TOKEN=${CANTON_AUTH_TOKEN:-}
+      - CANTON_DELEGATOR_PARTY=${CANTON_DELEGATOR_PARTY}
+      - CANTON_DELEGATOR_AUTH_TOKEN=${CANTON_DELEGATOR_AUTH_TOKEN:-}
       - FEATURED_APP_RIGHT_CID=${FEATURED_APP_RIGHT_CID:-}
       - DATABASE_URL=postgresql://cantonstake:cantonstake@postgres:5432/cantonstake
       - REDIS_URL=redis://redis:6379
@@ -82,15 +84,15 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-http://localhost:4000}
+        NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-http://localhost:4001}
         NEXT_PUBLIC_MOCK_VALIDATOR_SHARE: ${MOCK_VALIDATOR_SHARE_ADDRESS}
         NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: ${NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID:-}
         NEXT_PUBLIC_CANTON_DELEGATOR_PARTY: ${CANTON_DELEGATOR_PARTY}
     container_name: cantonstake-frontend
     ports:
-      - "3000:3000"
+      - "3001:3000"
     environment:
-      - NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL:-http://localhost:4000}
+      - NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL:-http://localhost:4001}
       - NEXT_PUBLIC_MOCK_VALIDATOR_SHARE=${MOCK_VALIDATOR_SHARE_ADDRESS}
       - NEXT_PUBLIC_CANTON_DELEGATOR_PARTY=${CANTON_DELEGATOR_PARTY}
       - NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=${NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID:-}
