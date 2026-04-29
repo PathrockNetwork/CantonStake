@@ -19,9 +19,11 @@ export const config = {
   amoyRpcUrl: optional("AMOY_RPC_URL", "https://rpc-amoy.polygon.technology"),
   mockValidatorShare: required("MOCK_VALIDATOR_SHARE_ADDRESS"),
 
-  cantonJsonApiUrl: optional("CANTON_JSON_API_URL", "http://localhost:2975"),
+  cantonJsonApiUrl: optional("CANTON_JSON_API_URL", "http://localhost:3975"),
   cantonAppProviderParty: required("CANTON_APP_PROVIDER_PARTY"),
   cantonAuthToken: optional("CANTON_AUTH_TOKEN"),
+  cantonDelegatorParty: required("CANTON_DELEGATOR_PARTY"),
+  cantonDelegatorAuthToken: optional("CANTON_DELEGATOR_AUTH_TOKEN"),
 
   featuredAppRightCid: optional("FEATURED_APP_RIGHT_CID"),
 
