@@ -5,7 +5,7 @@ import { useAccount, useWriteContract, useWaitForTransactionReceipt } from "wagm
 import { useQuery } from "@tanstack/react-query";
 import { parseEther } from "viem";
 import { mockValidatorShareAbi } from "@/lib/abi";
-import { fetchPositions, type PositionRow } from "@/lib/api";
+import { fetchPositions, sweepNativeRewards, type PositionRow } from "@/lib/api";
 
 const VALIDATOR_ADDRESS = process.env
   .NEXT_PUBLIC_MOCK_VALIDATOR_SHARE as `0x${string}`;
@@ -117,6 +117,7 @@ function PositionRowView({
   onActed: () => void;
 }) {
   const { argument: a } = position;
+  const [sweepPending, setSweepPending] = useState(false);
   const { writeContract, data: hash, isPending } = useWriteContract();
   const { isLoading: confirming, isSuccess: confirmed } =
     useWaitForTransactionReceipt({ hash });
@@ -131,6 +132,17 @@ function PositionRowView({
       functionName: "sellVoucher_new",
       args: [wei, wei],
     });
+  }
+
+  async function onSweep() {
+    setSweepPending(true);
+    try {
+      await sweepNativeRewards(position.contractId);
+    } catch (err) {
+      console.error("[positions] sweep failed", err);
+    } finally {
+      setSweepPending(false);
+    }
   }
 
   const canUnbond = a.status === "Bonded" && !isPending && !confirming;
@@ -159,6 +171,14 @@ function PositionRowView({
       </td>
       <td className="px-4 py-4 text-right">
         {a.status === "Bonded" && (
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={onSweep}
+              disabled={sweepPending}
+              className="font-mono text-xxs uppercase tracking-wider hairline px-3 py-1.5 hover:bg-ink-800 disabled:opacity-50"
+            >
+              {sweepPending ? "..." : "Sweep"}
+            </button>
           <button
             onClick={onUnbond}
             disabled={!canUnbond}
@@ -166,6 +186,7 @@ function PositionRowView({
           >
             {isPending || confirming ? "…" : "Unbond"}
           </button>
+          </div>
         )}
         {a.status === "Unbonding" && (
           <span className="font-mono text-xxs text-ink-400">

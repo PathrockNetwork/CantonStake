@@ -23,6 +23,7 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
+import { upsertUser } from "@/lib/api";
 
 export interface LoopWalletState {
   isConnected: boolean;
@@ -34,6 +35,7 @@ export interface LoopWalletState {
 }
 
 const STORAGE_KEY = "cantonstake_loop_wallet";
+const CHANGE_EVENT = "cantonstake-loop-wallet-change";
 
 function getStoredIdentity(): { partyId: string; displayName: string } | null {
   if (typeof window === "undefined") return null;
@@ -48,11 +50,13 @@ function getStoredIdentity(): { partyId: string; displayName: string } | null {
 function storeIdentity(partyId: string, displayName: string) {
   if (typeof window === "undefined") return;
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ partyId, displayName }));
+  window.dispatchEvent(new Event(CHANGE_EVENT));
 }
 
 function clearStoredIdentity() {
   if (typeof window === "undefined") return;
   localStorage.removeItem(STORAGE_KEY);
+  window.dispatchEvent(new Event(CHANGE_EVENT));
 }
 
 /**
@@ -61,6 +65,9 @@ function clearStoredIdentity() {
  * We generate a random hex suffix to simulate unique parties.
  */
 function generateMockPartyId(displayName: string): string {
+  const configuredParty = process.env.NEXT_PUBLIC_MOCK_LOOP_PARTY_ID;
+  if (configuredParty) return configuredParty;
+
   const hex = Array.from(crypto.getRandomValues(new Uint8Array(16)))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
@@ -69,6 +76,18 @@ function generateMockPartyId(displayName: string): string {
 
 const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4001";
+
+async function registerIdentity(args: {
+  partyId: string;
+  displayName: string;
+  evmAddress?: string;
+}) {
+  await upsertUser({
+    cantonPartyId: args.partyId,
+    displayName: args.displayName,
+    evmAddress: args.evmAddress,
+  });
+}
 
 /**
  * React hook for Loop Wallet connection.
@@ -90,22 +109,38 @@ export function useLoopWallet() {
     error: null,
   });
 
-  // Restore from localStorage on mount
+  // Restore from localStorage on mount and keep hook instances in sync.
   useEffect(() => {
-    const stored = getStoredIdentity();
-    if (stored) {
-      setState({
-        isConnected: true,
-        partyId: stored.partyId,
-        displayName: stored.displayName,
-        ccBalance: 0,
-        isConnecting: false,
-        error: null,
-      });
-    }
+    const syncStoredIdentity = () => {
+      const stored = getStoredIdentity();
+      if (stored) {
+        setState((prev) => ({
+          ...prev,
+          isConnected: true,
+          partyId: stored.partyId,
+          displayName: stored.displayName,
+          ccBalance: prev.ccBalance ?? 0,
+          isConnecting: false,
+          error: null,
+        }));
+      } else {
+        setState({
+          isConnected: false,
+          partyId: null,
+          displayName: null,
+          ccBalance: null,
+          isConnecting: false,
+          error: null,
+        });
+      }
+    };
+
+    syncStoredIdentity();
+    window.addEventListener(CHANGE_EVENT, syncStoredIdentity);
+    return () => window.removeEventListener(CHANGE_EVENT, syncStoredIdentity);
   }, []);
 
-  const connect = useCallback(async (displayName?: string) => {
+  const connect = useCallback(async (displayName?: string, evmAddress?: string) => {
     setState((prev) => ({ ...prev, isConnecting: true, error: null }));
 
     try {
@@ -119,11 +154,7 @@ export function useLoopWallet() {
 
       // Notify backend about the new Loop wallet identity
       try {
-        await fetch(`${BACKEND_URL}/api/users`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cantonPartyId: partyId, displayName: name }),
-        });
+        await registerIdentity({ partyId, displayName: name, evmAddress });
       } catch (e) {
         console.warn("[loop-wallet] failed to register with backend:", e);
       }
@@ -147,6 +178,19 @@ export function useLoopWallet() {
       return null;
     }
   }, []);
+
+  const register = useCallback(async (evmAddress?: string) => {
+    if (!state.partyId || !state.displayName) return;
+    try {
+      await registerIdentity({
+        partyId: state.partyId,
+        displayName: state.displayName,
+        evmAddress,
+      });
+    } catch (e) {
+      console.warn("[loop-wallet] failed to register with backend:", e);
+    }
+  }, [state.displayName, state.partyId]);
 
   const disconnect = useCallback(() => {
     clearStoredIdentity();
@@ -188,6 +232,7 @@ export function useLoopWallet() {
     ...state,
     connect,
     disconnect,
+    register,
     refreshBalance,
   };
 }
