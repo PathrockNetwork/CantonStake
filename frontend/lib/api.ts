@@ -38,18 +38,52 @@ export interface RewardsSummary {
   userShare: number;
   appShare: number;
   rewardEventCount: number;
+  totalNativeRewardsSweptWei: string;
+  totalNativeRewardsSweptPol: number;
+  totalProtocolFeeWei: string;
+  totalProtocolFeePol: number;
+  totalUserPayoutWei: string;
+  totalUserPayoutPol: number;
+  rewardSweepCount: number;
 }
 
 export async function createStakingRequest(body: {
   evmAddress: string;
   amountPol: string;
   delegator: string;
-}): Promise<{ ok: boolean; transactionId: string }> {
+}): Promise<{ ok: boolean; transactionId: string; delegator: string }> {
   const res = await fetch(`${BACKEND_URL}/api/requests`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function upsertUser(body: {
+  cantonPartyId: string;
+  evmAddress?: string;
+  displayName?: string;
+}) {
+  const res = await fetch(`${BACKEND_URL}/api/users`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function sweepNativeRewards(positionId: string) {
+  const res = await fetch(
+    `${BACKEND_URL}/api/sweep/${encodeURIComponent(positionId)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    }
+  );
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }

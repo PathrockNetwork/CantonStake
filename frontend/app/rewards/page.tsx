@@ -49,7 +49,7 @@ export default function RewardsPage() {
       {isConnected && rewards && (
         <>
           {/* Headline numbers */}
-          <section className="grid grid-cols-1 md:grid-cols-3 gap-px bg-ink-700">
+          <section className="grid grid-cols-1 md:grid-cols-4 gap-px bg-ink-700">
             <StatCell
               caption="markers emitted"
               value={rewards.totalMarkersEmitted.toString()}
@@ -66,6 +66,11 @@ export default function RewardsPage() {
               value={(rewards.totalCcEarned ?? rewards.estimatedCcEarned).toFixed(4)}
               subtitle={`${rewards.rewardEventCount ?? 0} reward rounds`}
               accent
+            />
+            <StatCell
+              caption="protocol fees"
+              value={(rewards.totalProtocolFeePol ?? 0).toFixed(6)}
+              subtitle={`${rewards.rewardSweepCount ?? 0} native sweeps`}
             />
           </section>
 
@@ -126,6 +131,47 @@ export default function RewardsPage() {
                 backend process. Each FeaturedAppActivityMarker carries two
                 AppRewardBeneficiary entries whose weights sum to 1.0. Super
                 Validator automation handles the coupon conversion trustlessly.
+              </p>
+            </div>
+          </section>
+
+          {/* Native reward fee model */}
+          <section>
+            <div className="font-mono text-xxs uppercase tracking-widest text-ink-400 mb-6">
+              § 02 · native reward sweep
+            </div>
+            <div className="hairline bg-ink-900/40 p-8">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div>
+                  <div className="font-mono text-xxs uppercase tracking-widest text-ink-400 mb-1">
+                    rewards swept (pol)
+                  </div>
+                  <div className="font-display text-3xl tabular">
+                    {(rewards.totalNativeRewardsSweptPol ?? 0).toFixed(6)}
+                  </div>
+                </div>
+                <div>
+                  <div className="font-mono text-xxs uppercase tracking-widest text-ink-400 mb-1">
+                    user payout (pol)
+                  </div>
+                  <div className="font-display text-3xl tabular text-amber-bright">
+                    {(rewards.totalUserPayoutPol ?? 0).toFixed(6)}
+                  </div>
+                </div>
+                <div>
+                  <div className="font-mono text-xxs uppercase tracking-widest text-ink-400 mb-1">
+                    protocol fee (pol)
+                  </div>
+                  <div className="font-display text-3xl tabular text-ink-300">
+                    {(rewards.totalProtocolFeePol ?? 0).toFixed(6)}
+                  </div>
+                </div>
+              </div>
+              <p className="text-ink-300 text-sm mt-6 max-w-2xl leading-relaxed">
+                Native staking rewards use a 5% protocol-fee model. In this
+                demo the sweep is recorded after reading pendingRewards() from
+                the Amoy mock; production would execute withdrawRewards() and
+                split the payout on-chain.
               </p>
             </div>
           </section>

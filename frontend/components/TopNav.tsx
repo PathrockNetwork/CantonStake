@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAccount, useConnect, useDisconnect, useChainId } from "wagmi";
 import { polygonAmoy } from "wagmi/chains";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLoopWallet } from "@/lib/loop-wallet";
 
 function truncate(addr: string) {
@@ -42,6 +42,8 @@ export function TopNav() {
     ccBalance,
     connect: connectLoop,
     disconnect: disconnectLoop,
+    register: registerLoop,
+    refreshBalance,
     isConnecting: loopConnecting,
   } = useLoopWallet();
 
@@ -60,6 +62,18 @@ export function TopNav() {
     // Otherwise show the picker
     setShowPicker(true);
   };
+
+  useEffect(() => {
+    if (!loopConnected || !partyId || !address) return;
+
+    void registerLoop(address);
+    void refreshBalance(address);
+    const id = window.setInterval(() => {
+      void refreshBalance(address);
+    }, 10_000);
+
+    return () => window.clearInterval(id);
+  }, [address, loopConnected, partyId, refreshBalance, registerLoop]);
 
   return (
     <header className="hairline-b bg-ink-950/80 backdrop-blur sticky top-0 z-50">
@@ -104,7 +118,7 @@ export function TopNav() {
             >
               <span className="text-amber-bright">◎</span>
               <span>{truncateParty(partyId)}</span>
-              {ccBalance !== null && ccBalance > 0 && (
+              {ccBalance !== null && (
                 <span className="text-amber-bright ml-1">
                   {ccBalance.toFixed(2)} CC
                 </span>
@@ -112,7 +126,7 @@ export function TopNav() {
             </button>
           ) : (
             <button
-              onClick={() => connectLoop()}
+              onClick={() => connectLoop(undefined, address)}
               disabled={loopConnecting}
               className="font-mono text-xs uppercase tracking-wider hairline px-3 py-1.5 text-amber-bright hover:text-amber-glow disabled:opacity-50"
             >
