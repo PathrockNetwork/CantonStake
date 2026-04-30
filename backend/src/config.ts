@@ -15,6 +15,7 @@ function optional(key: string, fallback = ""): string {
 export const config = {
   port: Number(optional("PORT", "4000")),
   logLevel: optional("LOG_LEVEL", "info"),
+  demoMode: optional("DEMO_MODE", "false").toLowerCase() === "true",
 
   amoyRpcUrl: optional("AMOY_RPC_URL", "https://rpc-amoy.polygon.technology"),
   mockValidatorShare: required("MOCK_VALIDATOR_SHARE_ADDRESS"),

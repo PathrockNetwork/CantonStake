@@ -108,6 +108,30 @@ async function processRound(job: Job<RoundPayload>) {
       console.warn("[reward-rounds] canton query failed, using DB counts:", err);
     }
 
+    const totalTxns = bondedPositions.length;
+    const totalMarkers = totalTxns;
+    const markerToTxRatio = totalTxns > 0 ? totalMarkers / totalTxns : null;
+
+    if (!config.featuredAppRightCid) {
+      await prisma.rewardRound.update({
+        where: { id: round.id },
+        data: {
+          status: "skipped",
+          completedAt: new Date(),
+          totalCcMinted: "0",
+          totalTxns,
+          totalMarkers,
+          markerToTxRatio,
+          error: "FEATURED_APP_RIGHT_CID not configured",
+        },
+      });
+
+      console.warn(
+        `[reward-rounds] round #${roundNumber} skipped: FEATURED_APP_RIGHT_CID not configured`
+      );
+      return;
+    }
+
     // 3. Calculate CC distribution
     //
     // Featured App CC pool share formula (from business plan):
@@ -121,7 +145,6 @@ async function processRound(job: Job<RoundPayload>) {
     const ccPerPosition = mockCcPerRound / totalActiveStakers;
 
     let totalCcMinted = 0;
-    let totalTxns = bondedPositions.length;
 
     // 4. Distribute to each bonded position
     for (const position of bondedPositions) {
@@ -153,20 +176,16 @@ async function processRound(job: Job<RoundPayload>) {
         },
       });
 
-      // In production: exercise a Daml choice to actually mint and distribute CC
-      // via beneficiary splits. This requires Featured App status.
-      if (config.featuredAppRightCid) {
-        try {
-          // The real CC distribution would happen here via Canton
-          console.log(
-            `  [round #${roundNumber}] CC for ${position.user.cantonPartyId}: ${userShare.toFixed(8)} (user) + ${treasuryShare.toFixed(8)} (treasury)`
-          );
-        } catch (err) {
-          console.error(
-            `  [round #${roundNumber}] CC distribution failed for ${position.id}:`,
-            err
-          );
-        }
+      try {
+        // The real CC distribution would happen here via Canton.
+        console.log(
+          `  [round #${roundNumber}] CC for ${position.user.cantonPartyId}: ${userShare.toFixed(8)} (user) + ${treasuryShare.toFixed(8)} (treasury)`
+        );
+      } catch (err) {
+        console.error(
+          `  [round #${roundNumber}] CC distribution failed for ${position.id}:`,
+          err
+        );
       }
     }
 
@@ -178,6 +197,8 @@ async function processRound(job: Job<RoundPayload>) {
         completedAt: new Date(),
         totalCcMinted: totalCcMinted.toFixed(8),
         totalTxns,
+        totalMarkers,
+        markerToTxRatio,
       },
     });
 

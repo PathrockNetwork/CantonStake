@@ -13,11 +13,83 @@
  */
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import { createPublicClient, formatEther, http, type Address } from "viem";
+import { polygonAmoy } from "viem/chains";
 import { config } from "./config.js";
 import { canton, cantonDelegator, TEMPLATES } from "./canton.js";
 import { startWatchers, startReleaseChecker } from "./orchestrator.js";
 import { prisma } from "./db.js";
 import { startRewardScheduler, shutdownRewardSystem, redisConnection, enqueueRound } from "./reward-rounds.js";
+
+const publicClient = createPublicClient({
+  chain: polygonAmoy,
+  transport: http(config.amoyRpcUrl),
+});
+
+const validatorShareAbi = [
+  {
+    type: "function",
+    name: "pendingRewards",
+    stateMutability: "view",
+    inputs: [{ name: "user", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+] as const;
+
+function normalizeEvmAddress(address: string): string {
+  return address.toLowerCase();
+}
+
+function sumWei(values: string[]): bigint {
+  return values.reduce((sum, value) => sum + BigInt(value || "0"), 0n);
+}
+
+function weiToPol(value: bigint): number {
+  return Number(formatEther(value));
+}
+
+async function upsertUserIdentity(args: {
+  cantonPartyId: string;
+  evmAddress?: string;
+  displayName?: string;
+}) {
+  const evmAddress = args.evmAddress
+    ? normalizeEvmAddress(args.evmAddress)
+    : undefined;
+
+  const existingByParty = await prisma.user.findUnique({
+    where: { cantonPartyId: args.cantonPartyId },
+  });
+  if (existingByParty) {
+    return prisma.user.update({
+      where: { id: existingByParty.id },
+      data: { evmAddress, displayName: args.displayName },
+    });
+  }
+
+  if (evmAddress) {
+    const existingByAddress = await prisma.user.findUnique({
+      where: { evmAddress },
+    });
+    if (existingByAddress) {
+      return prisma.user.update({
+        where: { id: existingByAddress.id },
+        data: {
+          cantonPartyId: args.cantonPartyId,
+          displayName: args.displayName,
+        },
+      });
+    }
+  }
+
+  return prisma.user.create({
+    data: {
+      cantonPartyId: args.cantonPartyId,
+      evmAddress,
+      displayName: args.displayName,
+    },
+  });
+}
 
 const app = Fastify({
   logger: {
@@ -38,6 +110,7 @@ app.get("/api/health", async () => ({
   cantonJsonApi: config.cantonJsonApiUrl,
   validatorShare: config.mockValidatorShare,
   featuredAppRight: config.featuredAppRightCid ? "configured" : "missing",
+  demoMode: config.demoMode,
   time: new Date().toISOString(),
 }));
 
@@ -58,14 +131,40 @@ app.get("/api/health/detail", async () => {
     redisStatus = "disconnected";
   }
 
+  const latestRound = await prisma.rewardRound.findFirst({
+    orderBy: { roundNumber: "desc" },
+  });
+  const warnings = [
+    !config.featuredAppRightCid
+      ? "FEATURED_APP_RIGHT_CID missing: reward rounds will be skipped"
+      : null,
+    config.featuredAppRightCid === "demo-stub"
+      ? "FEATURED_APP_RIGHT_CID=demo-stub: scheduler runs, Daml marker exercise is disabled"
+      : null,
+    !config.demoMode && config.logLevel !== "debug"
+      ? "Manual reward trigger disabled outside DEMO_MODE/debug"
+      : null,
+  ].filter((warning): warning is string => Boolean(warning));
+
   return {
     status: "ok",
     cantonJsonApi: config.cantonJsonApiUrl,
     cantonDelegatorParty: config.cantonDelegatorParty,
     validatorShare: config.mockValidatorShare,
     featuredAppRight: config.featuredAppRightCid ? "configured" : "missing",
+    demoMode: config.demoMode,
     database: dbStatus,
     redis: redisStatus,
+    latestRound: latestRound
+      ? {
+          roundNumber: latestRound.roundNumber,
+          status: latestRound.status,
+          totalTxns: latestRound.totalTxns,
+          totalMarkers: latestRound.totalMarkers,
+          markerToTxRatio: latestRound.markerToTxRatio,
+        }
+      : null,
+    warnings,
     time: new Date().toISOString(),
   };
 });
@@ -84,38 +183,13 @@ app.post<{ Body: UpsertUserBody }>("/api/users", async (req, reply) => {
     return reply.code(400).send({ error: "missing cantonPartyId" });
   }
   try {
-    // Try upsert by cantonPartyId first
-    const user = await prisma.user.upsert({
-      where: { cantonPartyId },
-      update: {
-        evmAddress: evmAddress?.toLowerCase(),
-        displayName,
-      },
-      create: {
-        cantonPartyId,
-        evmAddress: evmAddress?.toLowerCase(),
-        displayName,
-      },
+    const user = await upsertUserIdentity({
+      cantonPartyId,
+      evmAddress,
+      displayName,
     });
     return { user };
   } catch (err) {
-    // If unique constraint on evmAddress fails, try updating existing user
-    if (evmAddress && err instanceof Error && err.message.includes("Unique")) {
-      try {
-        const existing = await prisma.user.findUnique({
-          where: { evmAddress: evmAddress.toLowerCase() },
-        });
-        if (existing) {
-          const updated = await prisma.user.update({
-            where: { id: existing.id },
-            data: { cantonPartyId, displayName },
-          });
-          return { user: updated };
-        }
-      } catch {
-        // fall through
-      }
-    }
     req.log.error(err);
     return reply.code(500).send({ error: String(err) });
   }
@@ -126,11 +200,12 @@ app.post<{ Body: UpsertUserBody }>("/api/users", async (req, reply) => {
 interface CreateRequestBody {
   evmAddress: string;
   amountPol: string; // decimal string, e.g. "1.5"
-  delegator?: string; // ignored; backend uses configured delegator party
+  delegator?: string; // Loop/Canton party id
 }
 
 app.post<{ Body: CreateRequestBody }>("/api/requests", async (req, reply) => {
   const { evmAddress, amountPol } = req.body;
+  const delegator = req.body.delegator || config.cantonDelegatorParty;
 
   if (!evmAddress || !amountPol) {
     return reply.code(400).send({ error: "missing required fields" });
@@ -140,17 +215,20 @@ app.post<{ Body: CreateRequestBody }>("/api/requests", async (req, reply) => {
   }
 
   try {
+    await upsertUserIdentity({ cantonPartyId: delegator, evmAddress });
+
     const result = await cantonDelegator.createContract({
       templateId: TEMPLATES.StakingRequest,
       argument: {
-        delegator: config.cantonDelegatorParty,
+        delegator,
         appProvider: config.cantonAppProviderParty,
         evmAddress,
         amountPol,
         requestedAt: new Date().toISOString(),
       },
+      actAs: [delegator],
     });
-    return { ok: true, transactionId: result.transactionId };
+    return { ok: true, transactionId: result.transactionId, delegator };
   } catch (err) {
     req.log.error(err);
     return reply.code(500).send({ error: String(err) });
@@ -226,6 +304,13 @@ app.get<{ Params: { address: string } }>(
           userShare: 0.75,
           appShare: 0.25,
           rewardEventCount: 0,
+          totalNativeRewardsSweptWei: "0",
+          totalNativeRewardsSweptPol: 0,
+          totalProtocolFeeWei: "0",
+          totalProtocolFeePol: 0,
+          totalUserPayoutWei: "0",
+          totalUserPayoutPol: 0,
+          rewardSweepCount: 0,
         };
       }
 
@@ -233,6 +318,9 @@ app.get<{ Params: { address: string } }>(
         where: { userId: user.id },
       });
       const events = await prisma.rewardEvent.findMany({
+        where: { userId: user.id },
+      });
+      const sweeps = await prisma.rewardSweep.findMany({
         where: { userId: user.id },
       });
 
@@ -243,6 +331,15 @@ app.get<{ Params: { address: string } }>(
         .filter((p) => p.status === "Bonded")
         .reduce((s, p) => s + Number(p.amountPol), 0);
       const totalMarkers = positions.reduce((s, p) => s + p.markersEmitted, 0);
+      const totalNativeRewardsSweptWei = sumWei(
+        sweeps.map((sweep) => sweep.nativeRewardWei)
+      );
+      const totalProtocolFeeWei = sumWei(
+        sweeps.map((sweep) => sweep.protocolFeeWei)
+      );
+      const totalUserPayoutWei = sumWei(
+        sweeps.map((sweep) => sweep.userPayoutWei)
+      );
 
       return {
         address,
@@ -256,6 +353,74 @@ app.get<{ Params: { address: string } }>(
         userShare: 0.75,
         appShare: 0.25,
         rewardEventCount: events.length,
+        totalNativeRewardsSweptWei: totalNativeRewardsSweptWei.toString(),
+        totalNativeRewardsSweptPol: weiToPol(totalNativeRewardsSweptWei),
+        totalProtocolFeeWei: totalProtocolFeeWei.toString(),
+        totalProtocolFeePol: weiToPol(totalProtocolFeeWei),
+        totalUserPayoutWei: totalUserPayoutWei.toString(),
+        totalUserPayoutPol: weiToPol(totalUserPayoutWei),
+        rewardSweepCount: sweeps.length,
+      };
+    } catch (err) {
+      req.log.error(err);
+      return reply.code(500).send({ error: String(err) });
+    }
+  }
+);
+
+// --- Native reward sweep stub (5% protocol fee) ---
+
+app.post<{ Params: { positionId: string }; Body: { evmTxHash?: string } }>(
+  "/api/sweep/:positionId",
+  async (req, reply) => {
+    const { positionId } = req.params;
+    try {
+      const position = await prisma.stakingPosition.findFirst({
+        where: {
+          OR: [{ id: positionId }, { contractId: positionId }],
+        },
+        include: { user: true },
+      });
+
+      if (!position) {
+        return reply.code(404).send({ error: "position not found" });
+      }
+
+      const rewardsWei = (await publicClient.readContract({
+        address: config.mockValidatorShare as Address,
+        abi: validatorShareAbi,
+        functionName: "pendingRewards",
+        args: [position.evmAddress as Address],
+      })) as bigint;
+      const protocolFeeWei =
+        (rewardsWei * BigInt(position.protocolFeeBps)) / 10_000n;
+      const userPayoutWei = rewardsWei - protocolFeeWei;
+
+      const sweep = await prisma.rewardSweep.create({
+        data: {
+          userId: position.userId,
+          positionId: position.id,
+          nativeRewardWei: rewardsWei.toString(),
+          protocolFeeWei: protocolFeeWei.toString(),
+          userPayoutWei: userPayoutWei.toString(),
+          protocolFeeBps: position.protocolFeeBps,
+          evmTxHash: req.body?.evmTxHash,
+        },
+      });
+
+      await prisma.stakingPosition.update({
+        where: { id: position.id },
+        data: { swept: true, lastSweepAt: sweep.sweptAt },
+      });
+
+      return {
+        ok: true,
+        sweep: {
+          ...sweep,
+          nativeRewardPol: weiToPol(rewardsWei),
+          protocolFeePol: weiToPol(protocolFeeWei),
+          userPayoutPol: weiToPol(userPayoutWei),
+        },
       };
     } catch (err) {
       req.log.error(err);
@@ -267,6 +432,12 @@ app.get<{ Params: { address: string } }>(
 // --- Manual round trigger (demo aid) ---
 
 app.post("/api/admin/rounds/trigger", async (req, reply) => {
+  if (!config.demoMode && config.logLevel !== "debug") {
+    return reply.code(403).send({
+      error: "manual round trigger disabled; set DEMO_MODE=true or LOG_LEVEL=debug",
+    });
+  }
+
   try {
     // Compute next round number from DB
     const latestRound = await prisma.rewardRound.findFirst({
