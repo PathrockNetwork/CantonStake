@@ -133,7 +133,7 @@ Balance: 0.15 POL
    Funded: 0xTransactionHash
 
 3. Done. Verify with:
-   npx hardhat verify --network amoy 0xABCDEF1234...
+   npm run verify:amoy:deployed
 ```
 
 **Copy the `MockValidatorShare deployed at:` address.** You'll need it in three places:
@@ -145,7 +145,14 @@ Balance: 0.15 POL
 ### 3d. (Optional) Verify on Polygonscan
 
 ```bash
-npx hardhat verify --network amoy 0xABCDEF1234...
+npm run verify:amoy:deployed
+# or: npm run verify:amoy -- 0xABCDEF1234...
+```
+
+If the contract needs more mock reward liquidity later:
+
+```bash
+FUND_AMOUNT_POL=0.05 npm run fund:amoy
 ```
 
 ### 3e. Sanity-check on Amoy Polygonscan
@@ -322,6 +329,7 @@ CANTON_APP_PROVIDER_PARTY=CantonStake::1220a0db...   # From step 4e
 CANTON_AUTH_TOKEN=                                    # Empty — OAuth disabled
 
 FEATURED_APP_RIGHT_CID=00abc123...                   # From step 5c
+DEMO_MODE=true                                       # Enables manual reward round trigger
 ```
 
 Test it:
@@ -363,7 +371,7 @@ Edit `.env.local`:
 NEXT_PUBLIC_BACKEND_URL=http://localhost:4000
 NEXT_PUBLIC_MOCK_VALIDATOR_SHARE=0xABCDEF1234...     # From step 3c
 NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=                # Optional
-NEXT_PUBLIC_CANTON_DELEGATOR_PARTY=Alice::1220...    # From step 4e
+NEXT_PUBLIC_MOCK_LOOP_PARTY_ID=Alice::1220...        # Hosted delegator party for mock Loop
 ```
 
 Install and run:

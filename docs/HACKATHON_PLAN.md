@@ -1,8 +1,38 @@
 # CantonStake — Hackathon Execution Plan
 
-**Status:** active · Last updated: 2026-04-24
+**Status:** active · Last updated: 2026-04-30
 **Audience:** any agent or contributor picking up the project
 **Scope:** what's done, what's broken, what's left to ship a credible MVP demo
+
+---
+
+## 2026-04-30 Implementation Update
+
+The repo is now ahead of the original blocker list below.
+
+### Completed since this plan was written
+- Orchestrator mirrors Bond / Unbond / Release transitions into Postgres.
+- Loop mock identity is wired through the stake flow and `POST /api/users`; `POST /api/requests` now honors the request `delegator`.
+- Rewards summary reads actual `RewardEvent` rows from Postgres.
+- Reward scheduler uses BullMQ repeatable jobs.
+- Redis health check calls `PING`.
+- Manual round trigger exists and is gated by `DEMO_MODE=true` or `LOG_LEVEL=debug`.
+- TopNav shows Loop CC balance and refreshes it from `/api/rewards/:address`.
+- 5% protocol-fee sweep stub exists via `POST /api/sweep/:positionId`.
+- Reward rounds skip instead of minting when `FEATURED_APP_RIGHT_CID` is missing. `demo-stub` unlocks only the mock scheduler path and is not passed into Daml.
+- Reward round health exposes marker/transaction ratio.
+- `docs/DEMO_CHECKLIST.md` now exists.
+- `scripts/demo-preflight.ps1` checks demo machine readiness.
+- `evm/scripts/verify.ts` verifies the latest Amoy deployment from `evm/deployments/amoy.json`.
+- `docs/DEMO_RECORDING_SCRIPT.md` defines the fallback video flow.
+
+### Still pending before demo
+- Run a real LocalNet smoke test with hosted Canton parties and a valid or stubbed `FEATURED_APP_RIGHT_CID`.
+- Install/verify the Daml CLI in the demo shell and run `daml build`.
+- Install/verify Docker in the demo shell; this shell currently cannot see `docker`.
+- Verify the Amoy contract on Polygonscan.
+- Pre-record a fallback demo video.
+- For a fully executable Loop mock demo, set `NEXT_PUBLIC_MOCK_LOOP_PARTY_ID` to a party that is actually hosted and authorized on the participant; otherwise the random mock party is only a UI boundary stand-in.
 
 ---
 
@@ -288,7 +318,7 @@ if (!config.featuredAppRightCid) {
 }
 ```
 
-For the demo, set `FEATURED_APP_RIGHT_CID` to any non-empty string — that's enough to unblock the path. In production it would be the actual contract ID from the sync.global Featured App approval.
+For a local scheduler-only demo, set `FEATURED_APP_RIGHT_CID=demo-stub`; the backend treats that as configured for reward rounds but does not pass it into Daml. For a real marker demo, use the actual contract ID from the sync.global Featured App approval.
 
 **Effort:** 20 min.
 

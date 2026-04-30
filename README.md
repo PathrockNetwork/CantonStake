@@ -83,10 +83,15 @@ daml build
 # 5. Fill in root .env with all the values
 cp .env.example .env
 
-# 6. Launch the app
+# 6. Check machine/env readiness
+powershell -ExecutionPolicy Bypass -File scripts/demo-preflight.ps1
+
+# 7. Launch the app
 docker compose up --build
 # Open http://localhost:3000
 ```
+
+Before judging, run **[docs/DEMO_CHECKLIST.md](./docs/DEMO_CHECKLIST.md)** and record the fallback walkthrough in **[docs/DEMO_RECORDING_SCRIPT.md](./docs/DEMO_RECORDING_SCRIPT.md)**.
 
 ## Demo script (3 minutes)
 
@@ -104,7 +109,7 @@ docker compose up --build
 | Ledger hardware + WalletConnect v2 | MetaMask only | Ledger integration is polish, not proof. One MetaMask popup demos just as well |
 | Polygon + Monad + Moonbeam | Polygon Amoy only | Scope; Moonbeam adds @polkadot/api surface |
 | Real Polygon staking contracts | MockValidatorShare on Amoy with matching interface | Polygon's real StakeManager is on Ethereum L1, not on Amoy. Our mock accepts real POL and emits real events — honest about what's mocked |
-| BullMQ + Redis + PagerDuty for rounds | Single Node.js interval | Production concern, not demo concern |
+| Production-grade ops and PagerDuty | BullMQ + Redis repeatable jobs | Reliable enough for the demo; production alerting is later |
 | Featured App mainnet approval | DevNet self-featuring | Mainnet approval takes weeks of 2/3 SV governance. DevNet lets you demo the full flow today |
 | Smart contract audit | Test script + `daml test` | Required before mainnet; not required to win a hackathon |
 
@@ -117,6 +122,7 @@ docker compose up --build
 - **`.dar` upload to LocalNet is fiddly.** The CN Quickstart ships with its own licensing template. Uploading a new custom package requires the Canton Console or a direct participant API call. Budget half a day for this.
 - **`splice-api-featured-app-v1.dar` must be present for the marker integration to compile.** Fetch from the Splice release bundle during setup. Without it, the Daml code compiles but no markers are ever created.
 - **Template IDs in `backend/canton.ts` are placeholders.** After `daml build`, run `daml damlc inspect-dar .daml/dist/cantonstake-0.0.1.dar | head -20` to get the real package id and paste into `TEMPLATES`.
-- **The rewards estimate is illustrative.** Actual CC earned depends on network-wide transaction share in each 10-minute round. The dashboard makes this explicit.
+- **Reward rounds require Featured App configuration.** Set `FEATURED_APP_RIGHT_CID=demo-stub` for local scheduler demos, or use the actual `FeaturedAppRight` contract id when exercising real marker conversion. The stub is never sent into Daml as a fake contract id.
+- **The native protocol fee is stubbed.** `/api/sweep/:positionId` reads `pendingRewards()` from the Amoy mock and records the 5% fee split in Postgres. Production would execute `withdrawRewards()` and split funds on-chain.
 
 See **[TUTORIAL.md](./TUTORIAL.md)** for the complete deploy guide.
