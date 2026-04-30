@@ -48,6 +48,13 @@ const EVENT_POLL_MS = 5_000;
 const INITIAL_LOOKBACK_BLOCKS = 200n;
 const UNBONDING_PERIOD_SECONDS = 60;
 
+function featuredRightCidForDaml(): string | null {
+  if (!config.featuredAppRightCid || config.featuredAppRightCid === "demo-stub") {
+    return null;
+  }
+  return config.featuredAppRightCid;
+}
+
 // --- Matching logic ---
 
 function normalizeDecimal(value: string | number | undefined): string | undefined {
@@ -233,7 +240,7 @@ async function handleShareMinted(log: Log) {
           blockNumber: Number(blockNumber),
           validatorShare: config.mockValidatorShare,
         },
-        featuredRightCid: config.featuredAppRightCid || null,
+        featuredRightCid: featuredRightCidForDaml(),
       },
     });
     console.log(`  -> accepted. tx=${result.transactionId}`);
@@ -291,7 +298,7 @@ async function handleShareBurned(log: Log) {
           validatorShare: config.mockValidatorShare,
         },
         unbondingReadyEpoch,
-        featuredRightCid: config.featuredAppRightCid || null,
+        featuredRightCid: featuredRightCidForDaml(),
       },
     });
     console.log(`  -> unbonding confirmed. tx=${result.transactionId}`);

@@ -5,8 +5,10 @@
 //
 // Relations:
 //   User 1:N StakingPosition
-//   User 1:N RewardRound
+//   User 1:N RewardEvent
+//   User 1:N RewardSweep
 //   StakingPosition 1:N RewardEvent
+//   StakingPosition 1:N RewardSweep
 
 generator client {
   provider      = "prisma-client-js"
@@ -28,6 +30,7 @@ model User {
 
   positions     StakingPosition[]
   rewardEvents  RewardEvent[]
+  rewardSweeps  RewardSweep[]
 
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -60,6 +63,11 @@ model StakingPosition {
   markersEmitted Int      @default(0)
   totalCcEarned  String   @default("0") // decimal string
 
+  // Native reward sweep / protocol fee tracking
+  protocolFeeBps Int      @default(500)
+  swept          Boolean  @default(false)
+  lastSweepAt    DateTime?
+
   // Unbonding schedule
   unbondingStartedAt DateTime?
   unbondingReadyAt   DateTime?
@@ -70,6 +78,7 @@ model StakingPosition {
   updatedAt      DateTime @updatedAt
 
   rewardEvents   RewardEvent[]
+  rewardSweeps   RewardSweep[]
 }
 
 /// Tracks each 10-minute CC reward round.
@@ -82,12 +91,14 @@ model RewardRound {
   // Total CC minted and distributed this round
   totalCcMinted  String   @default("0")
   totalTxns      Int      @default(0)
+  totalMarkers   Int      @default(0)
+  markerToTxRatio Float?
 
   // Network share data for this round
   networkTotalTxns Int?
 
   // Round status
-  status         String   @default("pending") // pending | processing | completed | failed
+  status         String   @default("pending") // pending | processing | completed | skipped | failed
   error          String?
 
   events         RewardEvent[]
@@ -118,4 +129,22 @@ model RewardEvent {
   cantonTxId      String?
 
   createdAt       DateTime @default(now())
+}
+
+/// Mock native staking reward sweep with protocol-fee accounting.
+/// In production this maps to withdrawRewards() and an on-chain split.
+model RewardSweep {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id])
+
+  positionId      String
+  position        StakingPosition @relation(fields: [positionId], references: [id])
+
+  nativeRewardWei String
+  protocolFeeWei  String
+  userPayoutWei   String
+  protocolFeeBps  Int      @default(500)
+  evmTxHash       String?
+  sweptAt         DateTime @default(now())
 }
