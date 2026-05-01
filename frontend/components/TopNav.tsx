@@ -159,7 +159,7 @@ export function TopNav() {
                   type="button"
                   onClick={handleConnect}
                   disabled={isPending}
-                  className="bg-amber px-4 py-1.5 font-mono text-xs font-semibold uppercase tracking-wider text-ink-950 transition-colors hover:bg-amber-bright disabled:opacity-50"
+                  className="bg-neon px-4 py-1.5 font-mono text-xs font-semibold uppercase tracking-wider text-neon-text transition-colors hover:bg-neon/90 disabled:opacity-50"
                 >
                   {isPending ? "Connecting..." : "Connect"}
                 </button>

@@ -37,8 +37,8 @@ export function RoundsTimeline({ events, userCcEta = 0 }: RoundsTimelineProps) {
           <div className="text-right">Status</div>
         </div>
 
-        <div className={`${grid} border-b border-ink-700 bg-amber/10 px-5 py-4`}>
-          <div className="font-mono text-xs font-semibold tracking-wider text-amber-bright">
+        <div className={`${grid} border-b border-ink-700 bg-neon/10 px-5 py-4`}>
+          <div className="font-mono text-xs font-semibold tracking-wider text-neon">
             NEXT &middot; {formatted}
           </div>
           <div className="font-mono text-xs text-ink-300">
@@ -46,7 +46,7 @@ export function RoundsTimeline({ events, userCcEta = 0 }: RoundsTimelineProps) {
           </div>
           <div className="text-right font-mono text-xs text-ink-400">&mdash;</div>
           <div className="text-right font-mono text-xs text-ink-400">&mdash;</div>
-          <div className="text-right font-mono text-xs font-semibold text-amber-bright">
+          <div className="text-right font-mono text-xs font-semibold text-cc">
             {eta}
           </div>
         </div>
@@ -69,11 +69,11 @@ export function RoundsTimeline({ events, userCcEta = 0 }: RoundsTimelineProps) {
                 </span>
               </div>
               <div className="text-right text-ink-300">{formatCc(event.ccTreasury)}</div>
-              <div className="text-right font-semibold text-amber-bright">
+              <div className="text-right font-semibold text-cc">
                 +{formatCc(event.ccUser)} CC
               </div>
               <div className="text-right">
-                <span className="chip chip-dot border-transparent text-amber-bright">
+                <span className="chip chip-dot border-transparent text-neon">
                   DELIVERED
                 </span>
               </div>

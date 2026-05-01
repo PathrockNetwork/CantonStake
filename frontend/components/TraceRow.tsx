@@ -11,7 +11,7 @@ type TraceRowProps = {
 export function TraceRow({ index, label, status, detail, accent = false }: TraceRowProps) {
   const dot = {
     pending: "text-ink-500",
-    running: "text-amber-bright animate-pulse",
+    running: "text-neon animate-pulse",
     done: "text-success",
     error: "text-danger",
   }[status];
@@ -22,7 +22,7 @@ export function TraceRow({ index, label, status, detail, accent = false }: Trace
       <div className="flex-1">
         <div className="flex items-center gap-2">
           <span className={`chip chip-dot ${dot} border-transparent px-0`} />
-          <span className={`text-sm ${accent ? "font-medium text-amber-bright" : "text-ink-100"}`}>
+          <span className={`text-sm ${accent ? "font-medium text-neon" : "text-ink-100"}`}>
             {label}
           </span>
         </div>

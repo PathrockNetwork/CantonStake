@@ -26,7 +26,7 @@ export function MarketingHero() {
           <div className="flex items-center gap-4 mt-10">
             <Link
               href="/stake"
-              className="font-mono text-xs uppercase tracking-wider bg-amber hover:bg-amber-bright transition-colors text-ink-950 px-6 py-3 font-semibold"
+              className="font-mono text-xs uppercase tracking-wider bg-neon hover:bg-neon/90 transition-colors text-neon-text px-6 py-3 font-semibold"
             >
               Open staking console →
             </Link>
@@ -114,7 +114,7 @@ export function MarketingHero() {
                 </div>
                 {step.marker && (
                   <div className="pt-3">
-                    <span className="chip chip-dot text-amber-bright">
+                    <span className="chip chip-dot text-neon">
                       marker emitted
                     </span>
                   </div>

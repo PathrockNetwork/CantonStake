@@ -30,7 +30,7 @@ export function CCRoundTicker({ compact = false }: CCRoundTickerProps) {
             fill="none"
           />
           <circle
-            className="text-amber-bright"
+            className="text-neon"
             cx={radius + stroke}
             cy={radius + stroke}
             r={radius}
@@ -53,7 +53,7 @@ export function CCRoundTicker({ compact = false }: CCRoundTickerProps) {
           NEXT CC ROUND IN
         </div>
         <div
-          className={`font-mono tabular font-semibold text-amber-bright ${
+          className={`font-mono tabular font-semibold text-neon ${
             compact ? "text-base" : "text-xl"
           }`}
         >

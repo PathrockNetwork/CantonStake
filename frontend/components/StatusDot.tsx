@@ -2,10 +2,10 @@ type DotStatus = "pending" | "running" | "done" | "error" | "active";
 type StatusDotProps = { status: DotStatus; size?: number };
 const colors: Record<DotStatus, string> = {
   pending: "bg-ink-500",
-  running: "bg-amber-bright",
+  running: "bg-neon",
   done: "bg-success",
   error: "bg-danger",
-  active: "bg-success",
+  active: "bg-neon",
 };
 
 export function StatusDot({ status, size = 6 }: StatusDotProps) {
