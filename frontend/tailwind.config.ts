@@ -26,6 +26,17 @@ export default {
           bright: "#f59e0b",
           glow: "#fbbf24",
         },
+        neon: {
+          DEFAULT: "#00ff9d",
+          dim: "rgba(0,255,157,0.12)",
+          glow: "rgba(0,255,157,0.40)",
+          text: "#001a10",
+        },
+        cc: {
+          DEFAULT: "#F5A623",
+          dim: "rgba(245,166,35,0.12)",
+          glow: "#fbbf24",
+        },
         success: "#10b981",
         warning: "#f59e0b",
         danger: "#ef4444",
