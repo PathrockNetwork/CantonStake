@@ -4,6 +4,9 @@ import { useAccount } from "wagmi";
 import { useQuery } from "@tanstack/react-query";
 import { fetchRewards, fetchPositions } from "@/lib/api";
 import { CCRoundTicker } from "@/components/CCRoundTicker";
+import { Card } from "@/components/Card";
+import { RoundsTimeline } from "@/components/RoundsTimeline";
+import type { RewardEventRow } from "@/lib/api/contracts";
 
 export default function RewardsPage() {
   const { address, isConnected } = useAccount();
@@ -26,6 +29,21 @@ export default function RewardsPage() {
     positions?.filter((p) => p.argument.markersEmitted >= 1).length ?? 0;
   const unbondMarkers =
     positions?.filter((p) => p.argument.markersEmitted >= 2).length ?? 0;
+  const rewardEventCount = rewards?.rewardEventCount ?? 0;
+  const userCcEta =
+    (rewards?.totalUserShare ?? 0) / Math.max(1, rewards?.rewardEventCount ?? 1);
+  const timelineEvents: RewardEventRow[] =
+    rewards && rewardEventCount > 0
+      ? [
+          {
+            round: rewardEventCount,
+            ts: new Date().toISOString(),
+            ccUser: (rewards.totalUserShare ?? 0) / rewardEventCount,
+            ccTreasury: (rewards.totalTreasuryShare ?? 0) / rewardEventCount,
+            txns: Math.max(1, rewards.totalMarkersEmitted),
+          },
+        ]
+      : [];
 
   return (
     <div className="space-y-12 py-8">
@@ -219,6 +237,15 @@ export default function RewardsPage() {
                 excluded
               />
             </div>
+          </section>
+
+          <section>
+            <div className="font-mono text-xxs uppercase tracking-widest text-ink-400 mb-6">
+              § 03 · 10-minute round timeline
+            </div>
+            <Card padding={0}>
+              <RoundsTimeline events={timelineEvents} userCcEta={userCcEta} />
+            </Card>
           </section>
 
           {/* CIP context */}
