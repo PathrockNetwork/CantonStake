@@ -3,6 +3,7 @@
 import { useAccount } from "wagmi";
 import { useQuery } from "@tanstack/react-query";
 import { fetchRewards, fetchPositions } from "@/lib/api";
+import { CCRoundTicker } from "@/components/CCRoundTicker";
 
 export default function RewardsPage() {
   const { address, isConnected } = useAccount();
@@ -28,16 +29,19 @@ export default function RewardsPage() {
 
   return (
     <div className="space-y-12 py-8">
-      <header>
-        <p className="font-mono text-xxs uppercase tracking-widest text-amber-bright mb-4">
-          § 03 · rewards
-        </p>
-        <h1 className="font-display text-5xl mb-3">Activity attribution</h1>
-        <p className="text-ink-300 max-w-2xl">
-          Every FeaturedAppActivityMarker your positions emit is converted
-          into an AppRewardCoupon in the next 10-minute round. Your share of
-          the featured pool is proportional to the network-wide marker count.
-        </p>
+      <header className="flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
+        <div>
+          <p className="font-mono text-xxs uppercase tracking-widest text-amber-bright mb-4">
+            § 03 · rewards
+          </p>
+          <h1 className="font-display text-5xl mb-3">Activity attribution</h1>
+          <p className="text-ink-300 max-w-2xl">
+            Every FeaturedAppActivityMarker your positions emit is converted
+            into an AppRewardCoupon in the next 10-minute round. Your share of
+            the featured pool is proportional to the network-wide marker count.
+          </p>
+        </div>
+        <CCRoundTicker />
       </header>
 
       {!isConnected && (
@@ -48,6 +52,8 @@ export default function RewardsPage() {
 
       {isConnected && rewards && (
         <>
+          {/* slot: A1 Narrator */}
+
           {/* Headline numbers */}
           <section className="grid grid-cols-1 md:grid-cols-4 gap-px bg-ink-700">
             <StatCell
