@@ -112,3 +112,30 @@ export const CHAINS: ChainConfig[] = [
 export const liveChains = () => CHAINS.filter((chain) => chain.phase === "live");
 export const chainById = (id: string) => CHAINS.find((chain) => chain.id === id);
 export const polygonChain = () => chainById("polygon")!;
+
+if (process.env.NODE_ENV !== "production") {
+  const live = liveChains();
+  const ids = new Set<string>();
+
+  if (live.length !== 1) {
+    console.warn(`[chains] expected exactly one live chain, found ${live.length}`);
+  }
+  if (polygonChain().id !== "polygon") {
+    console.warn("[chains] polygonChain() did not resolve to polygon");
+  }
+  if (chainById("moonbeam")?.phase !== "planned") {
+    console.warn("[chains] moonbeam should remain planned until real wiring lands");
+  }
+
+  for (const chain of CHAINS) {
+    if (ids.has(chain.id)) console.warn(`[chains] duplicate chain id ${chain.id}`);
+    ids.add(chain.id);
+
+    if (chain.phase === "live" && (!chain.wagmiChain || !chain.validatorContract || !chain.explorer)) {
+      console.warn(`[chains] live chain ${chain.id} missing config`);
+    }
+    if (chain.phase !== "live" && chain.wagmiChain) {
+      console.warn(`[chains] non-live chain ${chain.id} has wagmi config`);
+    }
+  }
+}

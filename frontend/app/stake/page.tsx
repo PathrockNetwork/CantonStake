@@ -53,7 +53,7 @@ export default function StakePage() {
         <button
           onClick={openFlow}
           disabled={!canStake}
-          className="w-full bg-amber px-8 py-6 font-mono text-sm font-semibold uppercase tracking-wider text-ink-950 transition-colors hover:bg-amber-bright disabled:cursor-not-allowed disabled:bg-ink-700 disabled:text-ink-400"
+          className="w-full bg-neon px-8 py-6 font-mono text-sm font-semibold uppercase tracking-wider text-neon-text transition-colors hover:bg-neon/90 disabled:cursor-not-allowed disabled:bg-ink-700 disabled:text-ink-400"
         >
           Open stake flow
         </button>
