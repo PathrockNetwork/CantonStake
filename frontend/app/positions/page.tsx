@@ -6,9 +6,9 @@ import { useQuery } from "@tanstack/react-query";
 import { parseEther } from "viem";
 import { mockValidatorShareAbi } from "@/lib/abi";
 import { fetchPositions, sweepNativeRewards, type PositionRow } from "@/lib/api";
+import { polygonChain } from "@/lib/chains";
 
-const VALIDATOR_ADDRESS = process.env
-  .NEXT_PUBLIC_MOCK_VALIDATOR_SHARE as `0x${string}`;
+const VALIDATOR_ADDRESS = polygonChain().validatorContract;
 
 const statusStyles: Record<string, string> = {
   Pending: "text-ink-300",
@@ -125,6 +125,7 @@ function PositionRowView({
   if (confirmed) onActed();
 
   function onUnbond() {
+    if (!VALIDATOR_ADDRESS) return;
     const wei = parseEther(a.amountPol);
     writeContract({
       address: VALIDATOR_ADDRESS,
