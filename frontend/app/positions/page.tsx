@@ -1,15 +1,17 @@
 "use client";
 
-import { useState } from "react";
-import { useAccount, useWriteContract, useWaitForTransactionReceipt } from "wagmi";
 import { useQuery } from "@tanstack/react-query";
-import { parseEther } from "viem";
-import { mockValidatorShareAbi } from "@/lib/abi";
-import { fetchPositions, sweepNativeRewards, type PositionRow } from "@/lib/api";
+import { useAccount } from "wagmi";
+import { Card } from "@/components/Card";
+import { EmptyState } from "@/components/EmptyState";
+import { MultiChainRoadmap } from "@/components/MultiChainRoadmap";
+import { PositionDashboardRow } from "@/components/PositionDashboardRow";
+import { StatCell } from "@/components/StatCell";
+import { StatusDot } from "@/components/StatusDot";
+import { fetchPositions } from "@/lib/api";
 import { polygonChain } from "@/lib/chains";
 
-const VALIDATOR_ADDRESS = polygonChain().validatorContract;
-
+const POL_PRICE_USD = 0.42;
 const statusStyles: Record<string, string> = {
   Pending: "text-ink-300",
   Bonded: "text-success",
@@ -20,6 +22,7 @@ const statusStyles: Record<string, string> = {
 
 export default function PositionsPage() {
   const { address, isConnected } = useAccount();
+  const polygon = polygonChain();
 
   const {
     data: positions,
@@ -29,8 +32,16 @@ export default function PositionsPage() {
     queryKey: ["positions", address],
     queryFn: () => (address ? fetchPositions(address) : Promise.resolve([])),
     enabled: !!address,
-    refetchInterval: 5000, // Live polling for demo drama
+    refetchInterval: 5000,
   });
+
+  const totalBonded =
+    positions
+      ?.filter((p) => p.argument.status === "Bonded")
+      .reduce((sum, p) => sum + Number(p.argument.amountPol), 0) ?? 0;
+  const totalMarkers =
+    positions?.reduce((sum, p) => sum + p.argument.markersEmitted, 0) ?? 0;
+  const activeValidators = positions && positions.length > 0 ? 1 : 0;
 
   return (
     <div className="space-y-12 py-8">
@@ -45,156 +56,94 @@ export default function PositionsPage() {
       </header>
 
       {!isConnected && (
-        <div className="hairline p-12 text-center text-ink-300 font-mono text-sm">
+        <Card padding={32} className="text-center text-ink-300 font-mono text-sm">
           connect your wallet to view positions
-        </div>
+        </Card>
       )}
 
       {isConnected && isLoading && (
-        <div className="hairline p-12 text-center text-ink-400 font-mono text-sm">
-          loading positions…
-        </div>
+        <Card padding={32} className="text-center text-ink-400 font-mono text-sm">
+          loading positions...
+        </Card>
       )}
 
-      {isConnected && positions && positions.length === 0 && (
-        <div className="hairline p-12 text-center text-ink-400 space-y-3">
-          <div className="font-display text-2xl italic">No positions yet</div>
-          <div className="font-mono text-xs">
-            head to{" "}
-            <a
-              href="/stake"
-              className="text-amber-bright hover:text-amber-glow"
-            >
-              / stake
-            </a>{" "}
-            to create your first delegation
-          </div>
-        </div>
-      )}
+      {isConnected && positions && (
+        <>
+          <Card padding={0} className="overflow-hidden">
+            <div className="flex items-center justify-between gap-4 border-b border-ink-700 px-5 py-4">
+              <div>
+                <div className="mb-2 flex items-center gap-2 font-mono text-xxs uppercase tracking-widest text-ink-400">
+                  <StatusDot status="active" />
+                  <span>ACTIVE LEDGER · CANTON</span>
+                </div>
+                <h2 className="font-display text-2xl">Your delegations</h2>
+              </div>
+              {/* slot: B3 user-switcher dropdown */}
+              <div data-slot="user-switcher" />
+            </div>
+          </Card>
 
-      {isConnected && positions && positions.length > 0 && (
-        <div className="hairline">
-          <table className="w-full">
-            <thead className="hairline-b">
-              <tr className="text-left">
-                <th className="font-mono text-xxs uppercase tracking-widest text-ink-400 px-4 py-3">
-                  status
-                </th>
-                <th className="font-mono text-xxs uppercase tracking-widest text-ink-400 px-4 py-3">
-                  amount
-                </th>
-                <th className="font-mono text-xxs uppercase tracking-widest text-ink-400 px-4 py-3">
-                  bonded
-                </th>
-                <th className="font-mono text-xxs uppercase tracking-widest text-ink-400 px-4 py-3">
-                  ready at
-                </th>
-                <th className="font-mono text-xxs uppercase tracking-widest text-ink-400 px-4 py-3">
-                  markers
-                </th>
-                <th className="font-mono text-xxs uppercase tracking-widest text-ink-400 px-4 py-3 text-right">
-                  action
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {positions.map((p) => (
-                <PositionRowView key={p.contractId} position={p} onActed={refetch} />
-              ))}
-            </tbody>
-          </table>
-        </div>
+          <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <StatCell
+              caption="Total bonded"
+              value={`${totalBonded.toFixed(4)} ${polygon.symbol}`}
+              subtitle={`${(totalBonded * POL_PRICE_USD).toLocaleString(undefined, {
+                style: "currency",
+                currency: "USD",
+                maximumFractionDigits: 2,
+              })}`}
+              accent="neon"
+              padding={22}
+            />
+            <StatCell
+              caption="Total markers"
+              value={totalMarkers.toString()}
+              subtitle={`across ${positions.length} positions`}
+              padding={22}
+            />
+            <StatCell
+              caption="Active validators"
+              value={activeValidators.toString()}
+              subtitle="delegated via orchestrator"
+              padding={22}
+            />
+          </section>
+
+          {positions.length === 0 ? (
+            <EmptyState
+              title="No positions yet"
+              body="No positions yet — head to /stake to create your first delegation."
+              actionHref="/stake"
+              actionLabel="Open stake flow"
+            />
+          ) : (
+            <Card padding={0} className="overflow-hidden">
+              <div className="overflow-x-auto">
+                <div className="min-w-[940px]">
+                  <div className="grid grid-cols-[1.2fr_0.8fr_0.7fr_0.9fr_1.1fr_1.3fr] gap-3 border-b border-ink-700 px-5 py-3 font-mono text-xxs uppercase tracking-widest text-ink-400">
+                    <div>Chain · Status</div>
+                    <div>Amount</div>
+                    <div>Markers</div>
+                    <div>Bonded since</div>
+                    <div>Status timeline</div>
+                    <div className="text-right">Actions</div>
+                  </div>
+                  {positions.map((position) => (
+                    <PositionDashboardRow
+                      key={position.contractId}
+                      position={position}
+                      onActed={refetch}
+                      statusStyles={statusStyles}
+                    />
+                  ))}
+                </div>
+              </div>
+            </Card>
+          )}
+
+          <MultiChainRoadmap />
+        </>
       )}
     </div>
-  );
-}
-
-function PositionRowView({
-  position,
-  onActed,
-}: {
-  position: PositionRow;
-  onActed: () => void;
-}) {
-  const { argument: a } = position;
-  const [sweepPending, setSweepPending] = useState(false);
-  const { writeContract, data: hash, isPending } = useWriteContract();
-  const { isLoading: confirming, isSuccess: confirmed } =
-    useWaitForTransactionReceipt({ hash });
-
-  if (confirmed) onActed();
-
-  function onUnbond() {
-    if (!VALIDATOR_ADDRESS) return;
-    const wei = parseEther(a.amountPol);
-    writeContract({
-      address: VALIDATOR_ADDRESS,
-      abi: mockValidatorShareAbi,
-      functionName: "sellVoucher_new",
-      args: [wei, wei],
-    });
-  }
-
-  async function onSweep() {
-    setSweepPending(true);
-    try {
-      await sweepNativeRewards(position.contractId);
-    } catch (err) {
-      console.error("[positions] sweep failed", err);
-    } finally {
-      setSweepPending(false);
-    }
-  }
-
-  const canUnbond = a.status === "Bonded" && !isPending && !confirming;
-
-  return (
-    <tr className="hairline-b last:border-b-0 hover:bg-ink-900/40 transition-colors">
-      <td className="px-4 py-4">
-        <span className={`chip chip-dot ${statusStyles[a.status]} border-transparent`}>
-          {a.status.toLowerCase()}
-        </span>
-      </td>
-      <td className="px-4 py-4 font-display text-xl tabular">
-        {Number(a.amountPol).toFixed(2)}{" "}
-        <span className="font-mono text-xs text-ink-400">POL</span>
-      </td>
-      <td className="px-4 py-4 font-mono text-xs text-ink-300">
-        {a.bondedAt ? new Date(a.bondedAt).toLocaleString() : "—"}
-      </td>
-      <td className="px-4 py-4 font-mono text-xs text-ink-300">
-        {a.unbondingReadyAt
-          ? new Date(a.unbondingReadyAt).toLocaleString()
-          : "—"}
-      </td>
-      <td className="px-4 py-4 font-mono text-sm tabular text-amber-bright">
-        {a.markersEmitted}
-      </td>
-      <td className="px-4 py-4 text-right">
-        {a.status === "Bonded" && (
-          <div className="flex justify-end gap-2">
-            <button
-              onClick={onSweep}
-              disabled={sweepPending}
-              className="font-mono text-xxs uppercase tracking-wider hairline px-3 py-1.5 hover:bg-ink-800 disabled:opacity-50"
-            >
-              {sweepPending ? "..." : "Sweep"}
-            </button>
-          <button
-            onClick={onUnbond}
-            disabled={!canUnbond}
-            className="font-mono text-xxs uppercase tracking-wider hairline px-3 py-1.5 hover:bg-ink-800 disabled:opacity-50"
-          >
-            {isPending || confirming ? "…" : "Unbond"}
-          </button>
-          </div>
-        )}
-        {a.status === "Unbonding" && (
-          <span className="font-mono text-xxs text-ink-400">
-            auto-releases
-          </span>
-        )}
-      </td>
-    </tr>
   );
 }
