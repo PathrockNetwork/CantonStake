@@ -2,10 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { useAccount, useBalance, useChainId, useSwitchChain, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
-import { polygonAmoy } from "wagmi/chains";
 import { formatEther, parseEther, parseGwei } from "viem";
 import { mockValidatorShareAbi } from "@/lib/abi";
 import { createStakingRequest } from "@/lib/api";
+import { polygonChain } from "@/lib/chains";
 import { useLoopWallet } from "@/lib/loop-wallet";
 import { Modal } from "@/components/Modal";
 import { TraceRow } from "@/components/TraceRow";
@@ -14,7 +14,9 @@ type Step = "amount" | "validator" | "review" | "broadcasting" | "success";
 type Validator = { name: string; address: string; apr: number; uptimePct: number; riskScore: number; commission: number };
 type StakeFlowModalProps = { open: boolean; onClose: () => void; presetAmount?: string; presetValidator?: string };
 
-const VALIDATOR_ADDRESS = process.env.NEXT_PUBLIC_MOCK_VALIDATOR_SHARE as `0x${string}`;
+const ACTIVE_CHAIN = polygonChain();
+const ACTIVE_WAGMI_CHAIN = ACTIVE_CHAIN.wagmiChain!;
+const VALIDATOR_ADDRESS = ACTIVE_CHAIN.validatorContract;
 const STEPS: Step[] = ["amount", "validator", "review", "broadcasting", "success"];
 const VALIDATORS: Validator[] = [
   { address: "0x5a10000000000000000000000000000000000001", name: "Stakefish", apr: 7.8, uptimePct: 99.95, riskScore: 1, commission: 5 },
@@ -75,10 +77,11 @@ export function StakeFlowModal({ open, onClose, presetAmount, presetValidator }:
     try {
       setCantonStage("creating");
       setCantonError(null);
-      if (chainId !== polygonAmoy.id) await switchChainAsync({ chainId: polygonAmoy.id });
+      if (chainId !== ACTIVE_WAGMI_CHAIN.id) await switchChainAsync({ chainId: ACTIVE_WAGMI_CHAIN.id });
       const { transactionId } = await createStakingRequest({ evmAddress: address, amountPol: amount, delegator: partyId! });
       setCantonTxId(transactionId);
       setCantonStage("created");
+      if (!VALIDATOR_ADDRESS) throw new Error("Validator contract is not configured");
       const amountWei = parseEther(amount);
       writeContract({ address: VALIDATOR_ADDRESS, abi: mockValidatorShareAbi, functionName: "buyVoucher", args: [amountWei, amountWei], value: amountWei, maxPriorityFeePerGas: parseGwei("25"), maxFeePerGas: parseGwei("100") });
     } catch (err) {
@@ -171,7 +174,7 @@ export function StakeFlowModal({ open, onClose, presetAmount, presetValidator }:
           <div className="space-y-6">
             <div className="text-right font-mono text-xxs uppercase tracking-widest text-ink-500">Esc to close</div>
             <TraceRow index="01" label="Create StakingRequest (Canton)" status={cantonStage === "idle" ? "pending" : cantonStage === "creating" ? "running" : cantonStage === "created" ? "done" : "error"} detail={cantonTxId ? `tx · ${cantonTxId.slice(0, 16)}...` : cantonStage === "error" ? cantonError ?? "failed" : "waiting"} />
-            <TraceRow index="02" label="buyVoucher (Polygon Amoy)" status={!hash ? "pending" : evmConfirming ? "running" : evmConfirmed ? "done" : writeError ? "error" : "running"} detail={hash ? `tx · ${hash.slice(0, 16)}...` : writeError ? writeError.message.slice(0, 60) : "waiting"} />
+            <TraceRow index="02" label={`buyVoucher (${ACTIVE_CHAIN.name})`} status={!hash ? "pending" : evmConfirming ? "running" : evmConfirmed ? "done" : writeError ? "error" : "running"} detail={hash ? `tx · ${hash.slice(0, 16)}...` : writeError ? writeError.message.slice(0, 60) : "waiting"} />
             <TraceRow index="03" label="Orchestrator catches ShareMinted" status={evmConfirmed ? "running" : "pending"} detail="viem event watcher" />
             <TraceRow index="04" label="StakingRequest_Accept (Daml)" status={evmConfirmed ? "running" : "pending"} detail="emits FeaturedAppActivityMarker" accent />
             {(cantonStage === "error" || writeError) && <div className="hairline border-danger/40 p-3 font-mono text-xs text-danger">{cantonError ?? writeError?.message}</div>}
@@ -182,7 +185,7 @@ export function StakeFlowModal({ open, onClose, presetAmount, presetValidator }:
           <div className="space-y-6 py-4 text-center">
             <svg className="mx-auto h-14 w-14 animate-pulse text-success" viewBox="0 0 24 24" fill="none" aria-hidden><path d="M20 6 9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
             <div><h2 className="font-display text-3xl">Stake confirmed</h2><p className="mt-2 text-sm text-ink-400">CC rewards start flowing in the next 10-minute round.</p></div>
-            <div className="hairline grid grid-cols-[90px_1fr] gap-3 p-4 text-left text-sm"><div className="text-ink-400">Tx hash</div><a href={`https://amoy.polygonscan.com/tx/${hash}`} target="_blank" rel="noreferrer" className="break-all font-mono text-amber-bright hover:text-amber-glow">{hash}</a></div>
+            <div className="hairline grid grid-cols-[90px_1fr] gap-3 p-4 text-left text-sm"><div className="text-ink-400">Tx hash</div><a href={ACTIVE_CHAIN.explorer?.tx(hash ?? "")} target="_blank" rel="noreferrer" className="break-all font-mono text-amber-bright hover:text-amber-glow">{hash}</a></div>
             <button onClick={onClose} className={`w-full py-4 text-sm ${primary}`}>Done</button>
           </div>
         )}

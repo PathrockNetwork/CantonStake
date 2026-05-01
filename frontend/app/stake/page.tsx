@@ -2,11 +2,11 @@
 
 import { useState } from "react";
 import { useAccount, useBalance, useChainId, useSwitchChain } from "wagmi";
-import { polygonAmoy } from "wagmi/chains";
 import { formatEther } from "viem";
 import { Card } from "@/components/Card";
 import { StakeFlowModal } from "@/components/StakeFlowModal";
 import { TraceRow } from "@/components/TraceRow";
+import { polygonChain } from "@/lib/chains";
 import { useLoopWallet } from "@/lib/loop-wallet";
 
 export default function StakePage() {
@@ -16,10 +16,14 @@ export default function StakePage() {
   const { isPending: switchPending } = useSwitchChain();
   const { partyId, isConnected: loopConnected } = useLoopWallet();
   const [open, setOpen] = useState(false);
-  const wrongNetwork = isConnected && chainId !== polygonAmoy.id;
+  const activeChain = polygonChain();
+  const activeWagmiChain = activeChain.wagmiChain!;
+  const wrongNetwork = isConnected && chainId !== activeWagmiChain.id;
   const canStake = isConnected && loopConnected && !!partyId && !switchPending;
   const evmDetail = address
-    ? `${address.slice(0, 6)}...${address.slice(-4)} · ${balance ? Number(formatEther(balance.value)).toFixed(4) : "0.0000"} POL`
+    ? `${address.slice(0, 6)}...${address.slice(-4)} - ${
+        balance ? Number(formatEther(balance.value)).toFixed(4) : "0.0000"
+      } ${activeChain.symbol}`
     : "connect wallet";
 
   function openFlow() {
@@ -32,9 +36,11 @@ export default function StakePage() {
         <p className="font-mono text-xxs uppercase tracking-widest text-amber-bright mb-4">
           § 01 · stake
         </p>
-        <h1 className="font-display text-5xl mb-3">Delegate POL</h1>
+        <h1 className="font-display text-5xl mb-3">
+          Delegate {activeChain.symbol}
+        </h1>
         <p className="text-ink-300 max-w-2xl">
-          Your wallet signs the buyVoucher transaction on Polygon Amoy.
+          Your wallet signs the buyVoucher transaction on {activeChain.name}.
           Simultaneously a StakingRequest is created on Canton. When our
           orchestrator observes the ShareMinted event, it transitions the
           position to Bonded and emits a FeaturedAppActivityMarker.
@@ -66,12 +72,22 @@ export default function StakePage() {
             index="02"
             label="Loop wallet"
             status={loopConnected && partyId ? "done" : "pending"}
-            detail={partyId ? `party · ${partyId.slice(0, 24)}...` : "connect Loop identity"}
+            detail={
+              partyId
+                ? `party - ${partyId.slice(0, 24)}...`
+                : "connect Loop identity"
+            }
           />
           <TraceRow
             index="03"
-            label="Polygon Amoy"
-            status={!isConnected ? "pending" : wrongNetwork || switchPending ? "running" : "done"}
+            label={activeChain.name}
+            status={
+              !isConnected
+                ? "pending"
+                : wrongNetwork || switchPending
+                ? "running"
+                : "done"
+            }
             detail={
               switchPending
                 ? "switching"
