@@ -63,7 +63,7 @@ services:
       - DEMO_MODE=${DEMO_MODE:-true}
       - AMOY_RPC_URL=${AMOY_RPC_URL:-https://rpc-amoy.polygon.technology}
       - MOCK_VALIDATOR_SHARE_ADDRESS=${MOCK_VALIDATOR_SHARE_ADDRESS}
-      - CANTON_JSON_API_URL=${CANTON_JSON_API_URL:-http://host.docker.internal:3975}
+      - CANTON_JSON_API_URL=http://host.docker.internal:3975
       - CANTON_APP_PROVIDER_PARTY=${CANTON_APP_PROVIDER_PARTY}
       - CANTON_AUTH_TOKEN=${CANTON_AUTH_TOKEN:-}
       - CANTON_DELEGATOR_PARTY=${CANTON_DELEGATOR_PARTY}

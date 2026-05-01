@@ -20,6 +20,7 @@ import { canton, cantonDelegator, TEMPLATES } from "./canton.js";
 import { startWatchers, startReleaseChecker } from "./orchestrator.js";
 import { prisma } from "./db.js";
 import { startRewardScheduler, shutdownRewardSystem, redisConnection, enqueueRound } from "./reward-rounds.js";
+import sweepRoutes from "./routes/sweep.js";
 
 const publicClient = createPublicClient({
   chain: polygonAmoy,
@@ -457,6 +458,9 @@ app.post("/api/admin/rounds/trigger", async (req, reply) => {
     return reply.code(500).send({ error: String(err) });
   }
 });
+
+// --- Sweep routes ---
+await app.register(sweepRoutes);
 
 // --- Start ---
 

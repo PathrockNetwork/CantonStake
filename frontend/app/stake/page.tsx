@@ -10,7 +10,7 @@ import {
   useWaitForTransactionReceipt,
 } from "wagmi";
 import { polygonAmoy } from "wagmi/chains";
-import { parseEther, formatEther } from "viem";
+import { parseEther, formatEther, parseGwei } from "viem";
 import { mockValidatorShareAbi } from "@/lib/abi";
 import { createStakingRequest } from "@/lib/api";
 import { useLoopWallet } from "@/lib/loop-wallet";
@@ -78,6 +78,8 @@ export default function StakePage() {
         functionName: "buyVoucher",
         args: [amountWei, amountWei],
         value: amountWei,
+        maxPriorityFeePerGas: parseGwei("25"),
+        maxFeePerGas: parseGwei("100"),
       });
     } catch (err) {
       setCantonStage("error");

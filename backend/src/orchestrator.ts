@@ -45,7 +45,8 @@ const shareBurnedAbi = parseAbiItem(
 );
 
 const EVENT_POLL_MS = 5_000;
-const INITIAL_LOOKBACK_BLOCKS = 200n;
+const INITIAL_LOOKBACK_BLOCKS = 50n;
+const MAX_BLOCK_RANGE = 50n;
 const UNBONDING_PERIOD_SECONDS = 60;
 
 function featuredRightCidForDaml(): string | null {
@@ -323,6 +324,26 @@ async function handleShareBurned(log: Log) {
 
 // --- Event polling ---
 
+async function getLogsBatched(args: {
+  address: Address;
+  event: typeof shareMintedAbi | typeof shareBurnedAbi;
+  fromBlock: bigint;
+  toBlock: bigint;
+}) {
+  const allLogs: Log[] = [];
+  for (let from = args.fromBlock; from <= args.toBlock; from += MAX_BLOCK_RANGE + 1n) {
+    const to = from + MAX_BLOCK_RANGE > args.toBlock ? args.toBlock : from + MAX_BLOCK_RANGE;
+    const logs = await client.getLogs({
+      address: args.address,
+      event: args.event,
+      fromBlock: from,
+      toBlock: to,
+    });
+    allLogs.push(...(logs as Log[]));
+  }
+  return allLogs;
+}
+
 export function startWatchers(): void {
   console.log(`[orchestrator] polling ${config.mockValidatorShare} on Amoy`);
 
@@ -339,13 +360,13 @@ export function startWatchers(): void {
       if (fromBlock > latestBlock) return;
 
       const [mintedLogs, burnedLogs] = await Promise.all([
-        client.getLogs({
+        getLogsBatched({
           address: config.mockValidatorShare as Address,
           event: shareMintedAbi,
           fromBlock,
           toBlock: latestBlock,
         }),
-        client.getLogs({
+        getLogsBatched({
           address: config.mockValidatorShare as Address,
           event: shareBurnedAbi,
           fromBlock,
@@ -437,6 +458,33 @@ export function startReleaseChecker(): void {
       console.error("[release-checker]", err);
     }
   }, 15_000);
+}
+
+export async function recordNativeSweep(args: {
+  positionId: string;
+  grossWei: bigint;
+  feeWei: bigint;
+  netWei: bigint;
+  txHash: string;
+}): Promise<string> {
+  const position = await prisma.stakingPosition.findFirst({
+    where: { OR: [{ id: args.positionId }, { contractId: args.positionId }] },
+  });
+  if (!position) throw new Error(`position not found for native sweep: ${args.positionId}`);
+
+  const result = await canton.exerciseChoice({
+    templateId: TEMPLATES.StakingPosition,
+    contractId: position.contractId,
+    choice: "StakingPosition_RecordNativeSweep",
+    argument: {
+      grossWei: args.grossWei.toString(),
+      feeWei: args.feeWei.toString(),
+      netWei: args.netWei.toString(),
+      evmTxHash: args.txHash,
+      sweptAt: new Date().toISOString(),
+    },
+  });
+  return result.transactionId;
 }
 
 // Re-exported for the HTTP API.
