@@ -100,7 +100,11 @@ export default function StakePage() {
         </Card>
       </div>
 
-      <StakeFlowModal open={open} onClose={() => setOpen(false)} />
+      <StakeFlowModal
+        open={open}
+        onClose={() => setOpen(false)}
+        presetChain="polygon"
+      />
     </div>
   );
 }
