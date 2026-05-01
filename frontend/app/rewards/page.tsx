@@ -1,11 +1,17 @@
 "use client";
 
-import { useAccount } from "wagmi";
 import { useQuery } from "@tanstack/react-query";
-import { fetchRewards, fetchPositions } from "@/lib/api";
-import { CCRoundTicker } from "@/components/CCRoundTicker";
+import { useAccount } from "wagmi";
 import { Card } from "@/components/Card";
+import { CCRoundTicker } from "@/components/CCRoundTicker";
+import { MetricBlock } from "@/components/MetricBlock";
+import { RewardsCcRoadmap } from "@/components/RewardsCcRoadmap";
+import { RewardsMarkerRow } from "@/components/RewardsMarkerRow";
+import { RewardsPoolEconomics } from "@/components/RewardsPoolEconomics";
+import { RewardsStatsSpine } from "@/components/RewardsStatsSpine";
 import { RoundsTimeline } from "@/components/RoundsTimeline";
+import { SectionLabel } from "@/components/SectionLabel";
+import { fetchPositions, fetchRewards } from "@/lib/api";
 import type { RewardEventRow } from "@/lib/api/contracts";
 
 export default function RewardsPage() {
@@ -63,47 +69,29 @@ export default function RewardsPage() {
       </header>
 
       {!isConnected && (
-        <div className="hairline p-12 text-center text-ink-300 font-mono text-sm">
+        <Card padding={32} className="text-center text-ink-300 font-mono text-sm">
           connect your wallet to view rewards
-        </div>
+        </Card>
       )}
 
       {isConnected && rewards && (
         <>
+          <RewardsPoolEconomics markersEmitted={rewards.totalMarkersEmitted} />
+
           {/* slot: A1 Narrator */}
 
-          {/* Headline numbers */}
-          <section className="grid grid-cols-1 md:grid-cols-4 gap-px bg-ink-700">
-            <StatCell
-              caption="markers emitted"
-              value={rewards.totalMarkersEmitted.toString()}
-              subtitle="on-ledger attestations"
-            />
-            <StatCell
-              caption="bonded pol"
-              value={rewards.totalBondedPol.toFixed(2)}
-              subtitle="generating yield + markers"
-              accent
-            />
-            <StatCell
-              caption="cc earned"
-              value={(rewards.totalCcEarned ?? rewards.estimatedCcEarned).toFixed(4)}
-              subtitle={`${rewards.rewardEventCount ?? 0} reward rounds`}
-              accent
-            />
-            <StatCell
-              caption="protocol fees"
-              value={(rewards.totalProtocolFeePol ?? 0).toFixed(6)}
-              subtitle={`${rewards.rewardSweepCount ?? 0} native sweeps`}
-            />
-          </section>
+          <RewardsStatsSpine
+            markersEmitted={rewards.totalMarkersEmitted}
+            bondedPol={rewards.totalBondedPol}
+            ccEarned={rewards.totalCcEarned ?? rewards.estimatedCcEarned}
+            rewardEventCount={rewards.rewardEventCount ?? 0}
+            protocolFeesPol={rewards.totalProtocolFeePol ?? 0}
+            rewardSweepCount={rewards.rewardSweepCount ?? 0}
+          />
 
-          {/* Beneficiary split */}
           <section>
-            <div className="font-mono text-xxs uppercase tracking-widest text-ink-400 mb-6">
-              § 01 · beneficiary split
-            </div>
-            <div className="hairline bg-ink-900/40 p-8">
+            <SectionLabel>§ 01 · beneficiary split</SectionLabel>
+            <Card padding={32}>
               <div className="flex items-end gap-4 mb-6">
                 <div className="font-display text-6xl">
                   {(rewards.userShare * 100).toFixed(0)}
@@ -115,27 +103,18 @@ export default function RewardsPage() {
                 </div>
               </div>
 
-              {/* Actual CC totals */}
               <div className="grid grid-cols-2 gap-6 mb-6">
-                <div>
-                  <div className="font-mono text-xxs uppercase tracking-widest text-ink-400 mb-1">
-                    your share (cc)
-                  </div>
-                  <div className="font-display text-2xl text-amber-bright">
-                    {(rewards.totalUserShare ?? 0).toFixed(4)}
-                  </div>
-                </div>
-                <div>
-                  <div className="font-mono text-xxs uppercase tracking-widest text-ink-400 mb-1">
-                    treasury share (cc)
-                  </div>
-                  <div className="font-display text-2xl text-ink-300">
-                    {(rewards.totalTreasuryShare ?? 0).toFixed(4)}
-                  </div>
-                </div>
+                <MetricBlock
+                  label="your share (cc)"
+                  value={(rewards.totalUserShare ?? 0).toFixed(4)}
+                  accent
+                />
+                <MetricBlock
+                  label="treasury share (cc)"
+                  value={(rewards.totalTreasuryShare ?? 0).toFixed(4)}
+                />
               </div>
 
-              {/* Visual split bar */}
               <div className="h-8 flex hairline">
                 <div
                   className="bg-amber transition-all"
@@ -156,40 +135,26 @@ export default function RewardsPage() {
                 AppRewardBeneficiary entries whose weights sum to 1.0. Super
                 Validator automation handles the coupon conversion trustlessly.
               </p>
-            </div>
+            </Card>
           </section>
 
-          {/* Native reward fee model */}
           <section>
-            <div className="font-mono text-xxs uppercase tracking-widest text-ink-400 mb-6">
-              § 02 · native reward sweep
-            </div>
-            <div className="hairline bg-ink-900/40 p-8">
+            <SectionLabel>§ 02 · native reward sweep</SectionLabel>
+            <Card padding={32}>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div>
-                  <div className="font-mono text-xxs uppercase tracking-widest text-ink-400 mb-1">
-                    rewards swept (pol)
-                  </div>
-                  <div className="font-display text-3xl tabular">
-                    {(rewards.totalNativeRewardsSweptPol ?? 0).toFixed(6)}
-                  </div>
-                </div>
-                <div>
-                  <div className="font-mono text-xxs uppercase tracking-widest text-ink-400 mb-1">
-                    user payout (pol)
-                  </div>
-                  <div className="font-display text-3xl tabular text-amber-bright">
-                    {(rewards.totalUserPayoutPol ?? 0).toFixed(6)}
-                  </div>
-                </div>
-                <div>
-                  <div className="font-mono text-xxs uppercase tracking-widest text-ink-400 mb-1">
-                    protocol fee (pol)
-                  </div>
-                  <div className="font-display text-3xl tabular text-ink-300">
-                    {(rewards.totalProtocolFeePol ?? 0).toFixed(6)}
-                  </div>
-                </div>
+                <MetricBlock
+                  label="rewards swept (pol)"
+                  value={(rewards.totalNativeRewardsSweptPol ?? 0).toFixed(6)}
+                />
+                <MetricBlock
+                  label="user payout (pol)"
+                  value={(rewards.totalUserPayoutPol ?? 0).toFixed(6)}
+                  accent
+                />
+                <MetricBlock
+                  label="protocol fee (pol)"
+                  value={(rewards.totalProtocolFeePol ?? 0).toFixed(6)}
+                />
               </div>
               <p className="text-ink-300 text-sm mt-6 max-w-2xl leading-relaxed">
                 Native staking rewards use a 5% protocol-fee model. In this
@@ -197,30 +162,27 @@ export default function RewardsPage() {
                 the Amoy mock; production would execute withdrawRewards() and
                 split the payout on-chain.
               </p>
-            </div>
+            </Card>
           </section>
 
-          {/* Marker breakdown */}
           <section>
-            <div className="font-mono text-xxs uppercase tracking-widest text-ink-400 mb-6">
-              § 02 · marker breakdown
-            </div>
-            <div className="hairline divide-y divide-ink-700">
-              <MarkerRow
+            <SectionLabel>§ 02 · marker breakdown</SectionLabel>
+            <Card padding={0} className="divide-y divide-ink-700">
+              <RewardsMarkerRow
                 event="Bond"
                 description="StakingRequest_Accept"
                 count={bondMarkers}
                 cipRef="CIP-47 · lock/unlock"
                 triggered
               />
-              <MarkerRow
+              <RewardsMarkerRow
                 event="Unbond"
                 description="StakingPosition_ConfirmUnbond"
                 count={unbondMarkers}
                 cipRef="CIP-47 · transfer"
                 triggered={unbondMarkers > 0}
               />
-              <MarkerRow
+              <RewardsMarkerRow
                 event="Request"
                 description="StakingRequest created"
                 count={0}
@@ -228,7 +190,7 @@ export default function RewardsPage() {
                 triggered={false}
                 excluded
               />
-              <MarkerRow
+              <RewardsMarkerRow
                 event="Release"
                 description="StakingPosition_Release"
                 count={0}
@@ -236,20 +198,17 @@ export default function RewardsPage() {
                 triggered={false}
                 excluded
               />
-            </div>
+            </Card>
           </section>
 
           <section>
-            <div className="font-mono text-xxs uppercase tracking-widest text-ink-400 mb-6">
-              § 03 · 10-minute round timeline
-            </div>
+            <SectionLabel>§ 03 · 10-minute round timeline</SectionLabel>
             <Card padding={0}>
               <RoundsTimeline events={timelineEvents} userCcEta={userCcEta} />
             </Card>
           </section>
 
-          {/* CIP context */}
-          <section className="hairline bg-ink-900/40 p-8">
+          <Card padding={32}>
             <div className="font-mono text-xxs uppercase tracking-widest text-amber-bright mb-3">
               cip-47 compliance note
             </div>
@@ -261,87 +220,11 @@ export default function RewardsPage() {
               final release do not. This avoids fair-usage violations while
               still capturing the full value of real staking activity.
             </p>
-          </section>
+          </Card>
+
+          <RewardsCcRoadmap />
         </>
       )}
-    </div>
-  );
-}
-
-function StatCell({
-  caption,
-  value,
-  subtitle,
-  accent = false,
-}: {
-  caption: string;
-  value: string;
-  subtitle: string;
-  accent?: boolean;
-}) {
-  return (
-    <div className="bg-ink-950 p-8">
-      <div className="font-mono text-xxs uppercase tracking-widest text-ink-400 mb-4">
-        {caption}
-      </div>
-      <div
-        className={`font-display text-5xl tabular ${
-          accent ? "text-amber-bright" : "text-ink-100"
-        }`}
-      >
-        {value}
-      </div>
-      <div className="font-mono text-xs text-ink-400 mt-3">{subtitle}</div>
-    </div>
-  );
-}
-
-function MarkerRow({
-  event,
-  description,
-  count,
-  cipRef,
-  triggered,
-  excluded = false,
-}: {
-  event: string;
-  description: string;
-  count: number;
-  cipRef: string;
-  triggered: boolean;
-  excluded?: boolean;
-}) {
-  return (
-    <div
-      className={`grid grid-cols-12 gap-4 items-center px-6 py-5 ${
-        excluded ? "opacity-40" : ""
-      }`}
-    >
-      <div className="col-span-3">
-        <div className="font-display text-2xl">{event}</div>
-        <div className="font-mono text-xxs text-ink-400 mt-1">{description}</div>
-      </div>
-      <div className="col-span-4 font-mono text-xxs uppercase tracking-wider text-ink-300">
-        {cipRef}
-      </div>
-      <div className="col-span-3">
-        {excluded ? (
-          <span className="chip chip-dot text-ink-500 border-transparent">
-            excluded
-          </span>
-        ) : triggered ? (
-          <span className="chip chip-dot text-amber-bright border-transparent">
-            emitted
-          </span>
-        ) : (
-          <span className="chip chip-dot text-ink-400 border-transparent">
-            pending
-          </span>
-        )}
-      </div>
-      <div className="col-span-2 text-right font-mono tabular text-2xl">
-        {excluded ? "—" : count}
-      </div>
     </div>
   );
 }

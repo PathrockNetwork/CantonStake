@@ -8,6 +8,7 @@ import { CCRoundTicker } from "@/components/CCRoundTicker";
 import { DashboardPositionRow } from "@/components/DashboardPositionRow";
 import { MultiChainRoadmap } from "@/components/MultiChainRoadmap";
 import { Sparkline } from "@/components/Sparkline";
+import { StatCell } from "@/components/StatCell";
 import { StatusDot } from "@/components/StatusDot";
 import { fetchPositions, fetchRewards, type PositionRow } from "@/lib/api";
 import { polygonChain } from "@/lib/chains";
@@ -150,17 +151,13 @@ export function Dashboard() {
           </div>
         </Card>
 
-        <Card padding={22} className="space-y-3">
-          <StatLabel>Blended APY</StatLabel>
-          <div className="font-display text-4xl tabular text-neon">
-            {blendedApy.toFixed(1)}
-            <span className="text-lg text-ink-400">%</span>
-          </div>
-          <div className="font-mono text-xs text-ink-400">
-            {polygon.apy.toFixed(1)}% + {CC_BONUS_APY.toFixed(1)}% CC ={" "}
-            <span className="text-neon">{blendedApy.toFixed(1)}%</span>
-          </div>
-        </Card>
+        <StatCell
+          caption="Blended APY"
+          value={`${blendedApy.toFixed(1)}%`}
+          subtitle={`${polygon.apy.toFixed(1)}% + ${CC_BONUS_APY.toFixed(1)}% CC = ${blendedApy.toFixed(1)}%`}
+          accent="neon"
+          padding={22}
+        />
       </section>
 
       <Card padding={0} className="overflow-hidden">
