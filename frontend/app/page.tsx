@@ -1,6 +1,9 @@
 import Link from "next/link";
+import { polygonChain } from "@/lib/chains";
 
 export default function HomePage() {
+  const activeChain = polygonChain();
+
   return (
     <div className="space-y-24 py-8">
       {/* Hero */}
@@ -41,9 +44,10 @@ export default function HomePage() {
             <div className="font-mono text-xxs uppercase tracking-widest text-ink-400 mb-2">
               chain
             </div>
-            <div className="font-display text-2xl">Polygon Amoy</div>
+            <div className="font-display text-2xl">{activeChain.name}</div>
             <div className="font-mono text-xs text-ink-300">
-              chain id 80002 · pol
+              chain id {activeChain.wagmiChain?.id} ·{" "}
+              {activeChain.symbol.toLowerCase()}
             </div>
           </div>
           <div>
