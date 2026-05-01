@@ -188,6 +188,19 @@ template StakingPosition
               status = Released
               releasedAt = None
 
+    -- Audit beacon: records a native reward sweep on Polygon Amoy.
+    -- Non-consuming so the position stays active. Treasury (appProvider)
+    -- controls this since the orchestrator acts as the treasury.
+    nonconsuming choice StakingPosition_RecordNativeSweep : ()
+      with
+        grossWei : Text
+        feeWei : Text
+        netWei : Text
+        evmTxHash : Text
+        sweptAt : Text
+      controller appProvider
+      do pure ()
+
     -- Archive an already-released position (cleanup).
     choice StakingPosition_Archive : ()
       controller delegator, appProvider

@@ -197,11 +197,16 @@ class CantonClient {
       throw new Error(`Canton ACS query failed (${res.status}): ${errText}`);
     }
 
-    const json = (await res.json()) as {
-      contractEntries?: Array<Record<string, unknown>>;
-    };
+    const json = await res.json();
 
-    return (json.contractEntries ?? [])
+    // Canton JSON API v2 returns either { contractEntries: [...] } or a flat array
+    const entries: Array<Record<string, unknown>> = Array.isArray(json)
+      ? json
+      : (json as Record<string, unknown>).contractEntries != null
+        ? ((json as Record<string, unknown>).contractEntries as Array<Record<string, unknown>>)
+        : [];
+
+    return entries
       .map(extractCreatedEvent)
       .filter((e): e is CreatedEvent => e !== undefined)
       .map((e) => ({
@@ -231,8 +236,11 @@ function normalizeSubmitResult(json: unknown): SubmitAndWaitResult {
   return {
     transactionId:
       stringValue(root.transactionId) ??
+      stringValue(root.updateId) ??
       stringValue(transaction.transactionId) ??
+      stringValue(transaction.updateId) ??
       stringValue(completion.transactionId) ??
+      stringValue(completion.updateId) ??
       "",
     completionOffset:
       stringValue(root.completionOffset) ??
