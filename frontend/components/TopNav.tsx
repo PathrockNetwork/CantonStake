@@ -22,7 +22,29 @@ function connectorLabel(connector: { name: string; uid: string }): string {
   return connector.name;
 }
 
-type NavIconType = "home" | "coin" | "chart" | "shield" | "gear";
+type NavIconType = "home" | "portfolio" | "coin" | "chart" | "shield" | "gear";
+
+function BrandLogoMark() {
+  return (
+    <svg
+      className="h-7 w-7 text-neon"
+      viewBox="0 0 32 32"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M16 2L29 9.5v13L16 30 3 22.5v-13L16 2z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      />
+      <path
+        d="M16 8.5L23.5 13v6L16 23.5 8.5 19v-6L16 8.5z"
+        fill="currentColor"
+      />
+      <circle cx="16" cy="16" r="2" fill="var(--bg)" />
+    </svg>
+  );
+}
 
 function NavIcon({ type }: { type: NavIconType }) {
   if (type === "coin") {
@@ -34,6 +56,15 @@ function NavIcon({ type }: { type: NavIconType }) {
     return (
       <svg className={common} viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <path d="M2.5 7.2 8 2.8l5.5 4.4v6a.7.7 0 0 1-.7.7H10V9.5H6v4.4H3.2a.7.7 0 0 1-.7-.7v-6Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  if (type === "portfolio") {
+    return (
+      <svg className={common} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M3 5.5h10v7H3v-7Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+        <path d="M6 5.5V4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+        <path d="M3 8.2h10" stroke="currentColor" strokeWidth="1.3" />
       </svg>
     );
   }
@@ -81,7 +112,8 @@ export function TopNav() {
   } = useLoopWallet();
 
   const nav: Array<{ label: string; href: string; icon: NavIconType }> = [
-    { label: "Dashboard", href: "/", icon: "home" },
+    { label: "Home", href: "/", icon: "home" },
+    { label: "Portfolio", href: "/portfolio", icon: "portfolio" },
     { label: "CC Rewards", href: "/rewards", icon: "coin" },
     { label: "Analytics", href: "/analytics", icon: "chart" },
     { label: "Validators", href: "/validators", icon: "shield" },
@@ -114,23 +146,16 @@ export function TopNav() {
       <div className="mx-auto flex h-14 max-w-[1440px] items-center justify-between gap-5 px-6">
         <div className="flex min-w-0 items-center gap-6">
           <Link href="/" className="flex items-center gap-2.5">
-            <span
-              className="grid h-7 w-7 place-items-center bg-amber-bright font-mono text-[10px] font-bold text-ink-950"
-              style={{
-                clipPath:
-                  "polygon(25% 6%, 75% 6%, 100% 50%, 75% 94%, 25% 94%, 0 50%)",
-              }}
-              aria-hidden="true"
-            >
-              CS
+            <BrandLogoMark />
+            <span className="font-sans text-lg font-semibold tracking-tight">
+              CantonStake
             </span>
-            <span className="font-display text-xl italic">CantonStake</span>
             <span className="rounded-full border border-neon/30 bg-neon/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-widest text-neon">
               Featured
             </span>
           </Link>
 
-          <nav className="hidden min-w-0 items-center gap-1 text-sm md:flex">
+          <nav className="hidden min-w-0 items-center gap-1 text-sm lg:flex">
             {nav.map((item) => {
               const active = pathname === item.href;
               return (
