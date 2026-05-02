@@ -13,10 +13,12 @@ import { StatusDot } from "@/components/StatusDot";
 import { fetchPositions, fetchRewards, type PositionRow } from "@/lib/api";
 import { polygonChain } from "@/lib/chains";
 import { useLoopWallet } from "@/lib/loop-wallet";
+import { makeActivitySeries } from "@/lib/series";
 
 const POL_PRICE_USD = 0.42;
 const CC_PRICE_USD = 0.16;
 const CC_BONUS_APY = 2.4;
+const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_FAKE_POSITIONS === "true";
 
 function short(value: string, head = 6, tail = 4) {
   return `${value.slice(0, head)}...${value.slice(-tail)}`;
@@ -28,14 +30,6 @@ function formatUsd(value: number) {
     currency: "USD",
     maximumFractionDigits: value >= 1000 ? 0 : 2,
   }).format(Number.isFinite(value) ? value : 0);
-}
-
-function makeActivitySeries(base: number) {
-  const floor = Math.max(base, 0.001);
-  return Array.from({ length: 24 }, (_, index) => {
-    const wave = 1 + Math.sin(index / 2.2) * 0.08 + index * 0.002;
-    return floor * wave;
-  });
 }
 
 function activeRows(positions: PositionRow[]) {
@@ -99,6 +93,11 @@ export function Dashboard() {
         <div>
           <div className="mb-2 flex items-center gap-2 font-mono text-xxs uppercase tracking-widest text-ink-400">
             <StatusDot status="active" />
+            {DEMO_MODE && (
+              <span className="rounded-full border border-amber/30 bg-amber/10 px-2 py-0.5 text-amber-bright">
+                DEMO MODE
+              </span>
+            )}
             <span>FEATURED APP · NETWORK SHARE 2.41%</span>
           </div>
           <h1 className="font-display text-4xl">
