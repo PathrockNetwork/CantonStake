@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useAccount } from "wagmi";
+import { BeneficiarySplit } from "@/components/BeneficiarySplit";
 import { Card } from "@/components/Card";
 import { CCRoundTicker } from "@/components/CCRoundTicker";
 import { MetricBlock } from "@/components/MetricBlock";
@@ -115,20 +116,11 @@ export default function RewardsPage() {
                 />
               </div>
 
-              <div className="h-8 flex hairline">
-                <div
-                  className="bg-amber transition-all"
-                  style={{ width: `${rewards.userShare * 100}%` }}
-                />
-                <div
-                  className="bg-ink-500 transition-all"
-                  style={{ width: `${rewards.appShare * 100}%` }}
-                />
-              </div>
-              <div className="flex justify-between mt-3 font-mono text-xxs uppercase tracking-wider text-ink-400">
-                <span>you</span>
-                <span>treasury</span>
-              </div>
+              <BeneficiarySplit
+                userPct={rewards.userShare}
+                treasuryPct={rewards.appShare}
+                showCopy={false}
+              />
               <p className="text-ink-300 text-sm mt-6 max-w-2xl leading-relaxed">
                 The split is defined in the Daml contract itself — not by a
                 backend process. Each FeaturedAppActivityMarker carries two
