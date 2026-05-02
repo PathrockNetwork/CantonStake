@@ -22,6 +22,44 @@ function connectorLabel(connector: { name: string; uid: string }): string {
   return connector.name;
 }
 
+type NavIconType = "home" | "coin" | "chart" | "shield" | "gear";
+
+function NavIcon({ type }: { type: NavIconType }) {
+  if (type === "coin") {
+    return <span className="inline-block h-3 w-3 rounded-full bg-cc" aria-hidden="true" />;
+  }
+
+  const common = "h-4 w-4 text-current";
+  if (type === "home") {
+    return (
+      <svg className={common} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M2.5 7.2 8 2.8l5.5 4.4v6a.7.7 0 0 1-.7.7H10V9.5H6v4.4H3.2a.7.7 0 0 1-.7-.7v-6Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  if (type === "chart") {
+    return (
+      <svg className={common} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M2.5 12.5h11" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+        <path d="m3 10 3-3 2.2 2.1L13 4.3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  if (type === "shield") {
+    return (
+      <svg className={common} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M8 2.2 13 4v3.2c0 3-1.9 5.2-5 6.6-3.1-1.4-5-3.6-5-6.6V4l5-1.8Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  return (
+    <svg className={common} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M6.9 2.4h2.2l.4 1.5c.4.1.8.3 1.1.5l1.4-.8 1.1 1.9-1.1 1.1c.1.4.1.8 0 1.2l1.1 1.1-1.1 1.9-1.4-.8c-.3.2-.7.4-1.1.5l-.4 1.5H6.9l-.4-1.5c-.4-.1-.8-.3-1.1-.5l-1.4.8-1.1-1.9L4 7.8a4.6 4.6 0 0 1 0-1.2L2.9 5.5 4 3.6l1.4.8c.3-.2.7-.4 1.1-.5l.4-1.5Z" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" />
+      <circle cx="8" cy="7.6" r="1.8" stroke="currentColor" strokeWidth="1.1" />
+    </svg>
+  );
+}
+
 export function TopNav() {
   const pathname = usePathname();
   const activeChain = polygonChain();
@@ -42,11 +80,12 @@ export function TopNav() {
     isConnecting: loopConnecting,
   } = useLoopWallet();
 
-  const nav = [
-    { label: "Dashboard", href: "/" },
-    { label: "Stake", href: "/stake" },
-    { label: "Positions", href: "/positions" },
-    { label: "Rewards", href: "/rewards" },
+  const nav: Array<{ label: string; href: string; icon: NavIconType }> = [
+    { label: "Dashboard", href: "/", icon: "home" },
+    { label: "CC Rewards", href: "/rewards", icon: "coin" },
+    { label: "Analytics", href: "/analytics", icon: "chart" },
+    { label: "Validators", href: "/validators", icon: "shield" },
+    { label: "Settings", href: "/settings", icon: "gear" },
   ];
   const wrongNetwork = isConnected && chainId !== activeWagmiChain.id;
 
@@ -98,12 +137,13 @@ export function TopNav() {
                 <Link
                   key={item.href}
                   href={item.href}
-                  className={`rounded-sm px-3 py-1.5 font-mono text-xs uppercase tracking-wider transition-colors ${
+                  className={`flex items-center gap-1.5 rounded-sm px-3 py-1.5 font-mono text-xs uppercase tracking-wider transition-colors ${
                     active
                       ? "bg-ink-800 text-ink-100"
                       : "text-ink-400 hover:text-ink-100"
                   }`}
                 >
+                  <NavIcon type={item.icon} />
                   {item.label}
                 </Link>
               );
