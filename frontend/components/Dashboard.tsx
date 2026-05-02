@@ -12,6 +12,11 @@ import { StatCell } from "@/components/StatCell";
 import { StatusDot } from "@/components/StatusDot";
 import { fetchPositions, fetchRewards, type PositionRow } from "@/lib/api";
 import { polygonChain } from "@/lib/chains";
+import {
+  DEMO_AGGREGATES,
+  DEMO_POSITIONS,
+  type DemoPositionRow,
+} from "@/lib/demo-positions";
 import { useLoopWallet } from "@/lib/loop-wallet";
 import { makeActivitySeries } from "@/lib/series";
 
@@ -48,25 +53,25 @@ export function Dashboard() {
   const positionsQuery = useQuery({
     queryKey: ["dashboard-positions", address],
     queryFn: () => fetchPositions(address!),
-    enabled: !!address,
+    enabled: !DEMO_MODE && !!address,
     refetchInterval: 10000,
   });
   const rewardsQuery = useQuery({
     queryKey: ["dashboard-rewards", address],
     queryFn: () => fetchRewards(address!),
-    enabled: !!address,
+    enabled: !DEMO_MODE && !!address,
     refetchInterval: 10000,
   });
 
-  if (!address) return null;
-  if (positionsQuery.isError || rewardsQuery.isError) {
+  if (!DEMO_MODE && !address) return null;
+  if (!DEMO_MODE && (positionsQuery.isError || rewardsQuery.isError)) {
     return (
       <div className="hairline p-8 font-mono text-sm text-danger">
         dashboard data unavailable
       </div>
     );
   }
-  if (!positionsQuery.data || !rewardsQuery.data) {
+  if (!DEMO_MODE && (!positionsQuery.data || !rewardsQuery.data)) {
     return (
       <div className="hairline p-8 font-mono text-sm text-ink-400">
         loading dashboard...
@@ -74,18 +79,43 @@ export function Dashboard() {
     );
   }
 
-  const positions = activeRows(positionsQuery.data);
+  const realPositions = activeRows(positionsQuery.data ?? []);
+  const positions: Array<PositionRow | DemoPositionRow> = DEMO_MODE
+    ? DEMO_POSITIONS
+    : realPositions;
   const rewards = rewardsQuery.data;
-  const cc = ccBalance ?? rewards.totalUserShare ?? 0;
-  const rewardEvents = Math.max(1, rewards.rewardEventCount ?? 0);
-  const ccPerDay = ((rewards.totalUserShare ?? 0) / rewardEvents) * 144;
+  const cc = DEMO_MODE
+    ? DEMO_AGGREGATES.ccBalance
+    : ccBalance ?? rewards?.totalUserShare ?? 0;
+  const rewardEvents = Math.max(1, rewards?.rewardEventCount ?? 0);
+  const ccPerDay = DEMO_MODE
+    ? DEMO_AGGREGATES.ccEarned24h
+    : ((rewards?.totalUserShare ?? 0) / rewardEvents) * 144;
   const nativePerDay =
-    ((rewards.totalUserPayoutPol ?? 0) / Math.max(1, rewards.rewardSweepCount ?? 0)) *
+    ((rewards?.totalUserPayoutPol ?? 0) / Math.max(1, rewards?.rewardSweepCount ?? 0)) *
     144;
-  const stakedUsd = (rewards.totalBondedPol ?? 0) * POL_PRICE_USD;
-  const blendedApy = polygon.apy + CC_BONUS_APY;
-  const chainCount = positions.length > 0 ? 1 : 0;
+  const nativeUsdPerDay = DEMO_MODE
+    ? DEMO_AGGREGATES.nativeUsd24h
+    : nativePerDay * POL_PRICE_USD;
+  const stakedUsd = DEMO_MODE
+    ? DEMO_AGGREGATES.totalStakedUsd
+    : (rewards?.totalBondedPol ?? 0) * POL_PRICE_USD;
+  const blendedApy = DEMO_MODE
+    ? DEMO_AGGREGATES.blendedApy
+    : polygon.apy + CC_BONUS_APY;
+  const chainCount = DEMO_MODE
+    ? new Set(DEMO_POSITIONS.map((position) => position.chainId)).size
+    : positions.length > 0 ? 1 : 0;
   const singlePosition = positions.length === 1;
+  const displayParty = DEMO_MODE ? "cs::1220ab9f::loop" : partyId;
+  const displayAddress = DEMO_MODE ? "0x7c3a9d0d4ee91d" : address!;
+  const ccPriceUsd = DEMO_MODE ? DEMO_AGGREGATES.ccPriceUsd : CC_PRICE_USD;
+  const blendedSubtitle = DEMO_MODE
+    ? `+ ${DEMO_AGGREGATES.ccBonusApy.toFixed(1)}% CC - Total effective: ${DEMO_AGGREGATES.totalEffectiveApy.toFixed(1)}%`
+    : `${polygon.apy.toFixed(1)}% + ${CC_BONUS_APY.toFixed(1)}% CC = ${blendedApy.toFixed(1)}%`;
+  const nativeEarningsLabel = DEMO_MODE
+    ? `${formatUsd(nativeUsdPerDay)} native`
+    : `${nativePerDay.toFixed(6)} ${polygon.symbol}`;
 
   return (
     <div className="space-y-10 py-8">
@@ -104,8 +134,8 @@ export function Dashboard() {
             {positions.length > 0 ? "Good morning." : "Welcome."}
           </h1>
           <div className="mt-2 font-mono text-xs text-ink-400">
-            Loop party {partyId ? short(partyId, 12, 6) : "unknown"} · EVM{" "}
-            {short(address)}
+            Loop party {displayParty ? short(displayParty, 12, 6) : "unknown"} - EVM{" "}
+            {short(displayAddress)}
           </div>
         </div>
         <CCRoundTicker />
@@ -116,7 +146,7 @@ export function Dashboard() {
           <StatLabel>Total Staked</StatLabel>
           <div className="font-display text-4xl tabular">{formatUsd(stakedUsd)}</div>
           <div className="flex items-center gap-3 text-neon">
-            <Sparkline data={makeActivitySeries(rewards.totalBondedPol ?? 0)} />
+            <Sparkline data={makeActivitySeries(DEMO_MODE ? stakedUsd : rewards?.totalBondedPol ?? 0)} />
             <span className="rounded-full border border-neon/30 bg-neon/10 px-2 py-1 font-mono text-xxs uppercase tracking-wider text-neon">
               + {positions.length} pos
             </span>
@@ -133,19 +163,19 @@ export function Dashboard() {
             <span className="ml-2 font-mono text-sm text-ink-400">CC</span>
           </div>
           <div className="font-mono text-xs text-ink-400">
-            ≈ {formatUsd(cc * CC_PRICE_USD)} · CC/USD ${CC_PRICE_USD}
+            ≈ {formatUsd(cc * ccPriceUsd)} - CC/USD ${ccPriceUsd}
           </div>
         </Card>
 
         <Card padding={22} className="space-y-3">
           <StatLabel>24h Earnings</StatLabel>
           <div className="font-display text-4xl tabular">
-            {formatUsd(ccPerDay * CC_PRICE_USD + nativePerDay * POL_PRICE_USD)}
+            {formatUsd(ccPerDay * ccPriceUsd + nativeUsdPerDay)}
           </div>
           <div className="flex flex-wrap gap-3 font-mono text-xxs text-ink-400">
             <span className="text-cc">● {ccPerDay.toFixed(3)} CC</span>
             <span className="text-neon">
-              ● {nativePerDay.toFixed(6)} {polygon.symbol}
+              ● {nativeEarningsLabel}
             </span>
           </div>
         </Card>
@@ -153,7 +183,7 @@ export function Dashboard() {
         <StatCell
           caption="Blended APY"
           value={`${blendedApy.toFixed(1)}%`}
-          subtitle={`${polygon.apy.toFixed(1)}% + ${CC_BONUS_APY.toFixed(1)}% CC = ${blendedApy.toFixed(1)}%`}
+          subtitle={blendedSubtitle}
           accent="neon"
           padding={22}
         />
@@ -205,8 +235,8 @@ export function Dashboard() {
                   key={position.contractId}
                   position={position}
                   singlePosition={singlePosition}
-                  nativeRewards={rewards.totalUserPayoutPol ?? 0}
-                  ccEarned={rewards.totalUserShare ?? 0}
+                  nativeRewards={rewards?.totalUserPayoutPol ?? 0}
+                  ccEarned={rewards?.totalUserShare ?? 0}
                 />
               ))}
             </div>
@@ -214,7 +244,7 @@ export function Dashboard() {
         )}
       </Card>
 
-      <MultiChainRoadmap />
+      {!DEMO_MODE && <MultiChainRoadmap />}
     </div>
   );
 }
