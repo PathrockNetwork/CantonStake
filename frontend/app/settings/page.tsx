@@ -4,7 +4,6 @@ import { useState } from "react";
 import { useAccount } from "wagmi";
 import { BeneficiarySplit } from "@/components/BeneficiarySplit";
 import { Card } from "@/components/Card";
-import { StatusDot } from "@/components/StatusDot";
 import { useLoopWallet } from "@/lib/loop-wallet";
 
 const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_FAKE_POSITIONS === "true";
@@ -87,15 +86,6 @@ export default function SettingsPage() {
     window.setTimeout(() => setCopied(null), 1200);
   }
 
-  const features = [
-    "Auto-compound rewards",
-    "Advanced PnL analytics",
-    "Multi-validator splits",
-    "Priority CC weight",
-    "CSV exports",
-    "Dedicated support",
-  ];
-
   return (
     <div className="mx-auto max-w-4xl space-y-5 py-8">
       <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
@@ -169,39 +159,6 @@ export default function SettingsPage() {
           </p>
         </div>
         <BeneficiarySplit userPct={0.75} treasuryPct={0.25} showCopy={false} />
-      </Card>
-
-      <Card padding={28} className="space-y-6">
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto] md:items-start">
-          <div>
-            <h2 className="font-display text-2xl">CantonStake Premium</h2>
-            <p className="mt-1 text-sm text-ink-400">
-              Auto-compound - advanced analytics - higher CC weight
-            </p>
-          </div>
-          <div className="font-display text-4xl tabular">
-            $20<span className="ml-1 font-mono text-sm text-ink-400">/mo</span>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {features.map((feature) => (
-            <div key={feature} className="flex items-center gap-2 text-sm text-ink-300">
-              <StatusDot status="done" />
-              <span>{feature}</span>
-            </div>
-          ))}
-        </div>
-
-        <button
-          type="button"
-          onClick={() =>
-            window.alert("Premium ships post-hackathon - this is a UI demo.")
-          }
-          className="bg-neon px-5 py-3 font-mono text-xs font-semibold uppercase tracking-wider text-neon-text transition-colors hover:bg-neon/90"
-        >
-          Upgrade to Premium
-        </button>
       </Card>
     </div>
   );
