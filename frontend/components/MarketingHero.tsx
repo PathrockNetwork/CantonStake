@@ -31,10 +31,10 @@ export function MarketingHero() {
               Open staking console →
             </Link>
             <Link
-              href="/positions"
+              href="/portfolio"
               className="font-mono text-xs uppercase tracking-wider text-ink-300 hover:text-ink-100 hairline px-6 py-3"
             >
-              View positions
+              View portfolio
             </Link>
           </div>
         </div>
