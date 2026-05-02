@@ -19,7 +19,7 @@ export default function RootLayout({
       <body>
         <Providers>
           <TopNav />
-          <main className="max-w-6xl mx-auto px-6 py-12">{children}</main>
+          <main className="mx-auto max-w-7xl px-8 py-10">{children}</main>
           <footer className="hairline-t mt-20 py-6 text-center text-xs text-ink-400 font-mono">
             CANTONSTAKE · HACKATHON MVP · BUILT FOR CANTON NETWORK
           </footer>

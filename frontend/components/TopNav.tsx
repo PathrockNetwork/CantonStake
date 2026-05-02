@@ -111,8 +111,8 @@ export function TopNav() {
 
   return (
     <header className="hairline-b sticky top-0 z-50 bg-ink-950/80 backdrop-blur">
-      <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-6">
-        <div className="flex items-center gap-7">
+      <div className="mx-auto flex h-14 max-w-[1440px] items-center justify-between gap-5 px-6">
+        <div className="flex min-w-0 items-center gap-6">
           <Link href="/" className="flex items-center gap-2.5">
             <span
               className="grid h-7 w-7 place-items-center bg-amber-bright font-mono text-[10px] font-bold text-ink-950"
@@ -130,14 +130,14 @@ export function TopNav() {
             </span>
           </Link>
 
-          <nav className="hidden items-center gap-1 text-sm md:flex">
+          <nav className="hidden min-w-0 items-center gap-1 text-sm md:flex">
             {nav.map((item) => {
               const active = pathname === item.href;
               return (
                 <Link
                   key={item.href}
                   href={item.href}
-                  className={`flex items-center gap-1.5 rounded-sm px-3 py-1.5 font-mono text-xs uppercase tracking-wider transition-colors ${
+                  className={`flex items-center gap-1.5 whitespace-nowrap rounded-sm px-3 py-1.5 text-[12.5px] font-medium transition-colors ${
                     active
                       ? "bg-ink-800 text-ink-100"
                       : "text-ink-400 hover:text-ink-100"
@@ -151,7 +151,7 @@ export function TopNav() {
           </nav>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex shrink-0 items-center gap-2.5">
           <CcPriceChip />
           <NotificationButton />
 
