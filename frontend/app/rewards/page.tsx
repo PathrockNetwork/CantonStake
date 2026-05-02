@@ -15,6 +15,8 @@ import { SectionLabel } from "@/components/SectionLabel";
 import { fetchPositions, fetchRewards } from "@/lib/api";
 import type { RewardEventRow } from "@/lib/api/contracts";
 
+const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_FAKE_POSITIONS === "true";
+
 export default function RewardsPage() {
   const { address, isConnected } = useAccount();
 
@@ -59,6 +61,11 @@ export default function RewardsPage() {
           <p className="font-mono text-xxs uppercase tracking-widest text-amber-bright mb-4">
             § 03 · rewards
           </p>
+          {DEMO_MODE && (
+            <span className="mb-4 inline-flex rounded-full border border-amber/30 bg-amber/10 px-2 py-0.5 font-mono text-xxs uppercase tracking-widest text-amber-bright">
+              DEMO MODE
+            </span>
+          )}
           <h1 className="font-display text-5xl mb-3">Activity attribution</h1>
           <p className="text-ink-300 max-w-2xl">
             Every FeaturedAppActivityMarker your positions emit is converted
