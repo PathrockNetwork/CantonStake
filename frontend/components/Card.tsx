@@ -14,13 +14,14 @@ const paddingClasses: Record<number, string> = {
 
 export function Card({ children, padding, glow = false, className = "" }: CardProps) {
   const paddingClass = padding === undefined ? "" : paddingClasses[padding] ?? "";
+  const roundedClass = className.includes("rounded-") ? "" : "rounded-xl";
   const glowClass = glow
-    ? "ring-1 ring-amber/30 shadow-[0_0_30px_rgba(245,158,11,0.15)]"
+    ? "ring-1 ring-neon/20 shadow-[0_0_42px_rgba(0,255,157,0.10)]"
     : "";
 
   return (
     <div
-      className={`hairline bg-ink-900/40 ${paddingClass} ${glowClass} ${className}`}
+      className={`hairline ${roundedClass} bg-ink-900/70 shadow-[0_18px_60px_rgba(0,0,0,0.16)] ${paddingClass} ${glowClass} ${className}`}
       style={padding !== undefined && !paddingClass ? { padding } : undefined}
     >
       {children}
