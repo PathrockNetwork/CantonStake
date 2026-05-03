@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { Providers } from "./providers";
-import { TopNav } from "@/components/TopNav";
+import { TopNav } from "@/components/chrome/TopNav";
+import { GlobalLiveTrace } from "@/components/trace/GlobalLiveTrace";
 
 export const metadata: Metadata = {
   title: "CantonStake — Canton-Native Delegation",
@@ -19,10 +20,14 @@ export default function RootLayout({
       <body>
         <Providers>
           <TopNav />
-          <main className="mx-auto max-w-7xl px-8 py-10">{children}</main>
-          <footer className="hairline-t mt-20 py-6 text-center text-xs text-ink-400 font-mono">
-            CANTONSTAKE · HACKATHON MVP · BUILT FOR CANTON NETWORK
-          </footer>
+          {/*
+            No outer container here. Each ported screen owns its own
+            max-width / padding (the prototype uses 1280–1440px max with
+            screen-specific paddings). Un-ported screens will look
+            edge-to-edge until Step 6 ports them.
+          */}
+          {children}
+          <GlobalLiveTrace />
         </Providers>
       </body>
     </html>
