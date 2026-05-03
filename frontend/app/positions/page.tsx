@@ -2,148 +2,404 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useAccount } from "wagmi";
-import { Card } from "@/components/Card";
-import { EmptyState } from "@/components/EmptyState";
-import { MultiChainRoadmap } from "@/components/MultiChainRoadmap";
-import { PositionDashboardRow } from "@/components/PositionDashboardRow";
-import { StatCell } from "@/components/StatCell";
-import { StatusDot } from "@/components/StatusDot";
-import { fetchPositions } from "@/lib/api";
-import { polygonChain } from "@/lib/chains";
+import { Card } from "@/components/primitives/Card";
+import { Chip } from "@/components/primitives/Chip";
+import { EmptyState } from "@/components/primitives/EmptyState";
+import { SectionLabel } from "@/components/primitives/SectionLabel";
+import { fetchPositions, type PositionRow } from "@/lib/api";
+import { fmt } from "@/lib/format";
+import { tokens } from "@/lib/tokens";
 
-const POL_PRICE_USD = 0.42;
-const statusStyles: Record<string, string> = {
-  Pending: "text-ink-300",
-  Bonded: "text-success",
-  Unbonding: "text-warning",
-  Released: "text-ink-400",
-  Cancelled: "text-danger",
+/**
+ * Positions — ported from handoff/prototype/redesign/screens.jsx (`Positions`).
+ *
+ * Wires the 4-stat row, table, and lifecycle timeline to real
+ * `fetchPositions(address)`. The lifecycle timeline is synthesised
+ * from the focused position's status + markersEmitted — the
+ * orchestrator emits real lifecycle events server-side but they
+ * aren't exposed via the position read API yet.
+ *
+ * Unstake/sweep mechanics from the previous /positions page are
+ * temporarily dropped to match the prototype's read-only design.
+ * Restore them as row actions if needed for the demo.
+ */
+
+type Lifecycle = "bonded" | "unbonding" | "released" | "cancelled" | "pending";
+
+const STATUS_TO_LIFECYCLE: Record<string, Lifecycle> = {
+  Bonded: "bonded",
+  Unbonding: "unbonding",
+  Released: "released",
+  Cancelled: "cancelled",
+  Pending: "pending",
 };
+
+function lifecycleColor(l: Lifecycle): string {
+  switch (l) {
+    case "bonded":
+      return tokens.neon;
+    case "unbonding":
+      return tokens.warning;
+    case "released":
+      return tokens.ink[300];
+    case "cancelled":
+      return tokens.ink[500];
+    case "pending":
+      return tokens.warning;
+  }
+}
+
+function relativeTime(iso?: string): string {
+  if (!iso) return "—";
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60_000) return `${Math.floor(ms / 1000)}s ago`;
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
+  return `${Math.floor(ms / 86_400_000)}d ago`;
+}
+
+function shortContract(id: string): string {
+  if (id.length <= 18) return id;
+  return `${id.slice(0, 12)}...${id.slice(-4)}`;
+}
 
 export default function PositionsPage() {
   const { address, isConnected } = useAccount();
-  const polygon = polygonChain();
-
-  const {
-    data: positions,
-    isLoading,
-    refetch,
-  } = useQuery({
+  const { data: positions = [], isLoading } = useQuery({
     queryKey: ["positions", address],
     queryFn: () => (address ? fetchPositions(address) : Promise.resolve([])),
     enabled: !!address,
     refetchInterval: 5000,
   });
 
-  const totalBonded =
-    positions
-      ?.filter((p) => p.argument.status === "Bonded")
-      .reduce((sum, p) => sum + Number(p.argument.amountPol), 0) ?? 0;
-  const totalMarkers =
-    positions?.reduce((sum, p) => sum + p.argument.markersEmitted, 0) ?? 0;
-  const activeValidators = positions && positions.length > 0 ? 1 : 0;
+  const counts = positions.reduce(
+    (acc, p) => {
+      const l = STATUS_TO_LIFECYCLE[p.argument.status];
+      if (l === "bonded") acc.bonded += 1;
+      else if (l === "unbonding") acc.unbonding += 1;
+      else if (l === "released") acc.released += 1;
+      else if (l === "cancelled") acc.cancelled += 1;
+      return acc;
+    },
+    { bonded: 0, unbonding: 0, released: 0, cancelled: 0 },
+  );
+
+  const focused =
+    positions.find((p) => p.argument.status === "Unbonding") ?? positions[0];
 
   return (
-    <div className="space-y-12 py-8">
-      <header>
-        <p className="font-mono text-xxs uppercase tracking-widest text-amber-bright mb-4">
-          § 02 · positions
-        </p>
-        <h1 className="font-display text-5xl mb-3">Your delegations</h1>
-        <p className="text-ink-300">
-          Source of truth is the Canton ledger. Polygon is the settlement layer.
-        </p>
-      </header>
+    <div style={{ maxWidth: 1280, margin: "0 auto", padding: "40px 22px 80px" }}>
+      <SectionLabel>§ POSITIONS · LIVE</SectionLabel>
+      <h1
+        className="display"
+        style={{ fontSize: 42, margin: "4px 0 12px", color: tokens.ink[100] }}
+      >
+        State machine, on-ledger.
+      </h1>
+      <p
+        style={{
+          fontSize: 14,
+          lineHeight: 1.6,
+          color: tokens.ink[300],
+          maxWidth: 680,
+          margin: "0 0 24px",
+        }}
+      >
+        Each position moves through a Canton-recorded lifecycle: requested,
+        bonded, unbonding, released, or cancelled.
+      </p>
 
-      {!isConnected && (
-        <Card padding={32} className="text-center text-ink-300 font-mono text-sm">
-          connect your wallet to view positions
-        </Card>
-      )}
-
-      {isConnected && isLoading && (
-        <Card padding={32} className="text-center text-ink-400 font-mono text-sm">
-          loading positions...
-        </Card>
-      )}
-
-      {isConnected && positions && (
+      {!isConnected ? (
+        <EmptyState
+          tone="warn"
+          title="Connect your wallet"
+          subtitle="Positions are scoped to your EVM address. Connect both Loop and EVM to see your live staking lifecycle."
+        />
+      ) : (
         <>
-          <Card padding={0} className="overflow-hidden">
-            <div className="flex items-center justify-between gap-4 border-b border-ink-700 px-5 py-4">
-              <div>
-                <div className="mb-2 flex items-center gap-2 font-mono text-xxs uppercase tracking-widest text-ink-400">
-                  <StatusDot status="active" />
-                  <span>ACTIVE LEDGER · CANTON</span>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(4,1fr)",
+              gap: 1,
+              background: tokens.hairline,
+              marginBottom: 24,
+            }}
+          >
+            {[
+              { l: "Bonded", s: "Currently earning", v: counts.bonded, a: tokens.neon },
+              { l: "Unbonding", s: "Exit in progress", v: counts.unbonding, a: tokens.warning },
+              { l: "Released", s: "Lifecycle complete", v: counts.released, a: tokens.ink[300] },
+              { l: "Cancelled", s: "Request closed", v: counts.cancelled, a: tokens.ink[500] },
+            ].map((s) => (
+              <div
+                key={s.l}
+                style={{ background: tokens.ink[900], padding: "18px 22px" }}
+              >
+                <SectionLabel>{s.l}</SectionLabel>
+                <div
+                  className="display tabular"
+                  style={{ fontSize: 36, color: s.a, marginTop: 6 }}
+                >
+                  {s.v}
                 </div>
-                <h2 className="font-display text-2xl">Your delegations</h2>
+                <div
+                  className="mono"
+                  style={{ fontSize: 10, color: tokens.ink[400], marginTop: 6 }}
+                >
+                  {s.s}
+                </div>
               </div>
-              {/* slot: B3 user-switcher dropdown */}
-              <div data-slot="user-switcher" />
+            ))}
+          </div>
+
+          <Card padding={0} style={{ marginBottom: 24 }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1.4fr 1fr 1fr 1fr 1fr 80px",
+                padding: "10px 22px",
+                borderBottom: `1px solid ${tokens.hairline}`,
+                gap: 12,
+              }}
+            >
+              {["Contract id", "Staked", "Lifecycle", "Bonded since", "Markers", "Status"].map(
+                (h) => (
+                  <SectionLabel key={h}>{h}</SectionLabel>
+                ),
+              )}
             </div>
+            {isLoading ? (
+              <div
+                className="mono"
+                style={{ padding: "40px 22px", color: tokens.ink[400], textAlign: "center" }}
+              >
+                loading positions…
+              </div>
+            ) : positions.length === 0 ? (
+              <div style={{ padding: 22 }}>
+                <EmptyState
+                  title="No positions yet"
+                  subtitle="Open the staking console to bond your first POL position."
+                />
+              </div>
+            ) : (
+              positions.map((p) => <Row key={p.contractId} p={p} />)
+            )}
           </Card>
 
-          <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <StatCell
-              caption="Total bonded"
-              value={`${totalBonded.toFixed(4)} ${polygon.symbol}`}
-              subtitle={`${(totalBonded * POL_PRICE_USD).toLocaleString(undefined, {
-                style: "currency",
-                currency: "USD",
-                maximumFractionDigits: 2,
-              })}`}
-              accent="neon"
-              padding={22}
-            />
-            <StatCell
-              caption="Total markers"
-              value={totalMarkers.toString()}
-              subtitle={`across ${positions.length} positions`}
-              padding={22}
-            />
-            <StatCell
-              caption="Active validators"
-              value={activeValidators.toString()}
-              subtitle="delegated via orchestrator"
-              padding={22}
-            />
-          </section>
-
-          {positions.length === 0 ? (
-            <EmptyState
-              title="No positions yet"
-              body="No positions yet — head to /stake to create your first delegation."
-              actionHref="/stake"
-              actionLabel="Open stake flow"
-            />
-          ) : (
-            <Card padding={0} className="overflow-hidden">
-              <div className="overflow-x-auto">
-                <div className="min-w-[940px]">
-                  <div className="grid grid-cols-[1.2fr_0.8fr_0.7fr_0.9fr_1.1fr_1.3fr] gap-3 border-b border-ink-700 px-5 py-3 font-mono text-xxs uppercase tracking-widest text-ink-400">
-                    <div>Chain · Status</div>
-                    <div>Amount</div>
-                    <div>Markers</div>
-                    <div>Bonded since</div>
-                    <div>Status timeline</div>
-                    <div className="text-right">Actions</div>
-                  </div>
-                  {positions.map((position) => (
-                    <PositionDashboardRow
-                      key={position.contractId}
-                      position={position}
-                      onActed={refetch}
-                      statusStyles={statusStyles}
-                    />
-                  ))}
-                </div>
-              </div>
-            </Card>
-          )}
-
-          <MultiChainRoadmap />
+          {focused && <Timeline p={focused} />}
         </>
       )}
     </div>
+  );
+}
+
+function Row({ p }: { p: PositionRow }) {
+  const lifecycle = STATUS_TO_LIFECYCLE[p.argument.status] ?? "pending";
+  const color = lifecycleColor(lifecycle);
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "1.4fr 1fr 1fr 1fr 1fr 80px",
+        padding: "14px 22px",
+        borderBottom: `1px solid ${tokens.hairline}`,
+        alignItems: "center",
+        gap: 12,
+      }}
+    >
+      <div className="mono tabular" style={{ fontSize: 11.5, color: tokens.ink[100] }}>
+        {shortContract(p.contractId)}
+      </div>
+      <div className="mono tabular" style={{ fontSize: 13, color: tokens.ink[100] }}>
+        {fmt(parseFloat(p.argument.amountPol), 2)} POL
+      </div>
+      <Chip color={color} dot={lifecycle === "bonded" || lifecycle === "unbonding"}>
+        {lifecycle}
+      </Chip>
+      <div className="mono" style={{ fontSize: 11, color: tokens.ink[300] }}>
+        {relativeTime(p.argument.bondedAt)}
+      </div>
+      <div className="mono tabular" style={{ fontSize: 11, color: tokens.cc }}>
+        {p.argument.markersEmitted}
+      </div>
+      <div className="mono" style={{ fontSize: 10, color: tokens.ink[400] }}>
+        {p.argument.status}
+      </div>
+    </div>
+  );
+}
+
+function Timeline({ p }: { p: PositionRow }) {
+  const events: Array<{
+    id: string;
+    label: string;
+    detail: string;
+    t: string;
+    done: boolean;
+    kind: "CANTON" | "POLYGON" | "MARKER";
+  }> = [
+    {
+      id: "request",
+      label: "Request created",
+      detail: "Canton contract created for this staking intent.",
+      t: relativeTime(p.argument.bondedAt),
+      done: true,
+      kind: "CANTON",
+    },
+    {
+      id: "bond",
+      label: "Bonded",
+      detail: `POL delegation confirmed on Polygon · contract ${shortContract(p.contractId)}`,
+      t: relativeTime(p.argument.bondedAt),
+      done: !!p.argument.bondedAt,
+      kind: "POLYGON",
+    },
+    {
+      id: "marker",
+      label: "Marker emitted",
+      detail: `${p.argument.markersEmitted} Canton activity marker${
+        p.argument.markersEmitted === 1 ? "" : "s"
+      } recorded for Featured App reward accounting.`,
+      t: p.argument.markersEmitted > 0 ? "after bond" : "—",
+      done: p.argument.markersEmitted > 0,
+      kind: "MARKER",
+    },
+    {
+      id: "unbond",
+      label: "Unbonding",
+      detail: "Exit started · withdrawal delay applies before release.",
+      t: relativeTime(p.argument.unbondingStartedAt),
+      done: !!p.argument.unbondingStartedAt,
+      kind: "POLYGON",
+    },
+    {
+      id: "release",
+      label: "Released",
+      detail: "Withdrawal claimed; lifecycle closed.",
+      t: relativeTime(p.argument.releasedAt),
+      done: !!p.argument.releasedAt,
+      kind: "CANTON",
+    },
+  ];
+  const lifecycle = STATUS_TO_LIFECYCLE[p.argument.status] ?? "pending";
+  return (
+    <Card padding={0}>
+      <div
+        style={{
+          padding: "16px 22px",
+          borderBottom: `1px solid ${tokens.hairline}`,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-end",
+        }}
+      >
+        <div>
+          <SectionLabel>§ Lifecycle proof · {shortContract(p.contractId)}</SectionLabel>
+          <div
+            className="display"
+            style={{ fontSize: 24, color: tokens.ink[100], marginTop: 2 }}
+          >
+            Lifecycle timeline.
+          </div>
+          <div
+            className="mono"
+            style={{ fontSize: 10.5, color: tokens.ink[400], marginTop: 2 }}
+          >
+            {fmt(parseFloat(p.argument.amountPol), 2)} POL · {p.argument.status}
+          </div>
+        </div>
+        <Chip color={lifecycleColor(lifecycle)} dot>
+          {lifecycle}
+        </Chip>
+      </div>
+      <div style={{ padding: "24px 22px" }}>
+        <div style={{ position: "relative", paddingLeft: 24 }}>
+          <div
+            style={{
+              position: "absolute",
+              left: 6,
+              top: 6,
+              bottom: 6,
+              width: 1,
+              background: tokens.hairline,
+            }}
+          />
+          {events.map((e, i) => {
+            const k =
+              e.kind === "CANTON"
+                ? tokens.neon
+                : e.kind === "POLYGON"
+                ? tokens.amberBright
+                : tokens.cc;
+            return (
+              <div
+                key={e.id}
+                style={{
+                  position: "relative",
+                  marginBottom: i === events.length - 1 ? 0 : 18,
+                }}
+              >
+                <div
+                  style={{
+                    position: "absolute",
+                    left: -22,
+                    top: 4,
+                    width: 11,
+                    height: 11,
+                    borderRadius: "50%",
+                    background: e.done ? k : tokens.ink[900],
+                    border: `1.5px solid ${k}`,
+                    boxShadow: e.done ? "none" : `inset 0 0 0 2px ${tokens.ink[900]}`,
+                    animation: e.done ? "none" : "pulse-dot 2s infinite",
+                  }}
+                />
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "baseline",
+                    gap: 12,
+                  }}
+                >
+                  <div>
+                    <span
+                      className="mono"
+                      style={{
+                        fontSize: 9.5,
+                        color: k,
+                        letterSpacing: ".12em",
+                        marginRight: 8,
+                      }}
+                    >
+                      {e.kind}
+                    </span>
+                    <span
+                      className="mono"
+                      style={{ fontSize: 12, color: tokens.ink[100] }}
+                    >
+                      {e.label}
+                    </span>
+                  </div>
+                  <span
+                    className="mono"
+                    style={{ fontSize: 10, color: tokens.ink[400] }}
+                  >
+                    {e.t}
+                  </span>
+                </div>
+                <div
+                  className="mono"
+                  style={{ fontSize: 10.5, color: tokens.ink[400], marginTop: 3 }}
+                >
+                  {e.detail}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </Card>
   );
 }
