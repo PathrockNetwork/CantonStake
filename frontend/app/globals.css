@@ -8,6 +8,36 @@
   --grid-line: rgba(255, 255, 255, 0.035);
   --bg: #060708;
   --fg: #e8e8ec;
+
+  /* Redesign tokens — typed mirror in lib/tokens.ts */
+  --ink-950: #0a0a0b;
+  --ink-900: #111113;
+  --ink-850: #141417;
+  --ink-800: #17171a;
+  --ink-700: #1e1e22;
+  --ink-600: #2a2a30;
+  --ink-500: #3a3a42;
+  --ink-400: #6a6a75;
+  --ink-300: #9a9aa3;
+  --ink-200: #cacad0;
+  --ink-100: #e8e8ec;
+
+  --neon: #00ff9d;
+  --neon-text: #001a10;
+  --neon-dim: rgba(0, 255, 157, 0.12);
+  --neon-glow: rgba(0, 255, 157, 0.40);
+
+  --cc: #f5a623;
+  --cc-dim: rgba(245, 166, 35, 0.12);
+  --cc-glow: #fbbf24;
+
+  --amber: #d97706;
+  --amber-bright: #f59e0b;
+  --danger: #ef4444;
+  --success: #10b981;
+
+  --hairline: rgba(255, 255, 255, 0.08);
+  --hairline-strong: rgba(255, 255, 255, 0.16);
 }
 
 * {
@@ -105,4 +135,75 @@ a {
 
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.16);
+}
+
+/* ============================================================
+   Redesign utilities — used by handoff/prototype port
+   ============================================================ */
+
+.mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+.display {
+  font-family: 'Instrument Serif', Georgia, serif;
+}
+
+.grid-bg {
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+/* ============================================================
+   Redesign keyframes — used by inline SVG / dynamic styles
+   that can't go through Tailwind's animation utilities
+   ============================================================ */
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.4; transform: scale(0.85); }
+}
+
+@keyframes ticker {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+@keyframes spark {
+  0%   { opacity: 0; transform: scale(0.6); }
+  30%  { opacity: 1; transform: scale(1.4); }
+  100% { opacity: 0; transform: scale(2.2); }
+}
+
+@keyframes flow-dash {
+  to { stroke-dashoffset: -40; }
+}
+
+@keyframes blink-caret {
+  0%, 49%   { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes flow-particle {
+  0%   { offset-distance: 0%; opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { offset-distance: 100%; opacity: 0; }
+}
+
+/* Auto-scrolling ticker — used by PriceTape */
+.ticker {
+  display: inline-flex;
+  white-space: nowrap;
+  animation: ticker 60s linear infinite;
+}
+.ticker:hover {
+  animation-play-state: paused;
 }
