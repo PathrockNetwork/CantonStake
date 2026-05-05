@@ -6,6 +6,7 @@ export type ChainPhase = "live" | "planned" | "soon";
 export type ChainConfig = {
   id: "polygon" | "moonbeam" | "monad" | "polkadot" | "cosmos";
   phase: ChainPhase;
+  hasAdapter?: boolean;
   symbol: string;
   name: string;
   type: string;
@@ -29,6 +30,7 @@ export const CHAINS: ChainConfig[] = [
   {
     id: "polygon",
     phase: "live",
+    hasAdapter: true,
     symbol: "POL",
     name: "Polygon Amoy",
     type: "EVM testnet",
@@ -131,8 +133,14 @@ if (process.env.NODE_ENV !== "production") {
     if (ids.has(chain.id)) console.warn(`[chains] duplicate chain id ${chain.id}`);
     ids.add(chain.id);
 
-    if (chain.phase === "live" && (!chain.wagmiChain || !chain.validatorContract || !chain.explorer)) {
+    if (
+      chain.phase === "live" &&
+      (!chain.wagmiChain || !chain.validatorContract || !chain.explorer)
+    ) {
       console.warn(`[chains] live chain ${chain.id} missing config`);
+    }
+    if (chain.phase === "live" && !chain.hasAdapter) {
+      console.warn(`[chains] live chain ${chain.id} is missing a chain adapter`);
     }
     if (chain.phase !== "live" && chain.wagmiChain) {
       console.warn(`[chains] non-live chain ${chain.id} has wagmi config`);
