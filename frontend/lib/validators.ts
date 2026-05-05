@@ -112,3 +112,12 @@ export const VALIDATORS: Partial<Record<ChainConfig["id"], ValidatorRow[]>> = {
 
 export const validatorsForChain = (id: string) =>
   VALIDATORS[id as ChainConfig["id"]] ?? [];
+
+export const validatorByAddress = (id: string, address: string) =>
+  validatorsForChain(id).find(
+    (validator) => validator.address.toLowerCase() === address.toLowerCase(),
+  );
+
+export const recommendedValidatorForChain = (id: string) =>
+  validatorsForChain(id).find((validator) => validator.recommended) ??
+  validatorsForChain(id)[0];

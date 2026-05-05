@@ -4,9 +4,9 @@ import { useEffect, useState } from "react";
 import {
   useAccount,
   useChainId,
+  useSendTransaction,
   useSwitchChain,
   useWaitForTransactionReceipt,
-  useWriteContract,
 } from "wagmi";
 import { parseEther } from "viem";
 import { IconArrowRight } from "@/components/icons";
@@ -17,9 +17,9 @@ import { Chip } from "@/components/primitives/Chip";
 import { MarkerSpark } from "@/components/primitives/MarkerSpark";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { emitTrace } from "@/components/trace/useTraceLog";
-import { mockValidatorShareAbi } from "@/lib/abi";
 import { createStakingRequest } from "@/lib/api";
 import { polygonChain } from "@/lib/chains";
+import { adapterFor } from "@/lib/chains/index";
 import { fmt, fmtUsd } from "@/lib/format";
 import { useLoopWallet } from "@/lib/loop-wallet";
 import { tokens } from "@/lib/tokens";
@@ -98,6 +98,7 @@ export default function StakePage() {
   const { switchChainAsync, isPending: switchPending } = useSwitchChain();
   const { partyId, isConnected: loopConnected } = useLoopWallet();
   const polygon = polygonChain();
+  const adapter = adapterFor(polygon.id);
   const polygonId = polygon.wagmiChain!.id;
   const wrongNetwork = isConnected && chainId !== polygonId;
 
@@ -109,11 +110,11 @@ export default function StakePage() {
 
   const {
     data: hash,
-    isPending: writePending,
-    writeContract,
-    error: writeError,
-    reset: resetWrite,
-  } = useWriteContract();
+    isPending: sendPending,
+    sendTransaction,
+    error: sendError,
+    reset: resetSend,
+  } = useSendTransaction();
   const {
     isLoading: confirming,
     isSuccess: confirmed,
@@ -121,8 +122,8 @@ export default function StakePage() {
 
   // Promote simulation step when wagmi state advances
   useEffect(() => {
-    if (writePending && step < 2) advance(2);
-  }, [writePending, step]);
+    if (sendPending && step < 2) advance(2);
+  }, [sendPending, step]);
 
   useEffect(() => {
     if (hash && !confirming && !confirmed && step < 2) advance(2);
@@ -142,12 +143,12 @@ export default function StakePage() {
   }, [hash, confirming, confirmed, step]);
 
   useEffect(() => {
-    if (writeError) {
-      setError(writeError.message);
+    if (sendError) {
+      setError(sendError.message);
       setStep(0);
       setShowSpark(false);
     }
-  }, [writeError]);
+  }, [sendError]);
 
   function advance(target: 1 | 2 | 3 | 4 | 5) {
     const idx = target - 1;
@@ -169,7 +170,7 @@ export default function StakePage() {
     setStep(0);
     setShowSpark(false);
     setError(null);
-    resetWrite();
+    resetSend();
 
     try {
       // Stage 01 — Canton request created (real backend call)
@@ -186,13 +187,26 @@ export default function StakePage() {
       }
 
       // Stage 02 — wagmi write (advance happens in effect when isPending flips)
+      const [validator] = await adapter.getValidators();
+      if (!validator) {
+        throw new Error("No Polygon validator is available for staking.");
+      }
+
       const amountWei = parseEther(amount);
-      writeContract({
-        address: polygon.validatorContract!,
-        abi: mockValidatorShareAbi,
-        functionName: "buyVoucher",
-        args: [amountWei, amountWei],
-        value: amountWei,
+      const tx = await adapter.buildDelegateTx({
+        validator: validator.address,
+        amount: amountWei,
+        delegator: address,
+      });
+      if (tx.kind !== "evm") {
+        throw new Error(`Unexpected Polygon tx kind: ${tx.kind}`);
+      }
+
+      sendTransaction({
+        chainId: polygonId,
+        to: tx.to,
+        data: tx.data,
+        value: tx.value ?? 0n,
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
