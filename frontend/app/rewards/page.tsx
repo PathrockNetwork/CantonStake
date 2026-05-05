@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useAccount } from "wagmi";
 import { BeneficiaryPipeline } from "@/components/diagrams/BeneficiaryPipeline";
+import { RoundVisualizer } from "@/components/diagrams/RoundVisualizer";
 import { Card } from "@/components/primitives/Card";
 import { EmptyState } from "@/components/primitives/EmptyState";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
@@ -104,6 +105,13 @@ export default function RewardsPage() {
         </div>
       ) : (
         <>
+          {/* Live round visualizer — demo climax */}
+          <RoundVisualizer
+            userCc={userCc}
+            treasuryCc={treasuryCc}
+            rewardEventCount={rewards?.rewardEventCount ?? 0}
+          />
+
           {/* Stat row */}
           <div
             style={{
