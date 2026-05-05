@@ -21,7 +21,7 @@ import { createStakingRequest } from "@/lib/api";
 import { polygonChain } from "@/lib/chains";
 import { adapterFor } from "@/lib/chains/index";
 import { fmt, fmtUsd } from "@/lib/format";
-import { useLoopWallet } from "@/lib/loop-wallet";
+import { useCantonWallet } from "@/lib/canton";
 import { tokens } from "@/lib/tokens";
 
 /**
@@ -96,7 +96,7 @@ export default function StakePage() {
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
   const { switchChainAsync, isPending: switchPending } = useSwitchChain();
-  const { partyId, isConnected: loopConnected } = useLoopWallet();
+  const { partyId, isConnected: loopConnected } = useCantonWallet();
   const polygon = polygonChain();
   const adapter = adapterFor(polygon.id);
   const polygonId = polygon.wagmiChain!.id;

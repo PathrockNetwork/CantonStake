@@ -16,7 +16,7 @@ import {
 import { Logo } from "@/components/primitives/Logo";
 import { StatusDot } from "@/components/primitives/StatusDot";
 import { tokens } from "@/lib/tokens";
-import { useLoopWallet } from "@/lib/loop-wallet";
+import { useCantonWallet } from "@/lib/canton";
 
 /**
  * Top navigation chrome — ported from
@@ -28,7 +28,7 @@ import { useLoopWallet } from "@/lib/loop-wallet";
  *
  * Wallet integration deviates from the static prototype values
  * (`cs::1220ab9f...loop`, `0x7c3a...e91d`) — we wire real
- * `useLoopWallet()` and `useAccount()` so the chrome is honest the
+ * `useCantonWallet()` and `useAccount()` so the chrome is honest the
  * moment it mounts. Empty states ("Connect Loop", "Connect EVM")
  * stay terse and are clickable links to /stake (PORT_GUIDE §8 ties
  * connect flow to the Stake page).
@@ -106,7 +106,7 @@ function IdentityChip({
 export function TopNav() {
   const pathname = usePathname();
   const { address, isConnected } = useAccount();
-  const { partyId, isConnected: loopConnected } = useLoopWallet();
+  const { partyId, isConnected: loopConnected } = useCantonWallet();
 
   return (
     <header
