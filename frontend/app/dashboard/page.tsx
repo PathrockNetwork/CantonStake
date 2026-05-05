@@ -11,7 +11,7 @@ import { StatusDot } from "@/components/primitives/StatusDot";
 import { IconExternal } from "@/components/icons";
 import { fetchPositions, fetchRewards, type PositionRow } from "@/lib/api";
 import { fmt, fmtUsd } from "@/lib/format";
-import { useLoopWallet } from "@/lib/loop-wallet";
+import { useCantonWallet } from "@/lib/canton";
 import { tokens } from "@/lib/tokens";
 
 /**
@@ -46,7 +46,7 @@ function relativeTime(iso?: string): string {
 
 export default function DashboardPage() {
   const { address, isConnected } = useAccount();
-  const { partyId } = useLoopWallet();
+  const { partyId } = useCantonWallet();
 
   const positionsQ = useQuery({
     queryKey: ["dashboard-positions", address],

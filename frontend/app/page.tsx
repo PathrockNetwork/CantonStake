@@ -7,7 +7,7 @@ import { Banner } from "@/components/primitives/Banner";
 import { Btn } from "@/components/primitives/Btn";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { tokens } from "@/lib/tokens";
-import { useLoopWallet } from "@/lib/loop-wallet";
+import { useCantonWallet } from "@/lib/canton";
 
 /**
  * Marketing landing — ported from
@@ -22,7 +22,7 @@ import { useLoopWallet } from "@/lib/loop-wallet";
  */
 export default function HomePage() {
   const { isConnected: evmConnected } = useAccount();
-  const { isConnected: loopConnected } = useLoopWallet();
+  const { isConnected: loopConnected } = useCantonWallet();
   const showWalletBanner = !(evmConnected && loopConnected);
 
   return (
