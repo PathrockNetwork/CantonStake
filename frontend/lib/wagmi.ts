@@ -2,28 +2,36 @@
 
 import { http, createConfig } from "wagmi";
 import { polygonAmoy } from "wagmi/chains";
-import { injected, walletConnect } from "wagmi/connectors";
+import { coinbaseWallet, injected, safe, walletConnect } from "wagmi/connectors";
 
 const projectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || "";
+
+const APP_METADATA = {
+  name: "CantonStake",
+  description:
+    "Self-custodial cross-chain staking with Canton Coin rewards",
+  url: "https://cantonstake.app",
+  icons: ["https://cantonstake.app/icon.png"],
+};
 
 export const wagmiConfig = createConfig({
   chains: [polygonAmoy],
   connectors: [
+    // Browser-injected wallets — MetaMask, Rabby, Brave, Frame, etc.
     injected(),
-    // WalletConnect v2 connector — supports Ledger Hardware Wallets
-    // via the Ledger Live mobile app and WalletConnect protocol.
-    // Users scan a QR code with Ledger Live; all signing happens on-device.
+    // Coinbase Wallet — desktop extension + mobile via deep link.
+    coinbaseWallet({
+      appName: APP_METADATA.name,
+      appLogoUrl: APP_METADATA.icons[0],
+    }),
+    // Safe (Gnosis) — recognised when the dApp is loaded inside the Safe app.
+    safe(),
+    // WalletConnect v2 — mobile wallets, Ledger Live, Trust, Rainbow, etc.
     ...(projectId
       ? [
           walletConnect({
             projectId,
-            metadata: {
-              name: "CantonStake",
-              description:
-                "Self-custodial cross-chain staking with Canton Coin rewards",
-              url: "https://cantonstake.app",
-              icons: ["https://cantonstake.app/icon.png"],
-            },
+            metadata: APP_METADATA,
             showQrModal: true,
           }),
         ]

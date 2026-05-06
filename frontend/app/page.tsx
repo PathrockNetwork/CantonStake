@@ -1,11 +1,13 @@
 "use client";
 
+import { useState } from "react";
 import { useAccount } from "wagmi";
 import { LifecycleDiagram } from "@/components/diagrams/LifecycleDiagram";
 import { IconArrowRight } from "@/components/icons";
 import { Banner } from "@/components/primitives/Banner";
 import { Btn } from "@/components/primitives/Btn";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
+import { WalletPickerModal } from "@/components/WalletPickerModal";
 import { tokens } from "@/lib/tokens";
 import { useCantonWallet } from "@/lib/canton";
 
@@ -24,6 +26,7 @@ export default function HomePage() {
   const { isConnected: evmConnected } = useAccount();
   const { isConnected: loopConnected } = useCantonWallet();
   const showWalletBanner = !(evmConnected && loopConnected);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   return (
     <div
@@ -52,12 +55,13 @@ export default function HomePage() {
             kind="WALLET NOT CONNECTED"
             message="CantonStake uses two identities: Loop for Canton party and CC rewards. Your EVM wallet for Polygon staking signatures. CantonStake never holds your private keys or funds."
             action={
-              <Btn href="/stake" size="sm">
+              <Btn size="sm" onClick={() => setPickerOpen(true)}>
                 Connect wallets
               </Btn>
             }
           />
         )}
+        <WalletPickerModal open={pickerOpen} onClose={() => setPickerOpen(false)} />
 
         <div
           className="mono"
