@@ -48,7 +48,6 @@ ENV PORT=3000
 
 # Standalone output puts a self-contained server.js + minimal node_modules
 # in .next/standalone. Static assets stay in .next/static, public in public.
-COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 
