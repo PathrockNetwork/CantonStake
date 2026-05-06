@@ -2,9 +2,39 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useAccount } from "wagmi";
 import { CCRoundTicker } from "@/components/chrome/CCRoundTicker";
 import { PriceTape } from "@/components/chrome/PriceTape";
+import { WalletPickerModal } from "@/components/WalletPickerModal";
+
+const BACKEND_URL =
+  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4001";
+
+interface HealthDetail {
+  demoMode?: boolean;
+  featuredAppRight?: string;
+  cantonJsonApi?: string;
+  warnings?: string[];
+}
+
+async function fetchHealthDetail(): Promise<HealthDetail> {
+  const res = await fetch(`${BACKEND_URL}/api/health/detail`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+function deriveBadge(h: HealthDetail | undefined): {
+  label: string;
+  color: "neon" | "cc" | "warn";
+} {
+  if (!h) return { label: "Loading", color: "warn" };
+  if (h.demoMode) return { label: "Demo · Devnet", color: "warn" };
+  if (h.featuredAppRight === "configured")
+    return { label: "Featured · Live", color: "neon" };
+  return { label: "Candidate · Devnet", color: "cc" };
+}
 import {
   IconArrowRight,
   IconBolt,
@@ -73,20 +103,32 @@ function IdentityChip({
   label,
   value,
   showDot,
+  onClick,
+  active,
 }: {
   label: string;
   value: string;
   showDot?: boolean;
+  onClick?: () => void;
+  active?: boolean;
 }) {
+  const Tag = onClick ? "button" : "div";
   return (
-    <div
+    <Tag
+      type={onClick ? "button" : undefined}
+      onClick={onClick}
       style={{
         display: "inline-flex",
         alignItems: "center",
         gap: 8,
         padding: "6px 10px",
-        border: `1px solid ${tokens.hairline}`,
+        border: `1px solid ${active ? tokens.neon : tokens.hairline}`,
         borderRadius: 0,
+        background: "transparent",
+        color: tokens.ink[100],
+        cursor: onClick ? "pointer" : "default",
+        font: "inherit",
+        transition: "border-color 120ms ease",
       }}
     >
       <span className="mono" style={{ fontSize: 10, color: tokens.ink[400] }}>
@@ -99,7 +141,7 @@ function IdentityChip({
         {value}
       </span>
       {showDot ? <StatusDot /> : null}
-    </div>
+    </Tag>
   );
 }
 
@@ -107,6 +149,20 @@ export function TopNav() {
   const pathname = usePathname();
   const { address, isConnected } = useAccount();
   const { partyId, isConnected: loopConnected } = useCantonWallet();
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const openPicker = () => setPickerOpen(true);
+  const { data: health } = useQuery({
+    queryKey: ["health-detail-topnav"],
+    queryFn: fetchHealthDetail,
+    refetchInterval: 60_000,
+  });
+  const badge = deriveBadge(health);
+  const badgeColor =
+    badge.color === "neon"
+      ? tokens.neon
+      : badge.color === "cc"
+        ? tokens.cc
+        : tokens.amberBright;
 
   return (
     <header
@@ -160,8 +216,8 @@ export function TopNav() {
                 fontWeight: 500,
                 textTransform: "uppercase",
                 letterSpacing: ".1em",
-                border: `1px solid ${tokens.neon}`,
-                color: tokens.neon,
+                border: `1px solid ${badgeColor}`,
+                color: badgeColor,
                 whiteSpace: "nowrap",
               }}
             >
@@ -171,11 +227,11 @@ export function TopNav() {
                   width: 5,
                   height: 5,
                   borderRadius: "50%",
-                  background: tokens.neon,
+                  background: badgeColor,
                   animation: "pulse-dot 2s infinite",
                 }}
               />
-              Candidate · Devnet
+              {badge.label}
             </span>
           </Link>
 
@@ -227,14 +283,19 @@ export function TopNav() {
               loopConnected && partyId ? truncateParty(partyId) : "not connected"
             }
             showDot={loopConnected}
+            onClick={openPicker}
+            active={!loopConnected}
           />
           <IdentityChip
             label="EVM WALLET"
             value={isConnected && address ? truncateAddr(address) : "not connected"}
+            onClick={openPicker}
+            active={!isConnected}
           />
         </div>
       </div>
       <PriceTape />
+      <WalletPickerModal open={pickerOpen} onClose={() => setPickerOpen(false)} />
     </header>
   );
 }
