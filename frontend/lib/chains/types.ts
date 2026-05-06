@@ -1,5 +1,5 @@
 export type UnsignedTx =
-  | { kind: "evm"; to: `0x${string}`; data: `0x${string}`; value?: bigint }
+  | { kind: "evm"; to: `0x${string}`; data: `0x${string}`; value?: bigint; gas?: bigint }
   | { kind: "substrate"; method: string; args: unknown[] }
   | { kind: "cosmos"; typeUrl: string; value: Record<string, unknown> }
   | { kind: "sui"; tx: unknown };

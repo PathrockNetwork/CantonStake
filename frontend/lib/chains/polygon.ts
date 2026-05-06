@@ -104,10 +104,12 @@ function evmTx(
   data: `0x${string}`,
   value: bigint | undefined,
   validator: string,
+  gas?: bigint,
 ): UnsignedTx {
-  return value === undefined
-    ? { kind: "evm", to: contractAddress(validator), data }
-    : { kind: "evm", to: contractAddress(validator), data, value };
+  const base = value === undefined
+    ? { kind: "evm" as const, to: contractAddress(validator), data }
+    : { kind: "evm" as const, to: contractAddress(validator), data, value };
+  return gas ? { ...base, gas } : base;
 }
 
 async function latestUnbondFor(delegator: Address) {
@@ -188,6 +190,7 @@ export const polygonAdapter: IChainAdapter = {
         }),
         args.amount,
         args.validator,
+        500000n, // Set explicit gas limit to avoid estimation issues
       );
     } catch (cause) {
       throw toAdapterError("Failed to build Polygon delegate transaction.", cause);
