@@ -165,7 +165,7 @@ async function executePolygon(
 // difference. We require a positive maxPerRun cap (enforced like Polygon)
 // to bound the amount bonded.
 
-import { moonbeam } from "viem/chains";
+import { moonbaseAlpha } from "viem/chains";
 
 const moonbeamStakingAbi = [
   parseAbiItem(
@@ -202,7 +202,7 @@ async function executeMoonbeam(
   const account = privateKeyToAccount(config.autoCompoundKeeperKey as Hex);
   const walletClient = createWalletClient({
     account,
-    chain: moonbeam,
+    chain: moonbaseAlpha,
     transport: http(config.moonbeamRpcUrl),
   });
 
@@ -435,7 +435,7 @@ async function executeSui(
   const keypair = Ed25519Keypair.fromSecretKey(config.suiKeeperPrivateKey);
   const client = new SuiJsonRpcClient({
     url: config.suiRpcUrl,
-    network: "mainnet",
+    network: "testnet",
   });
 
   try {

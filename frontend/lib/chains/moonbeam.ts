@@ -1,15 +1,17 @@
 /**
- * Moonbeam chain adapter — parachain-staking via the EVM precompile.
+ * Moonbeam chain adapter — Moonbase Alpha testnet, parachain-staking
+ * via the EVM precompile.
  *
- * Moonbeam exposes its `parachainStaking` pallet through a precompile at
- * 0x0000…0800 so we can call it with viem just like a normal EVM
- * contract. References: StakePolkadotXCM uses the underlying pallet via
- * polkadot.js, but the precompile is the cleaner integration path for
- * an EVM-first stack like ours.
+ * Moonbase Alpha is Moonbeam's testnet (chain id 1287). The
+ * `parachainStaking` pallet is exposed at the same precompile address
+ * 0x0000…0800 across all Moonbeam runtimes (mainnet, Moonriver, Moonbase
+ * Alpha) so the EVM call shape doesn't change — only the RPC endpoint
+ * and chain id do.
  *
- * Validator selection comes from validator-scoring (which already polls
- * Moonbeam's public API). Delegation/undelegation follow Moonbeam's
- * 28-day exit period.
+ * Note: Moonbeam's public validator listing API (api.moonbeam.network)
+ * only serves mainnet collators, so the validator-scoring service uses
+ * mainnet data for display purposes. Real testnet collator selection
+ * should query the precompile directly when needed.
  */
 
 import {
@@ -19,7 +21,7 @@ import {
   parseAbi,
   type Address,
 } from "viem";
-import { moonbeam } from "viem/chains";
+import { moonbaseAlpha } from "viem/chains";
 import {
   ChainAdapterError,
   type IChainAdapter,
@@ -32,8 +34,9 @@ const MOONBEAM_CHAIN_ID = "moonbeam";
 const PARACHAIN_STAKING_PRECOMPILE: Address =
   "0x0000000000000000000000000000000000000800";
 
-// 28-day exit window per Moonbeam runtime (revoke delegation schedule).
-const UNBONDING_SECONDS = 28 * 24 * 60 * 60;
+// 2-round exit window on Moonbase Alpha (2 hours per round) — much
+// shorter than mainnet's 28 days, useful for the demo.
+const UNBONDING_SECONDS = 2 * 60 * 60;
 
 const stakingAbi = parseAbi([
   "function delegate(address candidate, uint256 amount, uint256 candidateDelegationCount, uint256 delegatorDelegationCount)",
@@ -57,7 +60,7 @@ function isAddress(s: string): s is Address {
 }
 
 function publicClient() {
-  return createPublicClient({ chain: moonbeam, transport: http() });
+  return createPublicClient({ chain: moonbaseAlpha, transport: http() });
 }
 
 function evmTx(data: `0x${string}`, value?: bigint): UnsignedTx {

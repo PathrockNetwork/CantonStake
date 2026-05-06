@@ -51,8 +51,37 @@ export async function createStakingRequest(body: {
   evmAddress: string;
   amountPol: string;
   delegator: string;
-}): Promise<{ ok: boolean; transactionId: string; delegator: string }> {
+  chain?: "polygon" | "moonbeam" | "monad" | "cosmos" | "sui";
+  validator?: string;
+}): Promise<{
+  ok: boolean;
+  transactionId: string;
+  delegator: string;
+  chain?: string;
+}> {
   const res = await fetch(`${BACKEND_URL}/api/requests`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+/**
+ * Force-accept a non-Polygon StakingRequest after the user's EVM tx
+ * confirms. The orchestrator only watches Polygon's MockValidatorShare
+ * events; this endpoint is how Moonbase / Monad stakes progress past
+ * Pending in the demo. Server-gated to DEMO_MODE / debug log level.
+ */
+export async function forceAcceptStakingRequest(body: {
+  evmAddress: string;
+  amountPol: string;
+  evmTxHash: string;
+  blockNumber?: number;
+  chain?: string;
+}): Promise<{ ok: boolean; chain: string; contractId: string }> {
+  const res = await fetch(`${BACKEND_URL}/api/requests/force-accept`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

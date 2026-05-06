@@ -13,7 +13,9 @@ import {
   sweepNativeRewards,
   type PositionRow,
 } from "@/lib/api";
+import { chainFromAddress } from "@/lib/chains";
 import { fmt } from "@/lib/format";
+import { lookupPositionChain } from "@/lib/position-chain-map";
 import { tokens } from "@/lib/tokens";
 
 /**
@@ -67,6 +69,16 @@ function relativeTime(iso?: string): string {
 function shortContract(id: string): string {
   if (id.length <= 18) return id;
   return `${id.slice(0, 12)}...${id.slice(-4)}`;
+}
+
+function positionChain(p: PositionRow) {
+  // Prefer the localStorage map written at stake time (knows the exact
+  // EVM chain), fall back to the address-format heuristic.
+  const hint = lookupPositionChain(
+    p.argument.evmAddress,
+    p.argument.amountPol,
+  );
+  return chainFromAddress(p.argument.evmAddress, hint);
 }
 
 export default function PositionsPage() {
@@ -186,7 +198,7 @@ export default function PositionsPage() {
               <div style={{ padding: 22 }}>
                 <EmptyState
                   title="No positions yet"
-                  subtitle="Open the staking console to bond your first POL position."
+                  subtitle="Open the staking console to bond your first position on any supported chain."
                 />
               </div>
             ) : (
@@ -248,7 +260,7 @@ function Row({ p }: { p: PositionRow }) {
         {shortContract(p.contractId)}
       </div>
       <div className="mono tabular" style={{ fontSize: 13, color: tokens.ink[100] }}>
-        {fmt(parseFloat(p.argument.amountPol), 2)} POL
+        {fmt(parseFloat(p.argument.amountPol), 2)} {positionChain(p).symbol}
       </div>
       <Chip color={color} dot={lifecycle === "bonded" || lifecycle === "unbonding"}>
         {lifecycle}
@@ -308,7 +320,7 @@ function Timeline({ p }: { p: PositionRow }) {
     {
       id: "bond",
       label: "Bonded",
-      detail: `POL delegation confirmed on Polygon · contract ${shortContract(p.contractId)}`,
+      detail: `${positionChain(p).symbol} delegation confirmed on ${positionChain(p).name} · contract ${shortContract(p.contractId)}`,
       t: relativeTime(p.argument.bondedAt),
       done: !!p.argument.bondedAt,
       kind: "POLYGON",

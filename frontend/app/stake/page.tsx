@@ -18,12 +18,20 @@ import { Chip } from "@/components/primitives/Chip";
 import { MarkerSpark } from "@/components/primitives/MarkerSpark";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { emitTrace } from "@/components/trace/useTraceLog";
-import { createStakingRequest, fetchChainStats, fetchPositions } from "@/lib/api";
+import {
+  createStakingRequest,
+  fetchChainStats,
+  fetchPositions,
+  forceAcceptStakingRequest,
+} from "@/lib/api";
 import { liveChains, polygonChain, type ChainConfig } from "@/lib/chains";
 import { adapterFor } from "@/lib/chains/index";
 import { fmt, fmtUsd } from "@/lib/format";
 import { useCantonWallet } from "@/lib/canton";
+import { useCosmosWallet, cosmosChainId } from "@/lib/cosmos/use-cosmos-wallet";
+import { useSuiWallet } from "@/lib/sui/use-sui-wallet";
 import { usePrices } from "@/lib/prices";
+import { recordPositionChain } from "@/lib/position-chain-map";
 import { tokens } from "@/lib/tokens";
 
 /**
@@ -46,59 +54,97 @@ import { tokens } from "@/lib/tokens";
  * If the wagmi write fails (rejected, wrong network, RPC error), step
  * resets and an error banner replaces the wrong-network banner.
  */
-const STAGES = [
-  {
-    code: "01 StakingRequest_Create",
-    detail: "Canton request created · partyId=...",
-    kind: "CANTON" as const,
-    tag: "info" as const,
-  },
-  {
-    code: "02 MockValidatorShare.buyVoucher()",
-    detail: "Polygon delegation submitted",
-    kind: "POLYGON" as const,
-    tag: "idle" as const,
-  },
-  {
-    code: "03 ShareMinted",
-    detail: "Validator share received",
-    kind: "POLYGON" as const,
-    tag: "idle" as const,
-  },
-  {
-    code: "04 StakingRequest_Accept",
-    detail: "Canton position bonded · status=Bonded",
-    kind: "CANTON" as const,
-    tag: "info" as const,
-  },
-  {
-    code: "05 FeaturedAppActivityMarker",
-    detail: "Bond marker emitted · split=75/25",
-    kind: "MARKER" as const,
-    tag: "success" as const,
-  },
-];
+type ChainKind = "CANTON" | "EVM" | "COSMOS" | "SUI" | "MARKER";
 
-const CTA_LABELS = [
-  "Bond {amount} POL",
-  "Awaiting wallet signature…",
-  "Confirming Polygon tx…",
-  "Emitting Canton marker…",
-  "Bonded · marker emitted",
-];
-
-type LogEntry = {
+interface Stage {
   code: string;
   detail: string;
-  t: number;
-  kind: "CANTON" | "POLYGON" | "MARKER";
+  kind: ChainKind;
+  tag: "info" | "idle" | "success";
+}
+
+// The per-chain method labels render in the trace terminal so the user
+// sees what they're actually calling on whichever chain they picked.
+const CHAIN_STAKE_METHOD: Record<ChainConfig["id"], string> = {
+  polygon: "ValidatorShare.buyVoucher()",
+  moonbeam: "ParachainStaking.delegate()",
+  monad: "Staking.delegate(uint64)",
+  cosmos: "MsgDelegate",
+  sui: "0x3::sui_system::request_add_stake",
 };
+
+const CHAIN_CONFIRM_EVENT: Record<ChainConfig["id"], string> = {
+  polygon: "ShareMinted",
+  moonbeam: "Delegated",
+  monad: "Delegate",
+  cosmos: "tx committed",
+  sui: "tx finalized",
+};
+
+const CHAIN_KIND: Record<ChainConfig["id"], ChainKind> = {
+  polygon: "EVM",
+  moonbeam: "EVM",
+  monad: "EVM",
+  cosmos: "COSMOS",
+  sui: "SUI",
+};
+
+function buildStages(chain: ChainConfig): Stage[] {
+  const k = CHAIN_KIND[chain.id];
+  return [
+    {
+      code: "01 StakingRequest_Create",
+      detail: "Canton request created · partyId=...",
+      kind: "CANTON",
+      tag: "info",
+    },
+    {
+      code: `02 ${CHAIN_STAKE_METHOD[chain.id]}`,
+      detail: `${chain.name} delegation submitted`,
+      kind: k,
+      tag: "idle",
+    },
+    {
+      code: `03 ${CHAIN_CONFIRM_EVENT[chain.id]}`,
+      detail: `${chain.symbol} delegation confirmed on ${chain.name}`,
+      kind: k,
+      tag: "idle",
+    },
+    {
+      code: "04 StakingRequest_Accept",
+      detail: "Canton position bonded · status=Bonded",
+      kind: "CANTON",
+      tag: "info",
+    },
+    {
+      code: "05 FeaturedAppActivityMarker",
+      detail: "Bond marker emitted · split=75/25",
+      kind: "MARKER",
+      tag: "success",
+    },
+  ];
+}
+
+function buildCtaLabels(chain: ChainConfig): string[] {
+  return [
+    `Bond {amount} ${chain.symbol}`,
+    "Awaiting wallet signature…",
+    `Confirming ${chain.name} tx…`,
+    "Emitting Canton marker…",
+    "Bonded · marker emitted",
+  ];
+}
+
+type LogEntry = Stage & { t: number };
 
 export default function StakePage() {
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
   const { switchChainAsync, isPending: switchPending } = useSwitchChain();
   const { partyId, isConnected: loopConnected } = useCantonWallet();
+
+  const cosmos = useCosmosWallet();
+  const sui = useSuiWallet();
 
   const chains = liveChains();
   const [selectedChainId, setSelectedChainId] = useState<ChainConfig["id"]>(
@@ -107,6 +153,12 @@ export default function StakePage() {
   const selectedChain = chains.find((c) => c.id === selectedChainId) ?? polygonChain();
   const adapter = adapterFor(selectedChain.id);
   const isEvmStakingReady = !!selectedChain.wagmiChain;
+  const isCosmosChain = selectedChain.id === "cosmos";
+  const isSuiChain = selectedChain.id === "sui";
+  const isWalletReadyForChain =
+    isEvmStakingReady ||
+    (isCosmosChain && cosmos.isConnected) ||
+    (isSuiChain && sui.isConnected);
   const polygon = polygonChain();
   const polygonId = polygon.wagmiChain!.id;
   const wrongNetwork =
@@ -178,6 +230,22 @@ export default function StakePage() {
     if (confirming && step < 3) advance(3);
     if (confirmed && step < 4) {
       advance(4);
+
+      // Non-Polygon chains: the orchestrator only watches Polygon's
+      // MockValidatorShare events, so we manually transition the Daml
+      // StakingRequest from Pending → Bonded once the EVM tx confirms.
+      // Server-gated to DEMO_MODE.
+      if (selectedChain.id !== "polygon" && hash) {
+        void forceAcceptStakingRequest({
+          evmAddress: address!,
+          amountPol: amount,
+          evmTxHash: hash,
+          chain: selectedChain.id,
+        }).catch((err) => {
+          console.warn("[stake] force-accept failed:", err);
+        });
+      }
+
       // Stage 5 — wait for the orchestrator to emit a real marker.
       // Poll /api/positions every 2s for up to 30s for a markersEmitted
       // increment vs the pre-stake baseline. Falls back to a fixed
@@ -233,9 +301,14 @@ export default function StakePage() {
     }
   }, [sendError]);
 
+  // Stages are rebuilt per render against the selected chain so the
+  // user sees the right method names + chain tags in the trace terminal.
+  const stages = buildStages(selectedChain);
+  const ctaLabels = buildCtaLabels(selectedChain);
+
   function advance(target: 1 | 2 | 3 | 4 | 5) {
     const idx = target - 1;
-    const stage = STAGES[idx];
+    const stage = stages[idx]!;
     setLog((prev) => [...prev, { ...stage, t: Date.now() }]);
     setStep(target);
     emitTrace(stage);
@@ -243,14 +316,38 @@ export default function StakePage() {
 
   async function handleStake() {
     if (step > 0 && step < 5) return;
-    if (!address || !partyId) {
-      setError("Connect both Loop and EVM wallets to stake.");
+    if (!partyId) {
+      setError("Connect Loop wallet first.");
+      return;
+    }
+
+    // Pick the right wallet flow per chain.
+    if (isCosmosChain) {
+      if (!cosmos.isConnected || !cosmos.address) {
+        setError(
+          "Connect Keplr (or Leap) to stake ATOM on theta-testnet.",
+        );
+        return;
+      }
+      void handleCosmosStake();
+      return;
+    }
+    if (isSuiChain) {
+      if (!sui.isConnected || !sui.address) {
+        setError("Connect a Sui wallet to stake SUI on testnet.");
+        return;
+      }
+      void handleSuiStake();
       return;
     }
     if (!isEvmStakingReady) {
       setError(
-        `${selectedChain.name} staking isn't wired in this build. Pick Polygon to run the live demo.`,
+        `${selectedChain.name} staking isn't wired in this build. Pick Polygon, Moonbase Alpha, or Monad Testnet.`,
       );
+      return;
+    }
+    if (!address) {
+      setError("Connect an EVM wallet to stake on this chain.");
       return;
     }
 
@@ -275,26 +372,32 @@ export default function StakePage() {
     }
 
     try {
+      // Resolve the validator first so the backend Daml request can record
+      // which chain + validator the stake was for. The validator-scoring
+      // service returns the top-scored entry; for this MVP we always pick
+      // the first one and let the user override via the picker UI later.
+      const [validator] = await adapter.getValidators();
+      if (!validator) {
+        throw new Error(
+          `No ${selectedChain.name} validator is available for staking.`,
+        );
+      }
+
       // Stage 01 — Canton request created (real backend call)
       advance(1);
       await createStakingRequest({
         evmAddress: address,
         amountPol: amount,
         delegator: partyId,
+        chain: selectedChain.id,
+        validator: validator.address,
       });
+      recordPositionChain(address, amount, selectedChain.id);
 
       // Switch network if needed
       const targetChainId = selectedChain.wagmiChain!.id;
       if (chainId !== targetChainId) {
         await switchChainAsync({ chainId: targetChainId });
-      }
-
-      // Stage 02 — wagmi write (advance happens in effect when isPending flips)
-      const [validator] = await adapter.getValidators();
-      if (!validator) {
-        throw new Error(
-          `No ${selectedChain.name} validator is available for staking.`,
-        );
       }
 
       const amountWei = parseEther(amount);
@@ -321,10 +424,122 @@ export default function StakePage() {
     }
   }
 
+  // Cosmos staking flow — register on Canton, sign a MsgDelegate via Keplr,
+  // broadcast to theta-testnet, then force-accept the StakingRequest. The
+  // EVM-tx-confirmation stages 2/3 are reused: stage 2 = "signing in
+  // Keplr", stage 3 = "broadcast confirmed".
+  async function handleCosmosStake() {
+    if (!partyId || !cosmos.address) return;
+
+    setLog([]);
+    setStep(0);
+    setShowSpark(false);
+    setError(null);
+
+    try {
+      const [validator] = await adapter.getValidators();
+      if (!validator) throw new Error("No Cosmos validator available.");
+
+      advance(1);
+      await createStakingRequest({
+        evmAddress: cosmos.address, // bech32; backend skips EVM regex for cosmos
+        amountPol: amount,
+        delegator: partyId,
+        chain: "cosmos",
+        validator: validator.address,
+      });
+      recordPositionChain(cosmos.address, amount, "cosmos");
+
+      advance(2);
+      // amount is in ATOM; convert to uatom (1e6).
+      const amountUatom = BigInt(
+        Math.floor(parseFloat(amount || "0") * 1_000_000),
+      );
+      const tx = await adapter.buildDelegateTx({
+        validator: validator.address,
+        amount: amountUatom,
+        delegator: cosmos.address,
+      });
+      if (tx.kind !== "cosmos") {
+        throw new Error(`Unexpected Cosmos tx kind: ${tx.kind}`);
+      }
+
+      const result = await cosmos.signAndBroadcast({
+        typeUrl: tx.typeUrl,
+        value: tx.value,
+      });
+      advance(3);
+
+      await forceAcceptStakingRequest({
+        evmAddress: cosmos.address,
+        amountPol: amount,
+        evmTxHash: result.txHash,
+        chain: "cosmos",
+      });
+      advance(4);
+      advance(5);
+      setShowSpark(true);
+      window.setTimeout(() => setShowSpark(false), 900);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setStep(0);
+    }
+  }
+
+  // Sui staking flow — request_add_stake via @mysten/dapp-kit. Same
+  // shape as cosmos: register on Canton, sign+execute, force-accept.
+  async function handleSuiStake() {
+    if (!partyId || !sui.address) return;
+
+    setLog([]);
+    setStep(0);
+    setShowSpark(false);
+    setError(null);
+
+    try {
+      const [validator] = await adapter.getValidators();
+      if (!validator) throw new Error("No Sui validator available.");
+
+      advance(1);
+      await createStakingRequest({
+        evmAddress: sui.address, // sui address; backend skips EVM regex for sui
+        amountPol: amount,
+        delegator: partyId,
+        chain: "sui",
+        validator: validator.address,
+      });
+      recordPositionChain(sui.address, amount, "sui");
+
+      advance(2);
+      const amountMist = BigInt(
+        Math.floor(parseFloat(amount || "0") * 1_000_000_000),
+      );
+      const result = await sui.delegate({
+        validator: validator.address,
+        amountMist,
+      });
+      advance(3);
+
+      await forceAcceptStakingRequest({
+        evmAddress: sui.address,
+        amountPol: amount,
+        evmTxHash: result.digest,
+        chain: "sui",
+      });
+      advance(4);
+      advance(5);
+      setShowSpark(true);
+      window.setTimeout(() => setShowSpark(false), 900);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setStep(0);
+    }
+  }
+
   const ctaLabel =
     step === 0
-      ? CTA_LABELS[0].replace("{amount}", amount)
-      : CTA_LABELS[step] ?? CTA_LABELS[0];
+      ? ctaLabels[0]!.replace("{amount}", amount)
+      : ctaLabels[step] ?? ctaLabels[0]!;
   const amountNum = parseFloat(amount || "0");
   const usdValue = amountNum * polUsd;
   // Expected CC for a single bond is best derived from the most recent
@@ -364,7 +579,7 @@ export default function StakePage() {
       {error && (
         <Banner
           tone="error"
-          kind="POLYGON TX FAILED"
+          kind={`${selectedChain.name.toUpperCase()} TX FAILED`}
           message={error}
           action={
             <Btn
@@ -401,17 +616,25 @@ export default function StakePage() {
           }
         />
       )}
-      {!error && !isEvmStakingReady && (
+      {!error && isCosmosChain && !cosmos.isConnected && (
         <Banner
           tone="warn"
-          kind={`${selectedChain.name.toUpperCase()} STAKING NOT WIRED`}
-          message={
-            selectedChain.id === "cosmos"
-              ? "Cosmos staking requires a Keplr / Leap signing flow which isn't wired in this build. The Cosmos adapter is ready for the integration; pick Polygon to run the live demo."
-              : selectedChain.id === "sui"
-                ? "Sui staking requires the Mysten dapp-kit wallet flow which isn't wired in this build. The Sui adapter is ready for the integration; pick Polygon to run the live demo."
-                : `${selectedChain.name} staking requires its EVM chain config to be added to wagmi (and the connected wallet to support it). Adapter and tx-builders are ready; pick Polygon to run the live demo.`
-          }
+          kind="KEPLR NOT CONNECTED"
+          message="Cosmos staking requires Keplr (or Leap). Click the chip in the top-right to connect."
+        />
+      )}
+      {!error && isSuiChain && !sui.isConnected && (
+        <Banner
+          tone="warn"
+          kind="SUI WALLET NOT CONNECTED"
+          message="Sui staking requires Slush, Suiet, or any Sui wallet extension. Click the chip in the top-right to connect."
+        />
+      )}
+      {!error && isEvmStakingReady && selectedChain.id !== "polygon" && (
+        <Banner
+          tone="warn"
+          kind={`${selectedChain.name.toUpperCase()} · DEMO MODE`}
+          message={`The orchestrator only watches Polygon events on its own. ${selectedChain.name} stakes progress to Bonded via a force-accept call after the EVM tx confirms (server-gated to DEMO_MODE). Make sure your wallet has testnet ${selectedChain.symbol} from the chain's faucet.`}
         />
       )}
 
@@ -688,16 +911,19 @@ export default function StakePage() {
               }
               disabled={
                 (step > 0 && step < 5) ||
-                !isConnected ||
                 !loopConnected ||
                 !partyId ||
-                !isEvmStakingReady
+                !isWalletReadyForChain
               }
             >
-              {!isConnected || !loopConnected || !partyId
-                ? "Connect both wallets to stake"
-                : !isEvmStakingReady
-                  ? `${selectedChain.name} staking not yet wired`
+              {!loopConnected || !partyId
+                ? "Connect Loop wallet to stake"
+                : !isWalletReadyForChain
+                  ? isCosmosChain
+                    ? "Connect Keplr to stake on Cosmos"
+                    : isSuiChain
+                      ? "Connect Sui Wallet to stake on Sui"
+                      : "Connect EVM wallet to stake"
                   : ctaLabel}
             </Btn>
             <div

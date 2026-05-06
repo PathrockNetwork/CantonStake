@@ -17,7 +17,9 @@ import {
 } from "@/lib/api";
 import { fmt, fmtUsd } from "@/lib/format";
 import { useCantonWallet, useLoopHoldings } from "@/lib/canton";
+import { chainFromAddress } from "@/lib/chains";
 import { usePrices } from "@/lib/prices";
+import { lookupPositionChain } from "@/lib/position-chain-map";
 import { tokens } from "@/lib/tokens";
 
 /**
@@ -45,6 +47,14 @@ function relativeTime(iso?: string): string {
   if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
   if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h`;
   return `${Math.floor(ms / 86_400_000)}d`;
+}
+
+function chainOf(p: PositionRow) {
+  const hint = lookupPositionChain(
+    p.argument.evmAddress,
+    p.argument.amountPol,
+  );
+  return chainFromAddress(p.argument.evmAddress, hint);
 }
 
 export default function DashboardPage() {
@@ -117,11 +127,25 @@ export default function DashboardPage() {
   const blendedApy = nativeApy + ccApy;
   const hasYield = stakedUsd > 0 && (rewards?.rewardSweepCount ?? 0) > 0;
 
+  // Group positions by chain so the stat sub honestly reflects multi-chain
+  // staking instead of summing values across chains as if they were all POL.
+  const positionsByChainSymbol = positions.reduce<Record<string, number>>(
+    (acc, p) => {
+      const sym = chainOf(p).symbol;
+      acc[sym] = (acc[sym] ?? 0) + parseFloat(p.argument.amountPol);
+      return acc;
+    },
+    {},
+  );
+  const positionsBreakdown = Object.entries(positionsByChainSymbol)
+    .map(([sym, total]) => `${fmt(total, 2)} ${sym}`)
+    .join(" · ");
+
   const stats = [
     {
       label: "Total Staked",
       value: fmtUsd(stakedUsd, 2),
-      sub: `+ ${positions.length} positions · POL ${fmt(totalBondedPol, 2)}`,
+      sub: `${positions.length} position${positions.length === 1 ? "" : "s"}${positionsBreakdown ? ` · ${positionsBreakdown}` : ""}`,
       accent: tokens.ink[100],
     },
     {
@@ -387,7 +411,7 @@ export default function DashboardPage() {
           <div style={{ padding: 22 }}>
             <EmptyState
               title="No active positions"
-              subtitle="Open the staking console to bond your first POL position."
+              subtitle="Open the staking console to bond your first position on any supported chain."
             />
           </div>
         ) : (
@@ -420,12 +444,14 @@ function DashRow({ p }: { p: PositionRow }) {
           className="mono"
           style={{ fontSize: 10.5, color: tokens.ink[400], marginTop: 2 }}
         >
-          MockValidatorShare · {relativeTime(p.argument.bondedAt)}
+          {chainOf(p).name} · {relativeTime(p.argument.bondedAt)}
         </div>
       </div>
       <div className="mono tabular" style={{ fontSize: 14, color: tokens.ink[100] }}>
         {fmt(parseFloat(p.argument.amountPol), 2)}{" "}
-        <span style={{ color: tokens.ink[400], fontSize: 10 }}>POL</span>
+        <span style={{ color: tokens.ink[400], fontSize: 10 }}>
+          {chainOf(p).symbol}
+        </span>
       </div>
       <Chip color={lifecycleColor} dot>
         {p.argument.status.toLowerCase()}

@@ -18,10 +18,13 @@ import {
 } from "./types";
 
 const SUI_CHAIN_ID = "sui";
-const SUI_RPC = "https://fullnode.mainnet.sui.io";
+// Sui Testnet — same `0x3::sui_system` module as mainnet (system objects
+// at well-known addresses are constant across networks).
+const SUI_RPC = "https://fullnode.testnet.sui.io:443";
 const SUI_SYSTEM_STATE = "0x5";
 const SUI_SYSTEM_MODULE = "0x3::sui_system";
-// Sui epoch is ~24h; stakes mature for the next epoch boundary.
+// Sui testnet epoch is ~24h on testnet too; stakes mature at the next
+// epoch boundary.
 const UNBONDING_SECONDS = 24 * 60 * 60;
 
 function networkError(message: string, cause?: unknown) {

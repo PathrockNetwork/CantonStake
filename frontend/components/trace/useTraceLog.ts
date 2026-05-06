@@ -12,7 +12,15 @@ import { useEffect, useState } from "react";
  * dependency-free, and matches the prototype's behavior for review.
  */
 
-export type TraceKind = "CANTON" | "POLYGON" | "MARKER" | "WALLET" | "ORCH";
+export type TraceKind =
+  | "CANTON"
+  | "POLYGON"
+  | "EVM"
+  | "COSMOS"
+  | "SUI"
+  | "MARKER"
+  | "WALLET"
+  | "ORCH";
 export type TraceTag = "info" | "idle" | "success" | "cc" | "warn" | "error";
 
 export type TraceEntry = {

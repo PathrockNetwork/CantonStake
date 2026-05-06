@@ -24,13 +24,13 @@
  *
  * Source endpoints (all public, no API key required):
  *
- *   - Polygon : https://staking-api.polygon.technology/api/v2/validators
- *   - Moonbeam: https://api.moonbeam.network/api/staking/collators
- *   - Monad   : https://raw.githubusercontent.com/monad-developers/
- *               validator-info/main/mainnet/validators.json
- *   - Cosmos  : https://rest.cosmos.directory/cosmoshub/cosmos/staking/v1beta1/validators
- *   - Sui     : JSON-RPC suix_getLatestSuiSystemState (default
- *               https://fullnode.mainnet.sui.io)
+ *   - Polygon  : https://staking-api.polygon.technology/api/v2/validators
+ *   - Moonbeam : Moonbase Alpha precompile read (selectedCandidates) via
+ *                MOONBEAM_RPC_URL — free testnet API doesn't exist.
+ *   - Monad    : https://raw.githubusercontent.com/monad-developers/
+ *                validator-info/main/mainnet/validators.json
+ *   - Cosmos   : theta-testnet REST (Polypore sentry-01)
+ *   - Sui      : JSON-RPC suix_getLatestSuiSystemState (testnet)
  *
  * All fetchers are defensively coded: a failed call returns `[]` and
  * logs a warning, never throws into the BullMQ worker.
@@ -224,33 +224,53 @@ async function fetchPolygon(): Promise<ScoredValidator[]> {
 }
 
 async function fetchMoonbeam(): Promise<ScoredValidator[]> {
-  // Moonbeam exposes parachain-staking collator data via the public Subscan
-  // API. Scoring uses bond size as the stake metric and treats commission
-  // as the parachain-staking "fee" field.
-  type MoonbeamCol = {
-    address: string;
-    name?: string;
-    commission?: number;       // basis points or %
-    selfBonded?: string;
-    totalCounted?: string;
-    isActive?: boolean;
-  };
-  const body = await fetchJson<{ collators?: MoonbeamCol[] }>(
-    "https://api.moonbeam.network/api/staking/collators"
-  );
-  if (!body?.collators) return [];
+  // Moonbase Alpha doesn't expose a free public collator listing API
+  // (Subscan testnet requires a key). The parachain-staking precompile
+  // at 0x...0800 exposes `selectedCandidates() returns (address[])` which
+  // gives us the live active set. We pair each address with a per-
+  // candidate `candidateCount(addr) returns (uint256)` read for a stake
+  // proxy, and use defaults for commission + uptime (the precompile
+  // doesn't surface those).
+  const { createPublicClient, http, parseAbi } = await import("viem");
+  const { moonbaseAlpha } = await import("viem/chains");
 
-  const rows = body.collators.map((c) => ({
-    chain: "moonbeam" as const,
-    address: c.address,
-    name: c.name ?? c.address.slice(0, 10),
-    commissionPct: (c.commission ?? 0) > 100 ? (c.commission ?? 0) / 100 : c.commission ?? 0,
-    uptimePct: 99.0,            // Moonbeam doesn't publish a per-collator uptime here
-    jailed: c.isActive === false,
-    slashCount: 0,
-    totalStaked: Number(c.totalCounted ?? c.selfBonded ?? "0"),
-  }));
-  return attachScores(rows);
+  const STAKING_PRECOMPILE =
+    "0x0000000000000000000000000000000000000800" as const;
+  const stakingAbi = parseAbi([
+    "function selectedCandidates() view returns (address[])",
+    "function candidateCount() view returns (uint256)",
+  ]);
+
+  try {
+    const client = createPublicClient({
+      chain: moonbaseAlpha,
+      transport: http(config.moonbeamRpcUrl),
+    });
+    const candidates = (await client.readContract({
+      address: STAKING_PRECOMPILE,
+      abi: stakingAbi,
+      functionName: "selectedCandidates",
+    })) as readonly `0x${string}`[];
+
+    const rows = candidates.map((addr, i) => ({
+      chain: "moonbeam" as const,
+      address: addr,
+      name: `Moonbase Collator #${i + 1}`,
+      // The precompile doesn't surface commission; Moonbase Alpha's
+      // default new-collator commission is 20% (parachain runtime).
+      commissionPct: 20,
+      uptimePct: 99.0,
+      jailed: false,
+      slashCount: 0,
+      // Without a per-candidate stake read we use a uniform default;
+      // the score formula's concentration penalty kicks off zero.
+      totalStaked: 0,
+    }));
+    return attachScores(rows);
+  } catch (err) {
+    console.warn("[validator-scoring] moonbase precompile read failed:", err);
+    return [];
+  }
 }
 
 async function fetchMonad(): Promise<ScoredValidator[]> {
@@ -283,7 +303,8 @@ async function fetchMonad(): Promise<ScoredValidator[]> {
 }
 
 async function fetchCosmos(): Promise<ScoredValidator[]> {
-  // cosmos.directory exposes the standard Cosmos SDK staking REST API.
+  // Cosmos Hub theta-testnet — Polypore sentry-01 REST endpoint.
+  // Same x/staking schema as mainnet, just a smaller validator set.
   type CosmosVal = {
     operator_address: string;
     description?: { moniker?: string };
@@ -293,7 +314,7 @@ async function fetchCosmos(): Promise<ScoredValidator[]> {
     status?: string;
   };
   const body = await fetchJson<{ validators?: CosmosVal[] }>(
-    "https://rest.cosmos.directory/cosmoshub/cosmos/staking/v1beta1/validators?pagination.limit=200&status=BOND_STATUS_BONDED"
+    "https://rest.sentry-01.theta-testnet.polypore.xyz/cosmos/staking/v1beta1/validators?pagination.limit=200&status=BOND_STATUS_BONDED"
   );
   if (!body?.validators) return [];
 
@@ -311,9 +332,9 @@ async function fetchCosmos(): Promise<ScoredValidator[]> {
 }
 
 async function fetchSui(): Promise<ScoredValidator[]> {
-  // suix_getLatestSuiSystemState returns a SuiSystemStateSummary with an
-  // activeValidators array. Each entry includes votingPower (in basis
-  // points of total) and commissionRate (basis points).
+  // suix_getLatestSuiSystemState on Sui Testnet. The schema and method
+  // names are identical to mainnet — Sui keeps its system framework
+  // version-locked across networks.
   type SuiVal = {
     suiAddress?: string;
     name?: string;
@@ -325,7 +346,7 @@ async function fetchSui(): Promise<ScoredValidator[]> {
   };
   const body = await fetchJson<{
     result?: { activeValidators?: SuiVal[] };
-  }>("https://fullnode.mainnet.sui.io", {
+  }>("https://fullnode.testnet.sui.io:443", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({

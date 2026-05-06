@@ -115,18 +115,31 @@ export const config = {
   // key in code — load from AWS Secrets Manager / Doppler in prod.
   autoCompoundKeeperKey: optional("AUTO_COMPOUND_KEEPER_KEY"),
 
-  // Per-chain RPC + keeper configuration. Each is optional — when its
-  // credentials are missing the corresponding executor returns
-  // status="skipped" with reason="missing keeper credentials".
-  moonbeamRpcUrl: optional("MOONBEAM_RPC_URL", "https://rpc.api.moonbeam.network"),
+  // Per-chain RPC + keeper configuration — testnet defaults across the
+  // board. Each is optional; when its keeper credentials are missing
+  // the corresponding executor returns status="skipped".
+  // Moonbase Alpha — Moonbeam testnet (chain id 1287)
+  moonbeamRpcUrl: optional(
+    "MOONBEAM_RPC_URL",
+    "https://rpc.api.moonbase.moonbeam.network"
+  ),
+  // Monad Testnet (chain id 10143)
   monadRpcUrl: optional("MONAD_RPC_URL", "https://testnet-rpc.monad.xyz"),
   monadStakingContract: optional("MONAD_STAKING_CONTRACT"),
-  cosmosRestUrl: optional("COSMOS_REST_URL", "https://rest.cosmos.directory/cosmoshub"),
-  cosmosRpcUrl: optional("COSMOS_RPC_URL", "https://rpc.cosmos.directory/cosmoshub"),
+  // Cosmos Hub theta-testnet — Polypore sentry-01 endpoints
+  cosmosRestUrl: optional(
+    "COSMOS_REST_URL",
+    "https://rest.sentry-01.theta-testnet.polypore.xyz"
+  ),
+  cosmosRpcUrl: optional(
+    "COSMOS_RPC_URL",
+    "https://rpc.sentry-01.theta-testnet.polypore.xyz"
+  ),
   cosmosKeeperMnemonic: optional("COSMOS_KEEPER_MNEMONIC"),
   cosmosKeeperPrefix: optional("COSMOS_KEEPER_PREFIX", "cosmos"),
   cosmosGasPrice: optional("COSMOS_GAS_PRICE", "0.025uatom"),
-  suiRpcUrl: optional("SUI_RPC_URL", "https://fullnode.mainnet.sui.io"),
+  // Sui Testnet
+  suiRpcUrl: optional("SUI_RPC_URL", "https://fullnode.testnet.sui.io:443"),
   suiKeeperPrivateKey: optional("SUI_KEEPER_PRIVATE_KEY"),
 
   // Loop SDK CORS proxy. Devnet's edge (Cloudflare-fronted) blocks any
