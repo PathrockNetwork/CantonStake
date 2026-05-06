@@ -19,6 +19,14 @@ interface HealthDetail {
   warnings?: string[];
 }
 
+// Detect whether the backend is running rewards in mock-seeded mode.
+// Surfaced in the warnings array as the "MOCK_REWARDS=true: ..." line.
+function isMockRewards(h: HealthDetail | undefined): boolean {
+  return (
+    h?.warnings?.some((w) => w.startsWith("MOCK_REWARDS=true")) ?? false
+  );
+}
+
 async function fetchHealthDetail(): Promise<HealthDetail> {
   const res = await fetch(`${BACKEND_URL}/api/health/detail`);
   if (!res.ok) throw new Error(await res.text());
@@ -30,6 +38,7 @@ function deriveBadge(h: HealthDetail | undefined): {
   color: "neon" | "cc" | "warn";
 } {
   if (!h) return { label: "Loading", color: "warn" };
+  if (isMockRewards(h)) return { label: "Mock Rewards · Demo", color: "warn" };
   if (h.demoMode) return { label: "Demo · Devnet", color: "warn" };
   if (h.featuredAppRight === "configured")
     return { label: "Featured · Live", color: "neon" };
@@ -78,8 +87,10 @@ const NAV: Route[] = [
   { href: "/dashboard", label: "Dashboard", icon: <IconBolt /> },
   { href: "/stake", label: "Stake", icon: <IconArrowRight /> },
   { href: "/positions", label: "Positions", icon: <IconShield /> },
+  { href: "/portfolio", label: "Portfolio", icon: <IconChart /> },
   { href: "/rewards", label: "Rewards", icon: <IconCoin size={11} /> },
   { href: "/analytics", label: "Analytics", icon: <IconChart /> },
+  { href: "/settings", label: "Settings", icon: <IconShield /> },
 ];
 
 function isActive(pathname: string, href: string): boolean {

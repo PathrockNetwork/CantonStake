@@ -28,4 +28,6 @@ export function getActiveProvider(): ICantonProvider {
 
 export { useCantonWallet } from "./use-canton-wallet";
 export type { UseCantonWalletReturn } from "./use-canton-wallet";
+export { useLoopHoldings } from "./use-loop-holdings";
+export type { LoopHolding, UseLoopHoldingsResult } from "./use-loop-holdings";
 export * from "./types";

@@ -245,6 +245,28 @@ app.get("/api/health/detail", async () => {
   };
 });
 
+// --- Lookup user by EVM address ---
+
+app.get<{ Params: { address: string } }>(
+  "/api/users/by-evm/:address",
+  async (req, reply) => {
+    const address = req.params.address.toLowerCase();
+    if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+      return reply.code(400).send({ error: "invalid EVM address" });
+    }
+    try {
+      const user = await prisma.user.findFirst({
+        where: { evmAddress: address },
+      });
+      if (!user) return reply.code(404).send({ error: "user not found" });
+      return { user };
+    } catch (err) {
+      req.log.error(err);
+      return reply.code(500).send({ error: String(err) });
+    }
+  },
+);
+
 // --- Upsert user (Loop wallet identity) ---
 
 interface UpsertUserBody {
