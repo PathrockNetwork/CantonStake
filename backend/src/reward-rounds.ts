@@ -145,102 +145,60 @@ async function processRound(job: Job<RoundPayload>) {
       return;
     }
 
-    // 3. Calculate per-user CC distribution.
-    //
-    // Two paths:
-    //
-    //   (a) CIP-0104 / mock — drive distribution from AppActivityRecord
-    //       entries ingested above. Each record's `ccAttributed` is the
-    //       gross CC for that party in this round; the BeneficiarySplit
-    //       (75 user / 25 treasury) is applied here at distribution time.
-    //
-    //   (b) Legacy fallback — if no records were ingested AND we're not
-    //       in mock mode (so the FA gate already passed), fall back to
-    //       the original even-split-across-bonded-positions mock so the
-    //       existing demo path keeps working during the rollout.
+    // 3. Calculate per-user CC distribution from CIP-0104 attribution records.
+    //    Each record's `ccAttributed` is the gross CC for that party in this
+    //    round; the BeneficiarySplit (75 user / 25 treasury) is applied at
+    //    distribution time. Rounds with no records mint 0 CC and complete.
     let totalCcMinted = 0;
     const userByParty = new Map(
       bondedPositions.map((p) => [p.user.cantonPartyId, p])
     );
 
-    if (activityRecords.length > 0) {
-      for (const rec of activityRecords) {
-        const position = userByParty.get(rec.party);
-        const cc = Number(rec.ccAttributed);
-        const userShare = cc * 0.75;
-        const treasuryShare = cc * 0.25;
-        totalCcMinted += cc;
+    for (const rec of activityRecords) {
+      const position = userByParty.get(rec.party);
+      const cc = Number(rec.ccAttributed);
+      const userShare = cc * 0.75;
+      const treasuryShare = cc * 0.25;
+      totalCcMinted += cc;
 
-        if (!position) {
-          console.log(
-            `  [round #${roundNumber}] activity record for unknown party ${rec.party} — skipping reward event (CC counted in totals)`
-          );
-          continue;
-        }
-
-        await prisma.rewardEvent.create({
-          data: {
-            userId: position.userId,
-            positionId: position.id,
-            roundId: round.id,
-            ccAmount: cc.toFixed(8),
-            userShare: userShare.toFixed(8),
-            treasuryShare: treasuryShare.toFixed(8),
-            userWeight: 0.75,
-            treasuryWeight: 0.25,
-          },
-        });
-
-        const prevEarned = parseFloat(position.totalCcEarned || "0");
-        await prisma.stakingPosition.update({
-          where: { id: position.id },
-          data: {
-            totalCcEarned: (prevEarned + cc).toFixed(8),
-            markersEmitted: { increment: 1 },
-          },
-        });
-
+      if (!position) {
         console.log(
-          `  [round #${roundNumber}] CC for ${rec.party}: ${userShare.toFixed(8)} (user) + ${treasuryShare.toFixed(8)} (treasury) [${ingestion.source}]`
+          `  [round #${roundNumber}] activity record for unknown party ${rec.party} — skipping reward event (CC counted in totals)`
         );
+        continue;
       }
-    } else {
-      // Legacy fallback: even split across bonded positions.
-      const totalActiveStakers = bondedPositions.length || 1;
-      const ccPerRound = 100;
-      const ccPerPosition = ccPerRound / totalActiveStakers;
 
-      for (const position of bondedPositions) {
-        const userShare = ccPerPosition * 0.75;
-        const treasuryShare = ccPerPosition * 0.25;
-        totalCcMinted += ccPerPosition;
+      await prisma.rewardEvent.create({
+        data: {
+          userId: position.userId,
+          positionId: position.id,
+          roundId: round.id,
+          ccAmount: cc.toFixed(8),
+          userShare: userShare.toFixed(8),
+          treasuryShare: treasuryShare.toFixed(8),
+          userWeight: 0.75,
+          treasuryWeight: 0.25,
+        },
+      });
 
-        await prisma.rewardEvent.create({
-          data: {
-            userId: position.userId,
-            positionId: position.id,
-            roundId: round.id,
-            ccAmount: ccPerPosition.toFixed(8),
-            userShare: userShare.toFixed(8),
-            treasuryShare: treasuryShare.toFixed(8),
-            userWeight: 0.75,
-            treasuryWeight: 0.25,
-          },
-        });
+      const prevEarned = parseFloat(position.totalCcEarned || "0");
+      await prisma.stakingPosition.update({
+        where: { id: position.id },
+        data: {
+          totalCcEarned: (prevEarned + cc).toFixed(8),
+          markersEmitted: { increment: 1 },
+        },
+      });
 
-        const prevEarned = parseFloat(position.totalCcEarned || "0");
-        await prisma.stakingPosition.update({
-          where: { id: position.id },
-          data: {
-            totalCcEarned: (prevEarned + ccPerPosition).toFixed(8),
-            markersEmitted: { increment: 1 },
-          },
-        });
+      console.log(
+        `  [round #${roundNumber}] CC for ${rec.party}: ${userShare.toFixed(8)} (user) + ${treasuryShare.toFixed(8)} (treasury) [${ingestion.source}]`
+      );
+    }
 
-        console.log(
-          `  [round #${roundNumber}] CC for ${position.user.cantonPartyId}: ${userShare.toFixed(8)} (user) + ${treasuryShare.toFixed(8)} (treasury) [legacy]`
-        );
-      }
+    if (activityRecords.length === 0) {
+      console.log(
+        `  [round #${roundNumber}] no activity records — minting 0 CC (was: legacy even-split fallback)`
+      );
     }
 
     // 5. Mark round as completed

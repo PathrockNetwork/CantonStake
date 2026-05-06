@@ -1,19 +1,33 @@
 "use client";
 
+import { useQuery } from "@tanstack/react-query";
 import { IconCoin } from "@/components/icons";
+import { fetchRewardHealth } from "@/lib/api";
 import { tokens } from "@/lib/tokens";
 import { useRoundCountdown } from "@/lib/use-round-countdown";
 
 /**
- * Compact 10-minute CC round ticker pill — for the top nav.
- * Ported from handoff/prototype/redesign/components.jsx (`CCRoundTicker`).
+ * Compact CC round ticker pill — top nav.
  *
- * Distinct from the older /rewards page ticker (frontend/components/CCRoundTicker.tsx
- * with the SVG ring) — this is the smaller horizontal bar variant designed
- * to live inside the nav bar.
+ * The countdown is wall-clock based (rounds are fixed 10-minute slots);
+ * the round NUMBER is the real one from /api/rewards/health, falling
+ * back to the wall-clock derived id when the backend is unreachable.
  */
 export function CCRoundTicker({ compact = false }: { compact?: boolean }) {
-  const { mm, ss, progress, roundId } = useRoundCountdown();
+  const { mm, ss, progress, roundId: fallbackRoundId } = useRoundCountdown();
+  const { data: health } = useQuery({
+    queryKey: ["round-ticker-health"],
+    queryFn: () => fetchRewardHealth(),
+    refetchInterval: 30_000,
+  });
+  const realRoundNumber = health?.lastRound?.roundNumber;
+  // The next round is the latest persisted + 1; until the worker has
+  // produced any round we fall back to the wall-clock derived id so the
+  // pill still animates.
+  const roundLabel =
+    realRoundNumber !== undefined
+      ? (realRoundNumber + 1).toLocaleString()
+      : fallbackRoundId.toString().slice(-5);
 
   return (
     <div
@@ -39,7 +53,7 @@ export function CCRoundTicker({ compact = false }: { compact?: boolean }) {
             textTransform: "uppercase",
           }}
         >
-          CC Round {roundId.toString().slice(-5)}
+          CC Round {roundLabel}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span

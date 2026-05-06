@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   useAccount,
   useChainId,
@@ -17,11 +18,12 @@ import { Chip } from "@/components/primitives/Chip";
 import { MarkerSpark } from "@/components/primitives/MarkerSpark";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { emitTrace } from "@/components/trace/useTraceLog";
-import { createStakingRequest } from "@/lib/api";
+import { createStakingRequest, fetchChainStats } from "@/lib/api";
 import { polygonChain } from "@/lib/chains";
 import { adapterFor } from "@/lib/chains/index";
 import { fmt, fmtUsd } from "@/lib/format";
 import { useCantonWallet } from "@/lib/canton";
+import { usePrices } from "@/lib/prices";
 import { tokens } from "@/lib/tokens";
 
 /**
@@ -71,7 +73,7 @@ const STAGES = [
   },
   {
     code: "05 FeaturedAppActivityMarker",
-    detail: "Bond marker emitted · weight=0.21 USD · split=75/25",
+    detail: "Bond marker emitted · split=75/25",
     kind: "MARKER" as const,
     tag: "success" as const,
   },
@@ -107,6 +109,38 @@ export default function StakePage() {
   const [log, setLog] = useState<LogEntry[]>([]);
   const [showSpark, setShowSpark] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [validatorName, setValidatorName] = useState<string | null>(null);
+  const [validatorAddr, setValidatorAddr] = useState<string | null>(null);
+
+  // Live prices + chain stats so the form's APY/CC numbers and USD
+  // estimates aren't hardcoded.
+  const { data: prices } = usePrices();
+  const polUsd = prices?.polUsd ?? 0;
+  const { data: chainStats } = useQuery({
+    queryKey: ["chain-stats"],
+    queryFn: () => fetchChainStats(),
+    refetchInterval: 5 * 60_000,
+  });
+  const polygonStats = chainStats?.chains.find((c) => c.chain === "polygon");
+  const nativeApy = polygonStats?.apyPctEstimate ?? null;
+  // CC bonus is the marginal yield from CC rewards on top of native staking.
+  // Without per-validator history we estimate it as a fixed-ratio of the
+  // chain's base yield until /api/rewards/health exposes a per-staker average.
+  const ccBonusApy = polygonStats ? polygonStats.apyPctEstimate * 0.35 : null;
+
+  useEffect(() => {
+    let cancelled = false;
+    void adapter.getValidators().then((vs) => {
+      const top = vs[0];
+      if (!cancelled && top) {
+        setValidatorName(top.name);
+        setValidatorAddr(top.address);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [adapter]);
 
   const {
     data: hash,
@@ -218,8 +252,17 @@ export default function StakePage() {
     step === 0
       ? CTA_LABELS[0].replace("{amount}", amount)
       : CTA_LABELS[step] ?? CTA_LABELS[0];
-  const expectedCC = (parseFloat(amount || "0") * 0.42 * 1.2).toFixed(2);
-  const usdValue = parseFloat(amount || "0") * 0.42;
+  const amountNum = parseFloat(amount || "0");
+  const usdValue = amountNum * polUsd;
+  // Expected CC for a single bond is best derived from the most recent
+  // round's per-staked-pol attribution. Without that we estimate it as
+  // the user's stake × (ccBonusApy / 365) × 1 day worth of CC at current
+  // CC/USD price — useful as an order-of-magnitude hint.
+  const expectedCC = (() => {
+    if (!ccBonusApy || !prices?.ccUsd || prices.ccUsd <= 0) return null;
+    const annualCcUsd = (ccBonusApy / 100) * usdValue;
+    return (annualCcUsd / 365 / prices.ccUsd).toFixed(2);
+  })();
 
   return (
     <div style={{ maxWidth: 1280, margin: "0 auto", padding: "40px 22px 80px" }}>
@@ -338,14 +381,20 @@ export default function StakePage() {
                   border: `1px solid ${tokens.hairline}`,
                 }}
               >
-                <div className="mono" style={{ fontSize: 13, color: tokens.ink[100] }}>
-                  MockValidatorShare
+                <div
+                  className="mono"
+                  style={{ fontSize: 13, color: tokens.ink[100] }}
+                >
+                  {validatorName ?? "Resolving validator…"}
                 </div>
-                <div className="mono" style={{ fontSize: 10, color: tokens.ink[400] }}>
-                  {polygon.validatorContract
-                    ? `${polygon.validatorContract.slice(0, 10)}...${polygon.validatorContract.slice(-6)}`
-                    : "0x..."}
-                  {" · Demo contract matching the production ValidatorShare interface"}
+                <div
+                  className="mono"
+                  style={{ fontSize: 10, color: tokens.ink[400] }}
+                >
+                  {validatorAddr
+                    ? `${validatorAddr.slice(0, 10)}...${validatorAddr.slice(-6)}`
+                    : "—"}
+                  {" · top-scored Polygon validator (live from validator-scoring)"}
                 </div>
               </div>
             </div>
@@ -402,7 +451,7 @@ export default function StakePage() {
                   className="display tabular"
                   style={{ fontSize: 24, color: tokens.ink[100] }}
                 >
-                  7.0%
+                  {nativeApy !== null ? `${nativeApy.toFixed(1)}%` : "—"}
                 </div>
               </div>
               <div>
@@ -411,7 +460,7 @@ export default function StakePage() {
                   className="display tabular"
                   style={{ fontSize: 24, color: tokens.cc }}
                 >
-                  2.4%
+                  {ccBonusApy !== null ? `${ccBonusApy.toFixed(1)}%` : "—"}
                 </div>
               </div>
             </div>
@@ -450,7 +499,7 @@ export default function StakePage() {
                   Validator
                 </span>
                 <span className="mono" style={{ color: tokens.ink[100] }}>
-                  MockValidatorShare
+                  {validatorName ?? "—"}
                 </span>
                 <span className="mono" style={{ color: tokens.ink[300] }}>
                   Custody
@@ -474,7 +523,7 @@ export default function StakePage() {
                   Expected CC · next round
                 </span>
                 <span className="mono tabular" style={{ color: tokens.cc }}>
-                  ~{expectedCC} CC
+                  {expectedCC ? `~${expectedCC} CC / day` : "—"}
                 </span>
               </div>
             </div>
@@ -663,7 +712,7 @@ export default function StakePage() {
                   className="display"
                   style={{ fontSize: 22, color: tokens.ink[100], marginTop: 4 }}
                 >
-                  Bond · {fmt(parseFloat(amount || "0") * 0.42, 2)} USD
+                  Bond · {fmt(amountNum * polUsd, 2)} USD
                 </div>
                 <div
                   className="mono"

@@ -9,9 +9,15 @@ import { EmptyState } from "@/components/primitives/EmptyState";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { StatusDot } from "@/components/primitives/StatusDot";
 import { IconExternal } from "@/components/icons";
-import { fetchPositions, fetchRewards, type PositionRow } from "@/lib/api";
+import {
+  fetchPositions,
+  fetchRecentRounds,
+  fetchRewards,
+  type PositionRow,
+} from "@/lib/api";
 import { fmt, fmtUsd } from "@/lib/format";
 import { useCantonWallet } from "@/lib/canton";
+import { usePrices } from "@/lib/prices";
 import { tokens } from "@/lib/tokens";
 
 /**
@@ -22,9 +28,6 @@ import { tokens } from "@/lib/tokens";
  * "mintedCC" numbers in the Last Round card are derived from totals
  * since no per-round endpoint exists yet (PORT_GUIDE §Step 7).
  */
-
-const POL_PRICE_USD = 0.42;
-const CC_PRICE_USD = 0.16;
 
 function shortContract(id: string): string {
   if (id.length <= 18) return id;
@@ -47,6 +50,9 @@ function relativeTime(iso?: string): string {
 export default function DashboardPage() {
   const { address, isConnected } = useAccount();
   const { partyId } = useCantonWallet();
+  const { data: prices } = usePrices();
+  const polPriceUsd = prices?.polUsd ?? 0;
+  const ccPriceUsd = prices?.ccUsd ?? 0;
 
   const positionsQ = useQuery({
     queryKey: ["dashboard-positions", address],
@@ -57,6 +63,12 @@ export default function DashboardPage() {
   const rewardsQ = useQuery({
     queryKey: ["dashboard-rewards", address],
     queryFn: () => (address ? fetchRewards(address) : null),
+    enabled: !!address,
+    refetchInterval: 10_000,
+  });
+  const roundsQ = useQuery({
+    queryKey: ["dashboard-rounds", address],
+    queryFn: () => fetchRecentRounds(address ?? undefined, 1),
     enabled: !!address,
     refetchInterval: 10_000,
   });
@@ -88,17 +100,26 @@ export default function DashboardPage() {
   const totalCc = rewards?.totalUserShare ?? 0;
   const rewardEvents = Math.max(1, rewards?.rewardEventCount ?? 0);
   const ccPerDay = ((rewards?.totalUserShare ?? 0) / rewardEvents) * 144;
-  const ccPerDayUsd = ccPerDay * CC_PRICE_USD;
+  const ccPerDayUsd = ccPerDay * ccPriceUsd;
   const nativePerDay =
     ((rewards?.totalUserPayoutPol ?? 0) /
       Math.max(1, rewards?.rewardSweepCount ?? 0)) *
     144;
-  const nativePerDayUsd = nativePerDay * POL_PRICE_USD;
+  const nativePerDayUsd = nativePerDay * polPriceUsd;
+
+  // Blended APY = native staking yield + CC bonus, computed from this user's
+  // observed flows. Falls back to "—" until enough data has accrued (one full
+  // sweep + reward event).
+  const stakedUsd = totalBondedPol * polPriceUsd;
+  const nativeApy = stakedUsd > 0 ? (nativePerDayUsd * 365) / stakedUsd : 0;
+  const ccApy = stakedUsd > 0 ? (ccPerDayUsd * 365) / stakedUsd : 0;
+  const blendedApy = nativeApy + ccApy;
+  const hasYield = stakedUsd > 0 && (rewards?.rewardSweepCount ?? 0) > 0;
 
   const stats = [
     {
       label: "Total Staked",
-      value: fmtUsd(totalBondedPol * POL_PRICE_USD, 2),
+      value: fmtUsd(stakedUsd, 2),
       sub: `+ ${positions.length} positions · POL ${fmt(totalBondedPol, 2)}`,
       accent: tokens.ink[100],
     },
@@ -106,7 +127,7 @@ export default function DashboardPage() {
       label: "CC earned",
       value: fmt(totalCc, 1),
       unit: "CC",
-      sub: `≈ ${fmtUsd(totalCc * CC_PRICE_USD)} · CC/USD $${CC_PRICE_USD}`,
+      sub: `≈ ${fmtUsd(totalCc * ccPriceUsd)} · CC/USD $${ccPriceUsd.toFixed(2)}`,
       accent: tokens.cc,
     },
     {
@@ -117,22 +138,26 @@ export default function DashboardPage() {
     },
     {
       label: "Blended APY",
-      value: "9.4%",
-      sub: "7.0% native + 2.4% CC bonus",
+      value: hasYield ? `${(blendedApy * 100).toFixed(1)}%` : "—",
+      sub: hasYield
+        ? `${(nativeApy * 100).toFixed(1)}% native + ${(ccApy * 100).toFixed(1)}% CC bonus`
+        : "needs ≥1 sweep + reward event",
       accent: tokens.neon,
     },
   ];
 
-  // "Last CC round" summary derived from aggregates
-  const ourShare = 2.41;
-  const lastRoundCc = totalCc / Math.max(1, rewardEvents);
-  const lastRound = {
-    id: 2_873_541,
-    minted: lastRoundCc * 30, // assume ~30x amplification for round-wide minted
-    ourMarkers: positions.reduce((s, p) => s + p.argument.markersEmitted, 0),
-    ourShare,
-    yourCc: lastRoundCc,
-  };
+  // "Last CC round" summary — pulled from /api/rewards/rounds
+  const latestRound = roundsQ.data?.rounds[0];
+  const ourShare = latestRound?.userTrafficSharePct ?? null;
+  const lastRound = latestRound
+    ? {
+        id: latestRound.roundNumber,
+        minted: Number(latestRound.totalCcMinted),
+        ourMarkers: positions.reduce((s, p) => s + p.argument.markersEmitted, 0),
+        ourShare: ourShare ?? 0,
+        yourCc: Number(latestRound.userCcAttributed ?? "0") * 0.75,
+      }
+    : null;
 
   return (
     <div style={{ maxWidth: 1280, margin: "0 auto", padding: "40px 22px 80px" }}>
@@ -158,7 +183,8 @@ export default function DashboardPage() {
               gap: 10,
             }}
           >
-            <StatusDot /> FEATURED APP · NETWORK SHARE {ourShare.toFixed(2)}%
+            <StatusDot /> FEATURED APP · NETWORK SHARE{" "}
+            {ourShare !== null ? `${ourShare.toFixed(2)}%` : "—"}
           </div>
           <h1
             className="display"
@@ -220,62 +246,80 @@ export default function DashboardPage() {
       </div>
 
       {/* Last CC round summary */}
-      <Card padding={0} style={{ marginBottom: 24, position: "relative", overflow: "hidden" }}>
-        <div
-          style={{
-            padding: "18px 22px",
-            borderBottom: `1px solid ${tokens.hairline}`,
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-          }}
+      {lastRound ? (
+        <Card
+          padding={0}
+          style={{ marginBottom: 24, position: "relative", overflow: "hidden" }}
         >
-          <div>
-            <SectionLabel>§ Last CC round · #{lastRound.id.toLocaleString()}</SectionLabel>
-            <div
-              className="display"
-              style={{ fontSize: 22, color: tokens.ink[100], marginTop: 2 }}
-            >
-              Round closed recently.
-            </div>
-          </div>
-          <Chip color={tokens.cc} dot>
-            MINTED
-          </Chip>
-        </div>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4,1fr)",
-            gap: 1,
-            background: tokens.hairline,
-          }}
-        >
-          {[
-            { l: "CC minted (round)", v: `${fmt(lastRound.minted, 1)} CC`, a: tokens.cc },
-            { l: "Our markers", v: lastRound.ourMarkers, a: tokens.neon },
-            { l: "Our share", v: `${lastRound.ourShare}%`, a: tokens.ink[100] },
-            {
-              l: "Your CC (75%)",
-              v: `+ ${fmt((lastRound.minted * lastRound.ourShare) / 100 * 0.75, 2)}`,
-              a: tokens.cc,
-            },
-          ].map((s) => (
-            <div
-              key={s.l}
-              style={{ padding: "16px 22px", background: tokens.ink[900] }}
-            >
-              <SectionLabel>{s.l}</SectionLabel>
+          <div
+            style={{
+              padding: "18px 22px",
+              borderBottom: `1px solid ${tokens.hairline}`,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <div>
+              <SectionLabel>
+                § Last CC round · #{lastRound.id.toLocaleString()}
+              </SectionLabel>
               <div
-                className="display tabular"
-                style={{ fontSize: 22, color: s.a, marginTop: 4 }}
+                className="display"
+                style={{ fontSize: 22, color: tokens.ink[100], marginTop: 2 }}
               >
-                {s.v}
+                {latestRound?.relativeTime ?? "Round closed recently."}
               </div>
             </div>
-          ))}
-        </div>
-      </Card>
+            <Chip color={tokens.cc} dot>
+              {latestRound?.status === "completed" ? "MINTED" : (latestRound?.status ?? "—").toUpperCase()}
+            </Chip>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(4,1fr)",
+              gap: 1,
+              background: tokens.hairline,
+            }}
+          >
+            {[
+              {
+                l: "CC minted (round)",
+                v: `${fmt(lastRound.minted, 1)} CC`,
+                a: tokens.cc,
+              },
+              { l: "Our markers", v: lastRound.ourMarkers, a: tokens.neon },
+              {
+                l: "Our share",
+                v:
+                  ourShare !== null
+                    ? `${ourShare.toFixed(2)}%`
+                    : "—",
+                a: tokens.ink[100],
+              },
+              {
+                l: "Your CC (75%)",
+                v: `+ ${fmt(lastRound.yourCc, 2)}`,
+                a: tokens.cc,
+              },
+            ].map((s) => (
+              <div
+                key={s.l}
+                style={{ padding: "16px 22px", background: tokens.ink[900] }}
+              >
+                <SectionLabel>{s.l}</SectionLabel>
+                <div
+                  className="display tabular"
+                  style={{ fontSize: 22, color: s.a, marginTop: 4 }}
+                >
+                  {s.v}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      ) : null}
 
       {/* Positions table */}
       <Card padding={0}>
