@@ -82,13 +82,13 @@ services:
       - DISCORD_DEFAULT_WEBHOOK=${DISCORD_DEFAULT_WEBHOOK:-}
       - AUTO_COMPOUND_DISABLED=${AUTO_COMPOUND_DISABLED:-true}
       - AUTO_COMPOUND_KEEPER_KEY=${AUTO_COMPOUND_KEEPER_KEY:-}
-      - MOONBEAM_RPC_URL=${MOONBEAM_RPC_URL:-https://rpc.api.moonbeam.network}
+      - MOONBEAM_RPC_URL=${MOONBEAM_RPC_URL:-https://rpc.api.moonbase.moonbeam.network}
       - MONAD_RPC_URL=${MONAD_RPC_URL:-https://testnet-rpc.monad.xyz}
       - MONAD_STAKING_CONTRACT=${MONAD_STAKING_CONTRACT:-}
-      - COSMOS_REST_URL=${COSMOS_REST_URL:-https://rest.cosmos.directory/cosmoshub}
-      - COSMOS_RPC_URL=${COSMOS_RPC_URL:-https://rpc.cosmos.directory/cosmoshub}
+      - COSMOS_REST_URL=${COSMOS_REST_URL:-https://rest.sentry-01.theta-testnet.polypore.xyz}
+      - COSMOS_RPC_URL=${COSMOS_RPC_URL:-https://rpc.sentry-01.theta-testnet.polypore.xyz}
       - COSMOS_KEEPER_MNEMONIC=${COSMOS_KEEPER_MNEMONIC:-}
-      - SUI_RPC_URL=${SUI_RPC_URL:-https://fullnode.mainnet.sui.io}
+      - SUI_RPC_URL=${SUI_RPC_URL:-https://fullnode.testnet.sui.io:443}
       - SUI_KEEPER_PRIVATE_KEY=${SUI_KEEPER_PRIVATE_KEY:-}
       - SENTRY_DSN=${SENTRY_DSN:-}
       - SENTRY_ENV=${SENTRY_ENV:-production}
@@ -120,6 +120,16 @@ services:
         NEXT_PUBLIC_LOOP_USE_BACKEND_PROXY: ${NEXT_PUBLIC_LOOP_USE_BACKEND_PROXY:-true}
         NEXT_PUBLIC_LOOP_API_URL: ${NEXT_PUBLIC_LOOP_API_URL:-}
         NEXT_PUBLIC_LOOP_WALLET_URL: ${NEXT_PUBLIC_LOOP_WALLET_URL:-}
+        NEXT_PUBLIC_SUI_NETWORK: ${NEXT_PUBLIC_SUI_NETWORK:-testnet}
+        NEXT_PUBLIC_SUI_RPC_URL: ${NEXT_PUBLIC_SUI_RPC_URL:-https://fullnode.testnet.sui.io:443}
+        NEXT_PUBLIC_COSMOS_CHAIN_ID: ${NEXT_PUBLIC_COSMOS_CHAIN_ID:-theta-testnet-001}
+        NEXT_PUBLIC_COSMOS_CHAIN_NAME: ${NEXT_PUBLIC_COSMOS_CHAIN_NAME:-Cosmos Hub Theta Testnet}
+        NEXT_PUBLIC_COSMOS_RPC: ${NEXT_PUBLIC_COSMOS_RPC:-https://rpc.sentry-01.theta-testnet.polypore.xyz}
+        NEXT_PUBLIC_COSMOS_REST: ${NEXT_PUBLIC_COSMOS_REST:-https://rest.sentry-01.theta-testnet.polypore.xyz}
+        NEXT_PUBLIC_COSMOS_COIN_DENOM: ${NEXT_PUBLIC_COSMOS_COIN_DENOM:-ATOM}
+        NEXT_PUBLIC_COSMOS_COIN_MINIMAL_DENOM: ${NEXT_PUBLIC_COSMOS_COIN_MINIMAL_DENOM:-uatom}
+        NEXT_PUBLIC_COSMOS_COIN_DECIMALS: ${NEXT_PUBLIC_COSMOS_COIN_DECIMALS:-6}
+        NEXT_PUBLIC_COSMOS_COIN_TYPE: ${NEXT_PUBLIC_COSMOS_COIN_TYPE:-118}
     image: ${FRONTEND_IMAGE:-cantonstake-frontend:local}
     container_name: cantonstake-frontend
     ports:

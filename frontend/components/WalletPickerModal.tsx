@@ -5,6 +5,8 @@ import { useAccount, useConnect, useDisconnect } from "wagmi";
 import { Btn } from "@/components/primitives/Btn";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { useCantonWallet } from "@/lib/canton";
+import { useCosmosWallet } from "@/lib/cosmos/use-cosmos-wallet";
+import { useSuiWallet } from "@/lib/sui/use-sui-wallet";
 import { tokens } from "@/lib/tokens";
 
 interface Props {
@@ -42,6 +44,8 @@ export function WalletPickerModal({ open, onClose }: Props) {
     isConnecting: loopConnecting,
     error: loopError,
   } = useCantonWallet();
+  const cosmos = useCosmosWallet();
+  const sui = useSuiWallet();
 
   const [pendingId, setPendingId] = useState<string | null>(null);
 
@@ -307,6 +311,128 @@ export function WalletPickerModal({ open, onClose }: Props) {
               style={{ fontSize: 10, color: tokens.danger, marginTop: 6 }}
             >
               {error.message}
+            </div>
+          ) : null}
+        </div>
+
+        {/* Cosmos (Keplr / Leap) — only needed if user wants to stake on theta-testnet */}
+        <div style={{ marginTop: 22 }}>
+          <SectionLabel>3. Cosmos (theta-testnet) · optional</SectionLabel>
+          <div
+            style={{
+              marginTop: 8,
+              padding: 14,
+              border: `1px solid ${tokens.hairline}`,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 12,
+            }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <div
+                className="mono"
+                style={{ fontSize: 12, color: tokens.ink[100] }}
+              >
+                Keplr / Leap
+              </div>
+              <div
+                className="mono tabular"
+                style={{
+                  fontSize: 10,
+                  color: tokens.ink[400],
+                  marginTop: 2,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {cosmos.isConnected
+                  ? `${cosmos.address?.slice(0, 14)}…${cosmos.address?.slice(-4)}`
+                  : "Browser extension · cosmos1… address"}
+              </div>
+            </div>
+            {cosmos.isConnected ? (
+              <Btn size="sm" variant="ghost" onClick={cosmos.disconnect}>
+                Disconnect
+              </Btn>
+            ) : (
+              <Btn
+                size="sm"
+                onClick={() => void cosmos.connect()}
+                disabled={cosmos.isConnecting}
+              >
+                {cosmos.isConnecting ? "Opening…" : "Connect Keplr"}
+              </Btn>
+            )}
+          </div>
+          {cosmos.error ? (
+            <div
+              className="mono"
+              style={{ fontSize: 10, color: tokens.danger, marginTop: 6 }}
+            >
+              {cosmos.error}
+            </div>
+          ) : null}
+        </div>
+
+        {/* Sui (Slush / Suiet) — only needed if user wants to stake on Sui Testnet */}
+        <div style={{ marginTop: 22 }}>
+          <SectionLabel>4. Sui (testnet) · optional</SectionLabel>
+          <div
+            style={{
+              marginTop: 8,
+              padding: 14,
+              border: `1px solid ${tokens.hairline}`,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 12,
+            }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <div
+                className="mono"
+                style={{ fontSize: 12, color: tokens.ink[100] }}
+              >
+                Slush / Suiet / Sui Wallet
+              </div>
+              <div
+                className="mono tabular"
+                style={{
+                  fontSize: 10,
+                  color: tokens.ink[400],
+                  marginTop: 2,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {sui.isConnected
+                  ? `${sui.address?.slice(0, 10)}…${sui.address?.slice(-4)}`
+                  : "Detected via @mysten/dapp-kit"}
+              </div>
+            </div>
+            {sui.isConnected ? (
+              <Btn size="sm" variant="ghost" onClick={sui.disconnect}>
+                Disconnect
+              </Btn>
+            ) : (
+              <Btn
+                size="sm"
+                onClick={() => void sui.connect()}
+                disabled={sui.isConnecting}
+              >
+                {sui.isConnecting ? "Opening…" : "Connect Sui"}
+              </Btn>
+            )}
+          </div>
+          {sui.error ? (
+            <div
+              className="mono"
+              style={{ fontSize: 10, color: tokens.danger, marginTop: 6 }}
+            >
+              {sui.error}
             </div>
           ) : null}
         </div>

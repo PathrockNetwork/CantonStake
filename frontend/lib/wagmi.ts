@@ -1,7 +1,7 @@
 "use client";
 
 import { http, createConfig } from "wagmi";
-import { polygonAmoy } from "wagmi/chains";
+import { moonbaseAlpha, monadTestnet, polygonAmoy } from "wagmi/chains";
 import { coinbaseWallet, injected, safe, walletConnect } from "wagmi/connectors";
 
 const projectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || "";
@@ -15,7 +15,10 @@ const APP_METADATA = {
 };
 
 export const wagmiConfig = createConfig({
-  chains: [polygonAmoy],
+  // All EVM testnets the staking flow supports. The user's wallet handles
+  // chain switching via wagmi's `useSwitchChain` when the stake page
+  // selects a non-active chain.
+  chains: [polygonAmoy, moonbaseAlpha, monadTestnet],
   connectors: [
     // Browser-injected wallets — MetaMask, Rabby, Brave, Frame, etc.
     injected(),
@@ -39,6 +42,8 @@ export const wagmiConfig = createConfig({
   ],
   transports: {
     [polygonAmoy.id]: http(),
+    [moonbaseAlpha.id]: http(),
+    [monadTestnet.id]: http(),
   },
   ssr: true,
 });

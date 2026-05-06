@@ -11,7 +11,11 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@cosmjs/proto-signing": "^0.39.0",
+    "@cosmjs/stargate": "^0.39.0",
     "@fivenorth/loop-sdk": "^0.12.4",
+    "@mysten/dapp-kit": "^1.0.4",
+    "@mysten/sui": "^2.16.0",
     "@tanstack/react-query": "^5.51.0",
     "@walletconnect/ethereum-provider": "^2.23.9",
     "@walletconnect/modal": "^2.7.0",
@@ -32,7 +36,7 @@
     "typescript": "^5.4.0",
     "vitest": "^2.1.9"
   },
-  "overrides": {
-    "@noble/hashes": "1.8.0"
+  "comments": {
+    "noble-hashes-version-conflict": "viem/wagmi need @noble/hashes 1.x (paths: ./sha2, ./utils); cosmjs and @mysten/sui need 2.x (paths: ./webcrypto.js). No single version satisfies both, so we let npm hoist each bundled copy."
   }
 }
