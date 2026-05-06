@@ -7,7 +7,14 @@ import { GlobalLiveTrace } from "@/components/trace/GlobalLiveTrace";
 export const metadata: Metadata = {
   title: "CantonStake — Canton-Native Delegation",
   description:
-    "Delegate POL on Polygon and earn Canton Coin activity rewards through on-ledger attestations.",
+    "Multichain staking platform. Delegate native tokens across Cosmos, Moonbeam, Monad, and Polygon to earn Canton Coin rewards.",
+  icons: {
+    icon: "/icon.png",
+    apple: "/apple-icon.png",
+  },
+  openGraph: {
+    images: [{ url: "/og-image.png" }],
+  },
 };
 
 export default function RootLayout({

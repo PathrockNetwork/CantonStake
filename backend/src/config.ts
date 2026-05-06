@@ -129,11 +129,11 @@ export const config = {
   // Cosmos Hub theta-testnet — Polypore sentry-01 endpoints
   cosmosRestUrl: optional(
     "COSMOS_REST_URL",
-    "https://rest.sentry-01.theta-testnet.polypore.xyz"
+    "https://cosmoshub-testnet.api.kjnodes.com"
   ),
   cosmosRpcUrl: optional(
     "COSMOS_RPC_URL",
-    "https://rpc.sentry-01.theta-testnet.polypore.xyz"
+    "https://cosmoshub-testnet.rpc.kjnodes.com"
   ),
   cosmosKeeperMnemonic: optional("COSMOS_KEEPER_MNEMONIC"),
   cosmosKeeperPrefix: optional("COSMOS_KEEPER_PREFIX", "cosmos"),

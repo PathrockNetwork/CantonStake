@@ -449,3 +449,32 @@ export async function fetchNarrator(address: string): Promise<NarratorResponse> 
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+export interface ValidatorScore {
+  chain: string;
+  address: string;
+  name: string;
+  commissionPct: number;
+  uptimePct: number;
+  jailed: boolean;
+  slashCount: number;
+  totalStaked: number;
+  stakeSharePct: number;
+  score: number;
+}
+
+export interface ValidatorScoresResponse {
+  chain: string;
+  fetchedAt: string;
+  source: "live" | "cache" | "stub";
+  validators: ValidatorScore[];
+  warnings: string[];
+}
+
+export async function fetchValidatorScores(
+  chain: string,
+): Promise<ValidatorScoresResponse> {
+  const res = await fetch(`${BACKEND_URL}/api/validators/scores/${chain}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}

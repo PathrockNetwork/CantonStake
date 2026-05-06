@@ -8,10 +8,8 @@
  * Alpha) so the EVM call shape doesn't change — only the RPC endpoint
  * and chain id do.
  *
- * Note: Moonbeam's public validator listing API (api.moonbeam.network)
- * only serves mainnet collators, so the validator-scoring service uses
- * mainnet data for display purposes. Real testnet collator selection
- * should query the precompile directly when needed.
+ * Validators are fetched from the backend's validator-scoring service
+ * which pulls Moonbase Alpha collators directly from the precompile.
  */
 
 import {
@@ -22,6 +20,7 @@ import {
   type Address,
 } from "viem";
 import { moonbaseAlpha } from "viem/chains";
+import { fetchValidatorScores, type ValidatorScore } from "../api";
 import {
   ChainAdapterError,
   type IChainAdapter,
@@ -83,25 +82,14 @@ export const moonbeamAdapter: IChainAdapter = {
 
   async getValidators(): Promise<Validator[]> {
     try {
-      const res = await fetch(
-        "https://api.moonbeam.network/api/staking/collators",
-        { headers: { accept: "application/json" } },
-      );
-      if (!res.ok) throw networkError(`Moonbeam API ${res.status}`);
-      const body = (await res.json()) as { collators?: MoonbeamApiCollator[] };
-      return (body.collators ?? [])
-        .filter((c) => c.isActive !== false)
-        .map((c) => {
-          const commission =
-            (c.commission ?? 0) > 100 ? (c.commission ?? 0) / 100 : c.commission ?? 0;
-          return {
-            address: c.address,
-            name: c.name ?? c.address.slice(0, 10),
-            apr: 12 * (1 - commission / 100),
-            commission,
-            uptime: 99.0,
-          };
-        });
+      const snap = await fetchValidatorScores("moonbeam");
+      return snap.validators.map((v: ValidatorScore) => ({
+        address: v.address,
+        name: v.name,
+        apr: 12 * (1 - v.commissionPct / 100),
+        commission: v.commissionPct,
+        uptime: v.uptimePct,
+      }));
     } catch (cause) {
       throw toAdapterError("Failed to load Moonbeam validators.", cause);
     }

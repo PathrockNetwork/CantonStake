@@ -16,6 +16,7 @@ import {
   type UnsignedTx,
   type Validator,
 } from "./types";
+import { fetchValidatorScores, type ValidatorScore } from "../api";
 
 const SUI_CHAIN_ID = "sui";
 // Sui Testnet — same `0x3::sui_system` module as mainnet (system objects
@@ -72,23 +73,14 @@ export const suiAdapter: IChainAdapter = {
 
   async getValidators(): Promise<Validator[]> {
     try {
-      const state = await rpc<{ activeValidators?: SuiValidator[] }>(
-        "suix_getLatestSuiSystemState",
-        [],
-      );
-      const validators = state.activeValidators ?? [];
-      return validators
-        .filter((v) => v.isActive !== false)
-        .map((v, i) => {
-          const commission = Number(v.commissionRate ?? "0") / 100; // bps → %
-          return {
-            address: v.suiAddress ?? `validator-${i}`,
-            name: v.name ?? v.suiAddress?.slice(0, 14) ?? `Sui-${i}`,
-            apr: 3.5 * (1 - commission / 100),
-            commission,
-            uptime: 99.5,
-          };
-        });
+      const snap = await fetchValidatorScores("sui");
+      return snap.validators.map((v: ValidatorScore) => ({
+        address: v.address,
+        name: v.name,
+        apr: 3.5 * (1 - v.commissionPct / 100),
+        commission: v.commissionPct,
+        uptime: v.uptimePct,
+      }));
     } catch (cause) {
       throw toAdapterError("Failed to load Sui validators.", cause);
     }
