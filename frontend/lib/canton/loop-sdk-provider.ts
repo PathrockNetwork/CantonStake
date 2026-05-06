@@ -33,6 +33,8 @@ interface LoopSdkLike {
   init: (opts: {
     appName: string;
     network?: CantonNetwork;
+    walletUrl?: string;
+    apiUrl?: string;
     onAccept?: (provider: LoopProviderLike) => void;
     onReject?: () => void;
   }) => void;
@@ -78,6 +80,27 @@ function resolveNetwork(): CantonNetwork {
   return "devnet";
 }
 
+// When the backend is reverse-proxying Loop's API to bypass CORS, point
+// the SDK at that proxy. We override `apiUrl` only — `walletUrl` stays at
+// the real Loop host because the user navigates there directly (no
+// CORS, just a normal page load).
+function resolveApiUrl(): string | undefined {
+  const explicit = process.env.NEXT_PUBLIC_LOOP_API_URL;
+  if (explicit && explicit.length > 0) return explicit;
+  const backend = process.env.NEXT_PUBLIC_BACKEND_URL;
+  const useProxy = process.env.NEXT_PUBLIC_LOOP_USE_BACKEND_PROXY === "true";
+  if (useProxy && backend && backend.length > 0) {
+    return `${backend.replace(/\/$/, "")}/loop-proxy`;
+  }
+  return undefined;
+}
+
+function resolveWalletUrl(): string | undefined {
+  const explicit = process.env.NEXT_PUBLIC_LOOP_WALLET_URL;
+  if (explicit && explicit.length > 0) return explicit;
+  return undefined;
+}
+
 async function loadSdk(): Promise<LoopSdkLike | null> {
   if (typeof window === "undefined") return null;
   if (sdkPromise) return sdkPromise;
@@ -105,6 +128,8 @@ async function ensureInitialised(): Promise<LoopSdkLike | null> {
   sdk.init({
     appName: "CantonStake",
     network: resolveNetwork(),
+    apiUrl: resolveApiUrl(),
+    walletUrl: resolveWalletUrl(),
     onAccept: async (provider) => {
       const identity: CantonIdentity = {
         partyId: provider.party_id,

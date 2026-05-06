@@ -92,6 +92,8 @@ services:
       - SUI_KEEPER_PRIVATE_KEY=${SUI_KEEPER_PRIVATE_KEY:-}
       - SENTRY_DSN=${SENTRY_DSN:-}
       - SENTRY_ENV=${SENTRY_ENV:-production}
+      - LOOP_PROXY_ENABLED=${LOOP_PROXY_ENABLED:-true}
+      - LOOP_API_UPSTREAM=${LOOP_API_UPSTREAM:-https://devnet.cantonloop.com}
     depends_on:
       postgres:
         condition: service_healthy
@@ -115,6 +117,9 @@ services:
         NEXT_PUBLIC_CC_USD: ${NEXT_PUBLIC_CC_USD:-0.16}
         NEXT_PUBLIC_USE_REAL_VALIDATOR_SHARE: ${NEXT_PUBLIC_USE_REAL_VALIDATOR_SHARE:-false}
         NEXT_PUBLIC_REAL_VALIDATOR_SHARES: ${NEXT_PUBLIC_REAL_VALIDATOR_SHARES:-{}}
+        NEXT_PUBLIC_LOOP_USE_BACKEND_PROXY: ${NEXT_PUBLIC_LOOP_USE_BACKEND_PROXY:-true}
+        NEXT_PUBLIC_LOOP_API_URL: ${NEXT_PUBLIC_LOOP_API_URL:-}
+        NEXT_PUBLIC_LOOP_WALLET_URL: ${NEXT_PUBLIC_LOOP_WALLET_URL:-}
     image: ${FRONTEND_IMAGE:-cantonstake-frontend:local}
     container_name: cantonstake-frontend
     ports:
