@@ -110,6 +110,109 @@ export async function fetchRewards(address: string): Promise<RewardsSummary> {
   return res.json();
 }
 
+export interface RoundSummary {
+  roundNumber: number;
+  status: string;
+  startedAt: string;
+  completedAt: string | null;
+  relativeTime: string;
+  totalCcMinted: string;
+  totalTxns: number;
+  totalMarkers: number;
+  userTrafficSharePct: number | null;
+  userCcAttributed: string | null;
+}
+
+export async function fetchRecentRounds(
+  address: string | undefined,
+  limit = 10,
+): Promise<{ rounds: RoundSummary[] }> {
+  const params = new URLSearchParams();
+  params.set("limit", String(limit));
+  if (address) params.set("address", address);
+  const res = await fetch(`${BACKEND_URL}/api/rewards/rounds?${params.toString()}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export interface MarkerBucket {
+  t: string;
+  markers: number;
+  cc: number;
+}
+
+export interface AnalyticsMarkers {
+  since: string;
+  hours: number;
+  scope: "user" | "global";
+  series: MarkerBucket[];
+  insight: {
+    totalMarkers: number;
+    priorTotalMarkers: number;
+    deltaPct: number | null;
+  };
+  breakdown: {
+    bondCount: number;
+    unbondCount: number;
+    bondPct: number;
+    unbondPct: number;
+  };
+}
+
+export interface RewardHealth {
+  status: "ok" | "failing" | "idle" | string;
+  totalSampled: number;
+  completed?: number;
+  failed?: number;
+  skipped?: number;
+  successRatePct: number | null;
+  lastRound: {
+    roundNumber: number;
+    status: string;
+    completedAt: string | null;
+    totalCcMinted: string;
+    totalMarkers: number;
+    error: string | null;
+  } | null;
+}
+
+export interface ChainStat {
+  chain: string;
+  validatorCount: number;
+  totalStaked: number;
+  medianCommissionPct: number;
+  apyPctEstimate: number;
+  baseYieldPct: number;
+  source: "live" | "cache" | "stub";
+  fetchedAt: string;
+}
+
+export async function fetchChainStats(): Promise<{ chains: ChainStat[] }> {
+  const res = await fetch(`${BACKEND_URL}/api/chains/stats`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function fetchRewardHealth(): Promise<RewardHealth> {
+  const res = await fetch(`${BACKEND_URL}/api/rewards/health`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function fetchAnalyticsMarkers(
+  address: string | undefined,
+  hours = 24,
+): Promise<AnalyticsMarkers> {
+  const params = new URLSearchParams();
+  params.set("hours", String(hours));
+  if (address) params.set("address", address);
+  const res = await fetch(
+    `${BACKEND_URL}/api/analytics/markers?${params.toString()}`,
+  );
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export interface NarratorResponse {
   text: string;
   model: string;

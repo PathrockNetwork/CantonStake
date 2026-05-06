@@ -9,43 +9,24 @@ import { RoundVisualizer } from "@/components/diagrams/RoundVisualizer";
 import { Card } from "@/components/primitives/Card";
 import { EmptyState } from "@/components/primitives/EmptyState";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
-import { fetchRewards } from "@/lib/api";
+import { fetchRewards, fetchRecentRounds, type RoundSummary } from "@/lib/api";
 import { fmt, fmtUsd } from "@/lib/format";
+import { usePrices } from "@/lib/prices";
 import { tokens } from "@/lib/tokens";
 
 /**
  * Rewards — ported from handoff/prototype/redesign/screens.jsx (`Rewards`).
  *
- * Wires the 3-stat row + beneficiary pipeline to real
- * `fetchRewards(address)`. The recent-rounds table is synthesised — no
- * per-round endpoint exists today (PORT_GUIDE §Step 7 leaves it as a
- * `// TODO(api)` to wire when /v1/rewards/rounds ships).
+ * Stat row + beneficiary pipeline + recent-rounds table, all wired to real
+ * backend endpoints (`fetchRewards`, `fetchRecentRounds`). The "App network
+ * share" is taken from the latest round's traffic share (CIP-0104).
  */
-
-const CC_PRICE_USD = 0.16;
-
-type Round = {
-  id: number;
-  time: string;
-  markers: number;
-  cc: string;
-  share: string;
-};
-
-function synthRounds(count: number, totalCC: number, ourShare: number): Round[] {
-  // Small reproducible variation around the user's average. Demo only.
-  const baseId = 2_873_541;
-  return Array.from({ length: count }, (_, i) => ({
-    id: baseId - i,
-    time: `${i * 10} min ago`,
-    markers: 5 + ((i * 3) % 8),
-    cc: ((totalCC || 200) * (0.85 + (i % 5) * 0.06)).toFixed(1),
-    share: (ourShare + ((i % 4) - 2) * 0.05).toFixed(2),
-  }));
-}
 
 export default function RewardsPage() {
   const { address, isConnected } = useAccount();
+  const { data: prices } = usePrices();
+  const ccPriceUsd = prices?.ccUsd ?? 0;
+
   const { data: rewards } = useQuery({
     queryKey: ["rewards", address],
     queryFn: () => (address ? fetchRewards(address) : null),
@@ -53,15 +34,24 @@ export default function RewardsPage() {
     refetchInterval: 10_000,
   });
 
+  const { data: roundsResp } = useQuery({
+    queryKey: ["rewards-rounds", address],
+    queryFn: () => fetchRecentRounds(address ?? undefined, 10),
+    enabled: !!address,
+    refetchInterval: 10_000,
+  });
+  const rounds: RoundSummary[] = useMemo(
+    () => roundsResp?.rounds ?? [],
+    [roundsResp],
+  );
+
   const userCc = rewards?.totalUserShare ?? 0;
   const treasuryCc = rewards?.totalTreasuryShare ?? 0;
   const totalCc = userCc + treasuryCc;
   const markers24h = rewards?.totalMarkersEmitted ?? 0;
-  const networkShare = 2.41; // No real data source yet
-  const rounds = useMemo(
-    () => synthRounds(10, totalCc / Math.max(1, rewards?.rewardEventCount ?? 1), networkShare),
-    [totalCc, rewards?.rewardEventCount],
-  );
+  const latestShare = rounds[0]?.userTrafficSharePct;
+  const networkShare =
+    typeof latestShare === "number" ? latestShare : null;
 
   return (
     <div style={{ maxWidth: 1280, margin: "0 auto", padding: "40px 22px 80px" }}>
@@ -150,7 +140,7 @@ export default function RewardsPage() {
                 className="mono"
                 style={{ fontSize: 10.5, color: tokens.ink[400], marginTop: 6 }}
               >
-                ≈ {fmtUsd(userCc * CC_PRICE_USD)} · CC/USD ${CC_PRICE_USD}
+                ≈ {fmtUsd(userCc * ccPriceUsd)} · CC/USD ${ccPriceUsd.toFixed(2)}
               </div>
             </div>
             <div style={{ background: tokens.ink[900], padding: 22 }}>
@@ -159,13 +149,15 @@ export default function RewardsPage() {
                 className="display tabular"
                 style={{ fontSize: 42, color: tokens.ink[100], marginTop: 6 }}
               >
-                {networkShare.toFixed(2)}%
+                {networkShare !== null ? `${networkShare.toFixed(2)}%` : "—"}
               </div>
               <div
                 className="mono"
                 style={{ fontSize: 10.5, color: tokens.ink[400], marginTop: 6 }}
               >
-                of all featured app activity
+                {networkShare !== null
+                  ? "of all featured app activity"
+                  : "awaiting first attributed round"}
               </div>
             </div>
           </div>
@@ -235,47 +227,65 @@ export default function RewardsPage() {
                 <SectionLabel key={h}>{h}</SectionLabel>
               ))}
             </div>
-            {rounds.map((r) => (
+            {rounds.length === 0 ? (
               <div
-                key={r.id}
+                className="mono"
                 style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr",
-                  padding: "12px 22px",
-                  borderBottom: `1px solid ${tokens.hairline}`,
-                  gap: 12,
-                  alignItems: "center",
+                  padding: "20px 22px",
+                  fontSize: 11,
+                  color: tokens.ink[400],
                 }}
               >
-                <div
-                  className="mono tabular"
-                  style={{ fontSize: 11.5, color: tokens.ink[100] }}
-                >
-                  #{r.id.toLocaleString()}
-                </div>
-                <div className="mono" style={{ fontSize: 11, color: tokens.ink[400] }}>
-                  {r.time}
-                </div>
-                <div
-                  className="mono tabular"
-                  style={{ fontSize: 12, color: tokens.ink[200] }}
-                >
-                  {r.markers}
-                </div>
-                <div
-                  className="mono tabular"
-                  style={{ fontSize: 12, color: tokens.cc }}
-                >
-                  {r.cc}
-                </div>
-                <div
-                  className="mono tabular"
-                  style={{ fontSize: 12, color: tokens.neon }}
-                >
-                  {r.share}%
-                </div>
+                No completed rounds yet.
               </div>
-            ))}
+            ) : (
+              rounds.map((r) => (
+                <div
+                  key={r.roundNumber}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr",
+                    padding: "12px 22px",
+                    borderBottom: `1px solid ${tokens.hairline}`,
+                    gap: 12,
+                    alignItems: "center",
+                  }}
+                >
+                  <div
+                    className="mono tabular"
+                    style={{ fontSize: 11.5, color: tokens.ink[100] }}
+                  >
+                    #{r.roundNumber.toLocaleString()}
+                  </div>
+                  <div
+                    className="mono"
+                    style={{ fontSize: 11, color: tokens.ink[400] }}
+                  >
+                    {r.relativeTime}
+                  </div>
+                  <div
+                    className="mono tabular"
+                    style={{ fontSize: 12, color: tokens.ink[200] }}
+                  >
+                    {r.totalMarkers ?? 0}
+                  </div>
+                  <div
+                    className="mono tabular"
+                    style={{ fontSize: 12, color: tokens.cc }}
+                  >
+                    {fmt(Number(r.totalCcMinted ?? 0), 1)}
+                  </div>
+                  <div
+                    className="mono tabular"
+                    style={{ fontSize: 12, color: tokens.neon }}
+                  >
+                    {r.userTrafficSharePct !== null
+                      ? `${r.userTrafficSharePct.toFixed(2)}%`
+                      : "—"}
+                  </div>
+                </div>
+              ))
+            )}
           </Card>
         </>
       )}

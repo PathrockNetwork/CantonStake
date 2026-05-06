@@ -45,6 +45,8 @@ import notificationsRoutes from "./routes/notifications.js";
 import taxRoutes from "./routes/tax.js";
 import portfolioRoutes from "./routes/portfolio.js";
 import autoCompoundRoutes from "./routes/auto-compound.js";
+import rewardsRoutes from "./routes/rewards.js";
+import chainsRoutes from "./routes/chains.js";
 
 const publicClient = createPublicClient({
   chain: polygonAmoy,
@@ -568,6 +570,12 @@ await app.register(portfolioRoutes);
 
 // --- Auto-compound routes ---
 await app.register(autoCompoundRoutes);
+
+// --- Rewards rounds + analytics history routes ---
+await app.register(rewardsRoutes);
+
+// --- Chain catalog stats (live APY/TVL/validator count) ---
+await app.register(chainsRoutes);
 
 // --- Start ---
 
