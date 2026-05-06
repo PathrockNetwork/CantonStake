@@ -2,12 +2,11 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useAccount } from "wagmi";
 import { CCRoundTicker } from "@/components/chrome/CCRoundTicker";
 import { PriceTape } from "@/components/chrome/PriceTape";
-import { WalletPickerModal } from "@/components/WalletPickerModal";
+import { useWalletPicker } from "@/components/WalletPickerProvider";
 
 const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4001";
@@ -160,8 +159,7 @@ export function TopNav() {
   const pathname = usePathname();
   const { address, isConnected } = useAccount();
   const { partyId, isConnected: loopConnected } = useCantonWallet();
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const openPicker = () => setPickerOpen(true);
+  const { openPicker } = useWalletPicker();
   const { data: health } = useQuery({
     queryKey: ["health-detail-topnav"],
     queryFn: fetchHealthDetail,
@@ -306,7 +304,6 @@ export function TopNav() {
         </div>
       </div>
       <PriceTape />
-      <WalletPickerModal open={pickerOpen} onClose={() => setPickerOpen(false)} />
     </header>
   );
 }

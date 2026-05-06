@@ -1,13 +1,13 @@
 "use client";
 
-import { useState } from "react";
 import { useAccount } from "wagmi";
+import { SystemStatus } from "@/components/chrome/SystemStatus";
 import { LifecycleDiagram } from "@/components/diagrams/LifecycleDiagram";
 import { IconArrowRight } from "@/components/icons";
 import { Banner } from "@/components/primitives/Banner";
 import { Btn } from "@/components/primitives/Btn";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
-import { WalletPickerModal } from "@/components/WalletPickerModal";
+import { useWalletPicker } from "@/components/WalletPickerProvider";
 import { tokens } from "@/lib/tokens";
 import { useCantonWallet } from "@/lib/canton";
 
@@ -26,7 +26,7 @@ export default function HomePage() {
   const { isConnected: evmConnected } = useAccount();
   const { isConnected: loopConnected } = useCantonWallet();
   const showWalletBanner = !(evmConnected && loopConnected);
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const { openPicker } = useWalletPicker();
 
   return (
     <div
@@ -55,13 +55,12 @@ export default function HomePage() {
             kind="WALLET NOT CONNECTED"
             message="CantonStake uses two identities: Loop for Canton party and CC rewards. Your EVM wallet for Polygon staking signatures. CantonStake never holds your private keys or funds."
             action={
-              <Btn size="sm" onClick={() => setPickerOpen(true)}>
+              <Btn size="sm" onClick={openPicker}>
                 Connect wallets
               </Btn>
             }
           />
         )}
-        <WalletPickerModal open={pickerOpen} onClose={() => setPickerOpen(false)} />
 
         <div
           className="mono"
@@ -98,7 +97,7 @@ export default function HomePage() {
             maxWidth: 900,
           }}
         >
-          Stake on Polygon.
+          Stake any chain.
           <br />
           <span style={{ fontStyle: "italic", color: tokens.ink[300] }}>
             Earn on Canton.
@@ -123,54 +122,12 @@ export default function HomePage() {
               margin: 0,
             }}
           >
-            Delegate POL from your own wallet. Canton records the staking
-            lifecycle, emits reward markers at each economic transition, and
-            routes Canton Coin through an on-ledger beneficiary split every 10
-            minutes.
+            Delegate POL, GLMR, MON, ATOM, or SUI from your own wallet. Canton
+            records the staking lifecycle across every chain, emits reward
+            markers at each economic transition, and routes Canton Coin through
+            an on-ledger 75/25 beneficiary split every 10 minutes.
           </p>
-          <div
-            style={{
-              padding: "18px 20px",
-              background: tokens.ink[900],
-              border: `1px solid ${tokens.hairline}`,
-            }}
-          >
-            <SectionLabel>System status</SectionLabel>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr auto",
-                gap: "10px 16px",
-                marginTop: 14,
-                fontSize: 11.5,
-              }}
-            >
-              <span className="mono" style={{ color: tokens.ink[300] }}>
-                Canton participant
-              </span>
-              <span className="mono" style={{ color: tokens.neon }}>
-                ● OK
-              </span>
-              <span className="mono" style={{ color: tokens.ink[300] }}>
-                Polygon Amoy
-              </span>
-              <span className="mono" style={{ color: tokens.neon }}>
-                ● OK · 42ms
-              </span>
-              <span className="mono" style={{ color: tokens.ink[300] }}>
-                Demo validator
-              </span>
-              <span className="mono" style={{ color: tokens.amberBright }}>
-                ● ACTIVE
-              </span>
-              <span className="mono" style={{ color: tokens.ink[300] }}>
-                CIP-47 markers
-              </span>
-              <span className="mono" style={{ color: tokens.neon }}>
-                ● ENABLED
-              </span>
-            </div>
-          </div>
+          <SystemStatus />
         </div>
 
         <div style={{ display: "flex", gap: 12, marginBottom: 80 }}>
@@ -189,7 +146,7 @@ export default function HomePage() {
           className="display"
           style={{ fontSize: 42, margin: "0 0 12px", color: tokens.ink[100] }}
         >
-          One lifecycle. Two ledgers.
+          One lifecycle. Every chain.
         </h2>
         <p
           style={{
@@ -200,8 +157,9 @@ export default function HomePage() {
             margin: "0 0 28px",
           }}
         >
-          Polygon handles the staking transaction. Canton records the
-          lifecycle state and emits reward markers at the economic transitions.
+          The chain you stake on handles the delegation transaction. Canton
+          records the lifecycle state and emits reward markers at the economic
+          transitions, regardless of which chain the bond lives on.
         </p>
         <LifecycleDiagram />
 
