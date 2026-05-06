@@ -37,18 +37,34 @@ const loopProxyRoutes: FastifyPluginAsync = async (app) => {
     rewritePrefix: "",
     websocket: true,
     http2: false,
-    // Forward the upstream's response headers untouched so the SDK can
-    // read auth/cookie/etc. The CORS layer at the top of index.ts adds
-    // Access-Control-Allow-Origin for the BROWSER, not for upstream.
     replyOptions: {
       rewriteRequestHeaders: (_req, headers) => {
-        // Strip the Origin header — we're acting as a server-side client
-        // here, not a browser. Loop's allowlist only fires when Origin
-        // is set; absent it accepts the request.
+        // Strip the Origin / Referer headers before forwarding upstream.
+        // Loop's Cloudflare allowlist only fires when Origin is set; absent
+        // it the upstream treats us as a normal server-to-server client.
         const out = { ...headers };
         delete out.origin;
         delete out.referer;
+        // Force a generic User-Agent so Cloudflare bot detection can't
+        // single us out for being a Node fetch client.
+        out["user-agent"] =
+          "Mozilla/5.0 (compatible; CantonStakeProxy/1.0; +https://github.com/)";
         return out;
+      },
+      // Strip upstream's CORS headers from the response so our own
+      // `@fastify/cors` layer (which already returned the right value
+      // matching the request Origin) is what reaches the browser.
+      rewriteHeaders: (headers) => {
+        const out: Record<string, string | string[] | undefined> = {
+          ...headers,
+        };
+        delete out["access-control-allow-origin"];
+        delete out["access-control-allow-credentials"];
+        delete out["access-control-allow-headers"];
+        delete out["access-control-allow-methods"];
+        delete out["access-control-expose-headers"];
+        delete out["access-control-max-age"];
+        return out as Record<string, string | string[]>;
       },
     },
   });
