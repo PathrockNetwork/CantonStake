@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useAccount } from "wagmi";
 import { BeneficiaryPipeline } from "@/components/diagrams/BeneficiaryPipeline";
+import { Narrator } from "@/components/diagrams/Narrator";
 import { RoundVisualizer } from "@/components/diagrams/RoundVisualizer";
 import { Card } from "@/components/primitives/Card";
 import { EmptyState } from "@/components/primitives/EmptyState";
@@ -175,8 +176,8 @@ export default function RewardsPage() {
           </SectionLabel>
           <BeneficiaryPipeline userCc={userCc} treasuryCc={treasuryCc} />
 
-          {/* Slot for the A1 Narrator (filled by Claude track) */}
-          {/* slot: A1 Narrator */}
+          {/* A1 Narrator: Anthropic-powered live commentary on the current round. */}
+          <Narrator address={address} />
 
           {/* Formula */}
           <Card style={{ marginTop: 24 }}>

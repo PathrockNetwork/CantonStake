@@ -109,3 +109,31 @@ export async function fetchRewards(address: string): Promise<RewardsSummary> {
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+export interface NarratorResponse {
+  text: string;
+  model: string;
+  context: {
+    address: string;
+    partyId: string | null;
+    latestRoundNumber: number | null;
+    totalUserCc: number;
+    totalTreasuryCc: number;
+    rewardEventCount: number;
+    recentRoundCc: number;
+    recentRoundShare: number | null;
+    previousRoundCc: number | null;
+    previousRoundNumber: number | null;
+    lifetimeUserCc: number;
+    crossedTen: boolean;
+    crossedHundred: boolean;
+    crossedThousand: boolean;
+    source: "anthropic" | "rule-based";
+  };
+}
+
+export async function fetchNarrator(address: string): Promise<NarratorResponse> {
+  const res = await fetch(`${BACKEND_URL}/api/narrator/${address}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}

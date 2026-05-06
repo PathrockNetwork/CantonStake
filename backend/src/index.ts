@@ -20,7 +20,31 @@ import { canton, cantonDelegator, TEMPLATES } from "./canton.js";
 import { startWatchers, startReleaseChecker } from "./orchestrator.js";
 import { prisma } from "./db.js";
 import { startRewardScheduler, shutdownRewardSystem, redisConnection, enqueueRound } from "./reward-rounds.js";
+import { narrate } from "./services/narrator.js";
+import {
+  captureException,
+  counter,
+  renderMetrics,
+} from "./services/observability.js";
+import {
+  startValidatorScoringScheduler,
+  shutdownValidatorScoring,
+} from "./services/validator-scoring.js";
+import { shutdownNotifications } from "./services/notifications.js";
+import {
+  startPortfolioSnapshotScheduler,
+  shutdownPortfolioSnapshots,
+} from "./services/portfolio-snapshots.js";
+import {
+  startAutoCompoundScheduler,
+  shutdownAutoCompound,
+} from "./services/auto-compound.js";
 import sweepRoutes from "./routes/sweep.js";
+import validatorRoutes from "./routes/validators.js";
+import notificationsRoutes from "./routes/notifications.js";
+import taxRoutes from "./routes/tax.js";
+import portfolioRoutes from "./routes/portfolio.js";
+import autoCompoundRoutes from "./routes/auto-compound.js";
 
 const publicClient = createPublicClient({
   chain: polygonAmoy,
@@ -104,7 +128,41 @@ const app = Fastify({
 
 await app.register(cors, { origin: true });
 
+// --- Observability hooks ---
+//
+// onError fires for every uncaught exception out of a route handler.
+// We send to Sentry (no-op when SENTRY_DSN is unset) and increment an
+// http_errors counter. The original error still propagates to Fastify's
+// default error handler — captureException is fire-and-forget.
+app.addHook("onError", async (req, _reply, err) => {
+  const route = req.routeOptions.url ?? req.url;
+  counter("cantonstake_http_errors_total", "Uncaught HTTP errors", {
+    method: req.method,
+    route,
+  });
+  captureException(err, {
+    tags: { method: req.method, route },
+    extra: { url: req.url },
+  });
+});
+
+app.addHook("onResponse", async (req, reply) => {
+  const route = req.routeOptions.url ?? req.url;
+  counter("cantonstake_http_requests_total", "HTTP requests", {
+    method: req.method,
+    route,
+    status: String(reply.statusCode),
+  });
+});
+
 // --- Health ---
+
+// --- Prometheus metrics ---
+app.get("/metrics", async (_req, reply) => {
+  return reply
+    .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
+    .send(renderMetrics());
+});
 
 app.get("/api/health", async () => ({
   status: "ok",
@@ -136,14 +194,29 @@ app.get("/api/health/detail", async () => {
     orderBy: { roundNumber: "desc" },
   });
   const warnings = [
-    !config.featuredAppRightCid
-      ? "FEATURED_APP_RIGHT_CID missing: reward rounds will be skipped"
+    !config.featuredAppRightCid && !config.mockRewards
+      ? "FEATURED_APP_RIGHT_CID missing: reward rounds will be skipped (set MOCK_REWARDS=true for offline demo)"
       : null,
     config.featuredAppRightCid === "demo-stub"
       ? "FEATURED_APP_RIGHT_CID=demo-stub: scheduler runs, Daml marker exercise is disabled"
       : null,
     !config.demoMode && config.logLevel !== "debug"
       ? "Manual reward trigger disabled outside DEMO_MODE/debug"
+      : null,
+    config.mockRewards
+      ? "MOCK_REWARDS=true: reward rounds use seeded mock data (offline demo mode)"
+      : null,
+    config.useLegacyMarkers
+      ? "USE_LEGACY_MARKERS=true: legacy FeaturedAppActivityMarker emission is enabled"
+      : null,
+    !config.anthropicApiKey
+      ? "ANTHROPIC_API_KEY unset: /api/narrator returns rule-based output"
+      : null,
+    config.alertsDisabled
+      ? "ALERTS_DISABLED=true: slashing-monitor diff is a no-op"
+      : null,
+    !config.telegramBotToken && !config.resendApiKey && !config.discordDefaultWebhook
+      ? "no notification provider configured (Telegram/Resend/Discord all unset): alerts will queue but never deliver"
       : null,
   ].filter((warning): warning is string => Boolean(warning));
 
@@ -430,6 +503,25 @@ app.post<{ Params: { positionId: string }; Body: { evmTxHash?: string } }>(
   }
 );
 
+// --- Narrator (Anthropic-powered live commentary) ---
+
+app.get<{ Params: { address: string } }>(
+  "/api/narrator/:address",
+  async (req, reply) => {
+    const { address } = req.params;
+    if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+      return reply.code(400).send({ error: "invalid EVM address" });
+    }
+    try {
+      const result = await narrate(address);
+      return result;
+    } catch (err) {
+      req.log.error(err);
+      return reply.code(500).send({ error: String(err) });
+    }
+  }
+);
+
 // --- Manual round trigger (demo aid) ---
 
 app.post("/api/admin/rounds/trigger", async (req, reply) => {
@@ -462,6 +554,21 @@ app.post("/api/admin/rounds/trigger", async (req, reply) => {
 // --- Sweep routes ---
 await app.register(sweepRoutes);
 
+// --- Validator scoring routes ---
+await app.register(validatorRoutes);
+
+// --- Notifications routes ---
+await app.register(notificationsRoutes);
+
+// --- Tax export routes ---
+await app.register(taxRoutes);
+
+// --- Portfolio routes ---
+await app.register(portfolioRoutes);
+
+// --- Auto-compound routes ---
+await app.register(autoCompoundRoutes);
+
 // --- Start ---
 
 await app.listen({ port: config.port, host: "0.0.0.0" });
@@ -479,10 +586,38 @@ try {
   app.log.warn({ err }, "CC reward scheduler failed to start — rewards paused");
 }
 
+// Start the validator quality scoring refresh job (hourly via BullMQ + Redis)
+try {
+  await startValidatorScoringScheduler();
+  app.log.info("validator scoring scheduler started");
+} catch (err) {
+  app.log.warn({ err }, "validator scoring scheduler failed to start");
+}
+
+// Start the portfolio TVL snapshot job (5-min cadence by default)
+try {
+  await startPortfolioSnapshotScheduler();
+  app.log.info("portfolio snapshot scheduler started");
+} catch (err) {
+  app.log.warn({ err }, "portfolio snapshot scheduler failed to start");
+}
+
+// Start the auto-compound keeper (15-min cadence by default; opt-in)
+try {
+  await startAutoCompoundScheduler();
+  app.log.info("auto-compound scheduler started");
+} catch (err) {
+  app.log.warn({ err }, "auto-compound scheduler failed to start");
+}
+
 // Graceful shutdown
 process.on("SIGTERM", async () => {
   app.log.info("SIGTERM received, shutting down...");
   await shutdownRewardSystem();
+  await shutdownValidatorScoring();
+  await shutdownNotifications();
+  await shutdownPortfolioSnapshots();
+  await shutdownAutoCompound();
   await prisma.$disconnect();
   await app.close();
   process.exit(0);

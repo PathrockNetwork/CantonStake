@@ -1,3 +1,27 @@
 module CantonStake.Setup where
 
 -- Party allocation is handled manually via Canton Console for LocalNet/DevNet.
+--
+-- After parties are allocated, bootstrap the default 75/25 BeneficiarySplit
+-- via the JSON Ledger API or Canton Console:
+--
+--   1. As `appProvider` (the operator), create a BeneficiarySplit with
+--      label="default", weights=[(appProvider, 0.25), (delegator, 0.75)],
+--      version=0, updatedAt=<ISO timestamp>.
+--   2. Capture the resulting contractId from the create event.
+--   3. Set BENEFICIARY_SPLIT_CID=<cid> in the backend .env so the
+--      orchestrator can pass it to StakingPosition_RecordStake.
+--
+-- Quick recipe (pseudocode, JSON Ledger API v2):
+--   POST /v2/commands/submit-and-wait-for-transaction
+--   { "commands": [{ "CreateCommand": {
+--       "templateId": "<pkg>:CantonStake.Staking:BeneficiarySplit",
+--       "createArguments": {
+--         "operator": "<appProvider>", "label": "default",
+--         "weights": [["<appProvider>", "0.25"], ["<delegator>", "0.75"]],
+--         "version": 0, "updatedAt": "2026-05-05T00:00:00Z"
+--       }}}], ... }
+--
+-- The default weights match the inline 75/25 split that the legacy
+-- USE_LEGACY_MARKERS=true path emits, so attribution is consistent across
+-- both paths during the CIP-0104 rollout.

@@ -49,11 +49,60 @@ const INITIAL_LOOKBACK_BLOCKS = 50n;
 const MAX_BLOCK_RANGE = 50n;
 const UNBONDING_PERIOD_SECONDS = 60;
 
+/**
+ * Returns the FeaturedAppRight CID to pass into Accept / ConfirmUnbond, or
+ * `null` to skip legacy marker emission.
+ *
+ * CIP-0104 (live since ~Mar 2026) replaces FeaturedAppActivityMarker with
+ * traffic-attribution from sequencer/mediator data. The legacy path is kept
+ * only for backwards compat during the staged rollout: it fires only when
+ * USE_LEGACY_MARKERS=true AND a real CID is configured (the `demo-stub`
+ * sentinel always returns null).
+ */
 function featuredRightCidForDaml(): string | null {
+  if (!config.useLegacyMarkers) return null;
   if (!config.featuredAppRightCid || config.featuredAppRightCid === "demo-stub") {
     return null;
   }
   return config.featuredAppRightCid;
+}
+
+/**
+ * CIP-0104 traffic-attribution beacon. Called after each Bond / Unbond /
+ * Release transition. The orchestrator silently no-ops when
+ * BENEFICIARY_SPLIT_CID is unset (keeps demos working without a configured
+ * split contract).
+ */
+async function recordStakeEvent(args: {
+  positionContractId: string;
+  eventKind: "Bond" | "Unbond" | "Release";
+  txProof: { txHash: string; blockNumber: number; validatorShare: string } | null;
+  occurredAt: string;
+}): Promise<void> {
+  if (!config.beneficiarySplitCid) {
+    console.log(
+      `  [RecordStake] skipped (BENEFICIARY_SPLIT_CID unset) kind=${args.eventKind}`
+    );
+    return;
+  }
+  try {
+    const result = await canton.exerciseChoice({
+      templateId: TEMPLATES.StakingPosition,
+      contractId: args.positionContractId,
+      choice: "StakingPosition_RecordStake",
+      argument: {
+        eventKind: args.eventKind,
+        splitCid: config.beneficiarySplitCid,
+        txProof: args.txProof,
+        occurredAt: args.occurredAt,
+      },
+    });
+    console.log(
+      `  [RecordStake] kind=${args.eventKind} OnchainEvent created tx=${result.transactionId}`
+    );
+  } catch (err) {
+    console.error(`  [RecordStake] failed kind=${args.eventKind}:`, err);
+  }
 }
 
 // --- Matching logic ---
@@ -261,6 +310,18 @@ async function handleShareMinted(log: Log) {
       cantonTxId: result.transactionId,
     });
     console.log(`  -> mirrored Bonded position to Postgres (contractId=${newContractId.slice(0, 16)}…)`);
+
+    // CIP-0104 traffic attribution beacon for the Bond transition.
+    await recordStakeEvent({
+      positionContractId: newContractId,
+      eventKind: "Bond",
+      txProof: {
+        txHash: transactionHash,
+        blockNumber: Number(blockNumber),
+        validatorShare: config.mockValidatorShare,
+      },
+      occurredAt: new Date().toISOString(),
+    });
   } catch (err) {
     console.error(`  failed to accept StakingRequest:`, err);
   }
@@ -317,6 +378,21 @@ async function handleShareBurned(log: Log) {
       unbondingReadyAt,
     });
     console.log(`  -> mirrored Unbonding position to Postgres`);
+
+    // CIP-0104 traffic attribution beacon for the Unbond transition. Note
+    // that ConfirmUnbond archives the old position CID and creates a new
+    // one; RecordStake fires on the *new* CID extracted from the result.
+    const newPositionCid = extractCreatedContractId(result.events) || position.contractId;
+    await recordStakeEvent({
+      positionContractId: newPositionCid,
+      eventKind: "Unbond",
+      txProof: {
+        txHash: transactionHash,
+        blockNumber: Number(blockNumber),
+        validatorShare: config.mockValidatorShare,
+      },
+      occurredAt: new Date().toISOString(),
+    });
   } catch (err) {
     console.error(`  failed to confirm unbond:`, err);
   }
@@ -450,6 +526,15 @@ export function startReleaseChecker(): void {
             cantonTxId: result.transactionId,
           });
           console.log(`  -> mirrored Released position to Postgres`);
+
+          // CIP-0104 traffic attribution beacon for the Release transition.
+          const newReleasedCid = extractCreatedContractId(result.events) || p.contractId;
+          await recordStakeEvent({
+            positionContractId: newReleasedCid,
+            eventKind: "Release",
+            txProof: null,
+            occurredAt: new Date().toISOString(),
+          });
         } catch (err) {
           console.error(`  release failed:`, err);
         }

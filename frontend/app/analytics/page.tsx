@@ -1,10 +1,14 @@
 "use client";
 
 import { useMemo } from "react";
+import { useAccount } from "wagmi";
 import { Card } from "@/components/primitives/Card";
 import { Chip } from "@/components/primitives/Chip";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { tokens } from "@/lib/tokens";
+
+const BACKEND_URL =
+  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4001";
 
 /**
  * Analytics — ported from handoff/prototype/redesign/screens.jsx (`Analytics`).
@@ -15,6 +19,12 @@ import { tokens } from "@/lib/tokens";
  * (PORT_GUIDE §Step 7).
  */
 export default function AnalyticsPage() {
+  const { address, isConnected } = useAccount();
+  const csvHref =
+    isConnected && address
+      ? `${BACKEND_URL}/api/tax/csv?address=${address}&format=koinly`
+      : null;
+
   const series = useMemo(
     () =>
       Array.from({ length: 60 }, (_, i) => {
@@ -30,13 +40,57 @@ export default function AnalyticsPage() {
 
   return (
     <div style={{ maxWidth: 1280, margin: "0 auto", padding: "40px 22px 80px" }}>
-      <SectionLabel>§ ANALYTICS</SectionLabel>
-      <h1
-        className="display"
-        style={{ fontSize: 42, margin: "4px 0 12px", color: tokens.ink[100] }}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: 24,
+        }}
       >
-        Marker activity over time.
-      </h1>
+        <div>
+          <SectionLabel>§ ANALYTICS</SectionLabel>
+          <h1
+            className="display"
+            style={{ fontSize: 42, margin: "4px 0 12px", color: tokens.ink[100] }}
+          >
+            Marker activity over time.
+          </h1>
+        </div>
+        {csvHref ? (
+          <a
+            href={csvHref}
+            className="mono"
+            download
+            style={{
+              alignSelf: "center",
+              textTransform: "uppercase",
+              letterSpacing: 0.6,
+              fontSize: 11,
+              padding: "10px 14px",
+              border: `1px solid ${tokens.hairline}`,
+              borderRadius: 6,
+              color: tokens.ink[200],
+              textDecoration: "none",
+            }}
+          >
+            ↓ Tax CSV (Koinly)
+          </a>
+        ) : (
+          <span
+            className="mono"
+            style={{
+              alignSelf: "center",
+              fontSize: 10,
+              color: tokens.ink[400],
+              maxWidth: 220,
+              textAlign: "right",
+            }}
+          >
+            Connect a wallet to download tax CSV
+          </span>
+        )}
+      </div>
       <p
         style={{
           fontSize: 14,
