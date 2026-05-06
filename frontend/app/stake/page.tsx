@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   useAccount,
@@ -138,7 +138,7 @@ function buildCtaLabels(chain: ChainConfig): string[] {
 type LogEntry = Stage & { t: number };
 
 export default function StakePage() {
-  const { address, isConnected } = useAccount();
+  const { address, isConnected, connector } = useAccount();
   const chainId = useChainId();
   const { switchChainAsync, isPending: switchPending } = useSwitchChain();
   const { partyId, isConnected: loopConnected } = useCantonWallet();
@@ -171,6 +171,7 @@ export default function StakePage() {
   const [error, setError] = useState<string | null>(null);
   const [validatorName, setValidatorName] = useState<string | null>(null);
   const [validatorAddr, setValidatorAddr] = useState<string | null>(null);
+  const stage5PollingStartedRef = useRef(false);
 
   // Live prices + chain stats so the form's APY/CC numbers and USD
   // estimates aren't hardcoded.
@@ -224,11 +225,19 @@ export default function StakePage() {
   // Snapshot the user's current marker count BEFORE staking so the
   // post-stake poller can detect the increment.
   const [markerBaseline, setMarkerBaseline] = useState<number | null>(null);
+  const currentStepRef = useRef(step);
+
+  // Keep the ref in sync with step
+  useEffect(() => {
+    currentStepRef.current = step;
+  }, [step]);
 
   useEffect(() => {
-    if (hash && !confirming && !confirmed && step < 2) advance(2);
-    if (confirming && step < 3) advance(3);
-    if (confirmed && step < 4) {
+    const currentStep = currentStepRef.current;
+    if (hash && !confirming && !confirmed && currentStep < 2) advance(2);
+    if (confirming && currentStep < 3) advance(3);
+    if (confirmed && currentStep < 4 && !stage5PollingStartedRef.current) {
+      stage5PollingStartedRef.current = true;
       advance(4);
 
       // Non-Polygon chains: the orchestrator only watches Polygon's
@@ -255,14 +264,14 @@ export default function StakePage() {
       let cancelled = false;
       let timeoutId: number | undefined;
       const fallbackId = window.setTimeout(() => {
-        if (cancelled || step >= 5) return;
+        if (cancelled || currentStepRef.current >= 5) return;
         advance(5);
         setShowSpark(true);
         window.setTimeout(() => setShowSpark(false), 900);
       }, 30_000);
 
       const tick = async () => {
-        if (cancelled) return;
+        if (cancelled || currentStepRef.current >= 5) return;
         try {
           const positions = await fetchPositions(address);
           const total = positions.reduce(
@@ -291,7 +300,7 @@ export default function StakePage() {
         if (timeoutId !== undefined) window.clearTimeout(timeoutId);
       };
     }
-  }, [hash, confirming, confirmed, step, address, markerBaseline]);
+  }, [hash, confirming, confirmed, address, markerBaseline]);
 
   useEffect(() => {
     if (sendError) {
@@ -357,6 +366,7 @@ export default function StakePage() {
     setShowSpark(false);
     setError(null);
     resetSend();
+    stage5PollingStartedRef.current = false;
 
     // Snapshot baseline marker count so the post-stake poller can detect
     // the increment caused by THIS stake.
@@ -397,7 +407,39 @@ export default function StakePage() {
       // Switch network if needed
       const targetChainId = selectedChain.wagmiChain!.id;
       if (chainId !== targetChainId) {
-        await switchChainAsync({ chainId: targetChainId });
+        // First try to add the network to MetaMask (this won't fail if already added)
+        try {
+          const provider = await (connector as any)?.getProvider?.();
+          if (provider?.request) {
+            await provider.request({
+              method: 'wallet_addEthereumChain',
+              params: [{
+                chainId: `0x${targetChainId.toString(16)}`,
+                chainName: 'Polygon Amoy',
+                nativeCurrency: {
+                  name: 'POL',
+                  symbol: 'POL',
+                  decimals: 18,
+                },
+                rpcUrls: ['https://rpc-amoy.polygon.technology'],
+                blockExplorerUrls: ['https://amoy.polygonscan.com'],
+              }],
+            });
+          }
+        } catch {
+          // Network add failed - might already exist, continue
+        }
+
+        // Now switch to the network
+        try {
+          await switchChainAsync({ chainId: targetChainId });
+          // Wait a moment for the switch to take effect
+          await new Promise(resolve => setTimeout(resolve, 500));
+        } catch (switchError) {
+          throw new Error(
+            `Please switch your wallet to Polygon Amoy (chain 80002) and try again.`,
+          );
+        }
       }
 
       const amountWei = parseEther(amount);
@@ -412,14 +454,27 @@ export default function StakePage() {
         );
       }
 
+      // Don't pass chainId - let it use the current chain after switch
+      // Polygon Amoy requires min 25 gwei priority fee
       sendTransaction({
-        chainId: targetChainId,
         to: tx.to,
         data: tx.data,
         value: tx.value ?? 0n,
+        gas: tx.gas,
+        maxPriorityFeePerGas: 30_000_000_000n, // 30 gwei
+        maxFeePerGas: 100_000_000_000n, // 100 gwei
       });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.startsWith("WALLET_CHAIN_MISMATCH:")) {
+        setError(msg.replace("WALLET_CHAIN_MISMATCH: ", ""));
+      } else if (msg.includes("does not match the target chain")) {
+        setError(
+          `Your wallet is on the wrong network. Switch to ${selectedChain.name} and try again. If your wallet doesn't support switching, use MetaMask or Rabby.`,
+        );
+      } else {
+        setError(msg);
+      }
       setStep(0);
     }
   }
@@ -588,6 +643,7 @@ export default function StakePage() {
               onClick={() => {
                 setError(null);
                 setStep(0);
+                stage5PollingStartedRef.current = false;
               }}
             >
               Try again
