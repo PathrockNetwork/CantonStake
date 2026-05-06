@@ -115,6 +115,20 @@ export const config = {
   // key in code — load from AWS Secrets Manager / Doppler in prod.
   autoCompoundKeeperKey: optional("AUTO_COMPOUND_KEEPER_KEY"),
 
+  // Per-chain RPC + keeper configuration. Each is optional — when its
+  // credentials are missing the corresponding executor returns
+  // status="skipped" with reason="missing keeper credentials".
+  moonbeamRpcUrl: optional("MOONBEAM_RPC_URL", "https://rpc.api.moonbeam.network"),
+  monadRpcUrl: optional("MONAD_RPC_URL", "https://testnet-rpc.monad.xyz"),
+  monadStakingContract: optional("MONAD_STAKING_CONTRACT"),
+  cosmosRestUrl: optional("COSMOS_REST_URL", "https://rest.cosmos.directory/cosmoshub"),
+  cosmosRpcUrl: optional("COSMOS_RPC_URL", "https://rpc.cosmos.directory/cosmoshub"),
+  cosmosKeeperMnemonic: optional("COSMOS_KEEPER_MNEMONIC"),
+  cosmosKeeperPrefix: optional("COSMOS_KEEPER_PREFIX", "cosmos"),
+  cosmosGasPrice: optional("COSMOS_GAS_PRICE", "0.025uatom"),
+  suiRpcUrl: optional("SUI_RPC_URL", "https://fullnode.mainnet.sui.io"),
+  suiKeeperPrivateKey: optional("SUI_KEEPER_PRIVATE_KEY"),
+
   // Observability (§6). Sentry DSN unset = error capture is a no-op.
   // Prometheus /metrics is always available and never gated on env.
   sentryDsn: optional("SENTRY_DSN"),

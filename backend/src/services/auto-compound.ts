@@ -157,13 +157,312 @@ async function executePolygon(
   }
 }
 
-async function executeStub(
-  chain: CompoundChain
+// --- Moonbeam executor (parachain-staking precompile via viem) ---
+//
+// Compounding on Moonbeam = bond more from the user's free balance using
+// `delegatorBondMore`. Pending rewards on Moonbeam auto-accrue into the
+// delegator's free balance each round, so the keeper just bonds the
+// difference. We require a positive maxPerRun cap (enforced like Polygon)
+// to bound the amount bonded.
+
+import { moonbeam } from "viem/chains";
+
+const moonbeamStakingAbi = [
+  parseAbiItem(
+    "function delegatorBondMore(address candidate, uint256 more)"
+  ),
+] as const;
+
+async function executeMoonbeam(
+  ctx: ExecutorContext
 ): Promise<ExecutorResult> {
-  return {
-    status: "skipped",
-    reason: `${chain} executor not yet implemented — chain adapter pending`,
+  if (!config.autoCompoundKeeperKey) {
+    return { status: "skipped", reason: "AUTO_COMPOUND_KEEPER_KEY unset" };
+  }
+  if (!ctx.evmAddress) {
+    return { status: "skipped", reason: "user has no EVM address on file" };
+  }
+  if (!ctx.maxPerRun) {
+    return {
+      status: "skipped",
+      reason: "moonbeam compound requires a non-zero maxPerRun cap",
+    };
+  }
+
+  let amount: bigint;
+  try {
+    amount = BigInt(ctx.maxPerRun);
+  } catch {
+    return { status: "skipped", reason: `maxPerRun ${ctx.maxPerRun} is not a uint` };
+  }
+  if (amount === 0n) {
+    return { status: "skipped", reason: "maxPerRun is zero" };
+  }
+
+  const account = privateKeyToAccount(config.autoCompoundKeeperKey as Hex);
+  const walletClient = createWalletClient({
+    account,
+    chain: moonbeam,
+    transport: http(config.moonbeamRpcUrl),
+  });
+
+  try {
+    const data = encodeFunctionData({
+      abi: moonbeamStakingAbi,
+      functionName: "delegatorBondMore",
+      args: [ctx.validator as Address, amount],
+    });
+    const txHash = await walletClient.sendTransaction({
+      to: "0x0000000000000000000000000000000000000800" as Address,
+      data,
+    });
+    return {
+      status: "success",
+      amountClaimed: amount.toString(),
+      amountRestaked: amount.toString(),
+      txHash,
+    };
+  } catch (err) {
+    return { status: "failed", reason: String(err) };
+  }
+}
+
+// --- Monad executor (staking precompile at 0x...1000 via viem) ---
+
+const monadStakingAbi = [
+  parseAbiItem("function compound(uint64 validator_id)"),
+  parseAbiItem(
+    "function get_delegator(uint64 validator_id, address delegator) view returns (uint256, uint256, uint256, uint256, uint256, uint64, uint64)"
+  ),
+] as const;
+
+async function executeMonad(
+  ctx: ExecutorContext
+): Promise<ExecutorResult> {
+  if (!config.autoCompoundKeeperKey) {
+    return { status: "skipped", reason: "AUTO_COMPOUND_KEEPER_KEY unset" };
+  }
+  if (!ctx.evmAddress) {
+    return { status: "skipped", reason: "user has no EVM address on file" };
+  }
+
+  let valId: bigint;
+  try {
+    valId = BigInt(ctx.validator);
+  } catch {
+    return {
+      status: "skipped",
+      reason: `monad validator must be a numeric id (got ${ctx.validator})`,
+    };
+  }
+
+  const monadChainId = 10143; // Monad testnet — adjust for mainnet when published.
+  const account = privateKeyToAccount(config.autoCompoundKeeperKey as Hex);
+  const monadChain = {
+    id: monadChainId,
+    name: "Monad",
+    nativeCurrency: { name: "Monad", symbol: "MON", decimals: 18 },
+    rpcUrls: { default: { http: [config.monadRpcUrl] } },
+  } as const;
+  const walletClient = createWalletClient({
+    account,
+    chain: monadChain,
+    transport: http(config.monadRpcUrl),
+  });
+
+  const stakingContract =
+    (config.monadStakingContract ||
+      "0x0000000000000000000000000000000000001000") as Address;
+
+  try {
+    const data = encodeFunctionData({
+      abi: monadStakingAbi,
+      functionName: "compound",
+      args: [valId],
+    });
+    const txHash = await walletClient.sendTransaction({
+      to: stakingContract,
+      data,
+    });
+    return {
+      status: "success",
+      txHash,
+    };
+  } catch (err) {
+    return { status: "failed", reason: String(err) };
+  }
+}
+
+// --- Cosmos executor (Authz MsgExec → MsgWithdrawDelegatorReward + MsgDelegate) ---
+
+async function executeCosmos(
+  ctx: ExecutorContext
+): Promise<ExecutorResult> {
+  if (!config.cosmosKeeperMnemonic) {
+    return {
+      status: "skipped",
+      reason: "COSMOS_KEEPER_MNEMONIC unset",
+    };
+  }
+
+  // Lazy-load to avoid pulling cosmjs into the import graph at startup
+  // (it's a sizeable bundle — better to only initialise when a permit
+  // actually exists).
+  const { DirectSecp256k1HdWallet } = await import("@cosmjs/proto-signing");
+  const { SigningStargateClient, GasPrice } = await import(
+    "@cosmjs/stargate"
+  );
+  const { MsgWithdrawDelegatorReward } = await import(
+    "cosmjs-types/cosmos/distribution/v1beta1/tx"
+  );
+  const { MsgDelegate } = await import(
+    "cosmjs-types/cosmos/staking/v1beta1/tx"
+  );
+  const { MsgExec } = await import("cosmjs-types/cosmos/authz/v1beta1/tx");
+
+  const wallet = await DirectSecp256k1HdWallet.fromMnemonic(
+    config.cosmosKeeperMnemonic,
+    { prefix: config.cosmosKeeperPrefix }
+  );
+  const [keeperAccount] = await wallet.getAccounts();
+  if (!keeperAccount) {
+    return { status: "failed", reason: "cosmos keeper has no accounts" };
+  }
+
+  const client = await SigningStargateClient.connectWithSigner(
+    config.cosmosRpcUrl,
+    wallet,
+    { gasPrice: GasPrice.fromString(config.cosmosGasPrice) }
+  );
+
+  // Granter = the delegator party; we expect this on the user model. The
+  // permit's `signaturePayload` carries the granter address (Cosmos addrs
+  // aren't EVM addresses, so we reuse signaturePayload for chain-native
+  // metadata).
+  const granter = ctx.signaturePayload;
+  if (!granter) {
+    return {
+      status: "skipped",
+      reason: "permit.signaturePayload missing cosmos granter address",
+    };
+  }
+
+  const claimMsg = {
+    typeUrl: "/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward",
+    value: MsgWithdrawDelegatorReward.fromPartial({
+      delegatorAddress: granter,
+      validatorAddress: ctx.validator,
+    }),
   };
+  // Without a balance probe we restake whatever the user has authorised
+  // via maxPerRun. Falling back to a nominal 1uatom is wrong; require a cap.
+  if (!ctx.maxPerRun) {
+    return {
+      status: "skipped",
+      reason: "cosmos compound requires a non-zero maxPerRun cap (uatom)",
+    };
+  }
+  const delegateMsg = {
+    typeUrl: "/cosmos.staking.v1beta1.MsgDelegate",
+    value: MsgDelegate.fromPartial({
+      delegatorAddress: granter,
+      validatorAddress: ctx.validator,
+      amount: { denom: "uatom", amount: ctx.maxPerRun },
+    }),
+  };
+  const exec = {
+    typeUrl: "/cosmos.authz.v1beta1.MsgExec",
+    value: MsgExec.fromPartial({
+      grantee: keeperAccount.address,
+      msgs: [claimMsg, delegateMsg].map((m) => ({
+        typeUrl: m.typeUrl,
+        value:
+          m.typeUrl ===
+          "/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward"
+            ? MsgWithdrawDelegatorReward.encode(m.value as never).finish()
+            : MsgDelegate.encode(m.value as never).finish(),
+      })),
+    }),
+  };
+
+  try {
+    const result = await client.signAndBroadcast(
+      keeperAccount.address,
+      [exec],
+      "auto",
+      "cantonstake auto-compound"
+    );
+    if (result.code !== 0) {
+      return {
+        status: "failed",
+        reason: `cosmos broadcast code=${result.code} log=${result.rawLog ?? ""}`,
+      };
+    }
+    return {
+      status: "success",
+      amountRestaked: ctx.maxPerRun,
+      txHash: result.transactionHash,
+    };
+  } catch (err) {
+    return { status: "failed", reason: String(err) };
+  } finally {
+    client.disconnect();
+  }
+}
+
+// --- Sui executor (request_add_stake using the keeper's keypair) ---
+
+async function executeSui(
+  ctx: ExecutorContext
+): Promise<ExecutorResult> {
+  if (!config.suiKeeperPrivateKey) {
+    return {
+      status: "skipped",
+      reason: "SUI_KEEPER_PRIVATE_KEY unset",
+    };
+  }
+  if (!ctx.maxPerRun) {
+    return {
+      status: "skipped",
+      reason: "sui compound requires a non-zero maxPerRun cap (mist)",
+    };
+  }
+
+  const { SuiJsonRpcClient } = await import("@mysten/sui/jsonRpc");
+  const { Transaction } = await import("@mysten/sui/transactions");
+  const { Ed25519Keypair } = await import("@mysten/sui/keypairs/ed25519");
+
+  const keypair = Ed25519Keypair.fromSecretKey(config.suiKeeperPrivateKey);
+  const client = new SuiJsonRpcClient({
+    url: config.suiRpcUrl,
+    network: "mainnet",
+  });
+
+  try {
+    const tx = new Transaction();
+    const [stakeCoin] = tx.splitCoins(tx.gas, [BigInt(ctx.maxPerRun)]);
+    tx.moveCall({
+      target: "0x3::sui_system::request_add_stake",
+      arguments: [
+        tx.object("0x5"),
+        stakeCoin!,
+        tx.pure.address(ctx.validator),
+      ],
+    });
+    const built = await tx.build({ client });
+    const sig = await keypair.signTransaction(built);
+    const result = await client.executeTransactionBlock({
+      transactionBlock: built,
+      signature: sig.signature,
+    });
+    return {
+      status: "success",
+      amountRestaked: ctx.maxPerRun,
+      txHash: result.digest,
+    };
+  } catch (err) {
+    return { status: "failed", reason: String(err) };
+  }
 }
 
 const EXECUTORS: Record<
@@ -171,10 +470,10 @@ const EXECUTORS: Record<
   (ctx: ExecutorContext) => Promise<ExecutorResult>
 > = {
   polygon: executePolygon,
-  moonbeam: () => executeStub("moonbeam"),
-  monad: () => executeStub("monad"),
-  cosmos: () => executeStub("cosmos"),
-  sui: () => executeStub("sui"),
+  moonbeam: executeMoonbeam,
+  monad: executeMonad,
+  cosmos: executeCosmos,
+  sui: executeSui,
 };
 
 // --- Tick: scan permits, dispatch executors, record runs ---
