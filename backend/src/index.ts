@@ -89,6 +89,15 @@ async function upsertUserIdentity(args: {
     where: { cantonPartyId: args.cantonPartyId },
   });
   if (existingByParty) {
+    if (evmAddress && existingByParty.evmAddress !== evmAddress) {
+      const conflict = await prisma.user.findUnique({ where: { evmAddress } });
+      if (conflict && conflict.id !== existingByParty.id) {
+        await prisma.user.update({
+          where: { id: conflict.id },
+          data: { evmAddress: null },
+        });
+      }
+    }
     return prisma.user.update({
       where: { id: existingByParty.id },
       data: { evmAddress, displayName: args.displayName },
@@ -296,167 +305,47 @@ app.post<{ Body: UpsertUserBody }>("/api/users", async (req, reply) => {
 
 // --- Create a StakingRequest ---
 
-const VALID_CHAINS = new Set([
-  "polygon",
-  "moonbeam",
-  "monad",
-  "cosmos",
-  "sui",
-]);
-
 interface CreateRequestBody {
   evmAddress: string;
-  // Decimal string in chain-native units; the field name `amountPol` is
-  // historical (Polygon was the only chain originally). The Daml template
-  // also still names it `amountPol`; we'll rename when the template
-  // adds a proper `chain` field.
-  amountPol: string;
-  // Chain id from frontend/lib/chains.ts. Defaults to "polygon" so old
-  // clients keep working without modification.
-  chain?: string;
-  // Validator address (or chain-native id, e.g. uint64 for Monad).
-  validator?: string;
+  amountPol: string; // decimal string, e.g. "1.5"
   delegator?: string; // Loop/Canton party id
 }
 
 app.post<{ Body: CreateRequestBody }>("/api/requests", async (req, reply) => {
-  const { evmAddress, amountPol, validator } = req.body;
-  const chain = req.body.chain ?? "polygon";
+  const { evmAddress, amountPol } = req.body;
   const delegator = req.body.delegator || config.cantonDelegatorParty;
 
   if (!evmAddress || !amountPol) {
     return reply.code(400).send({ error: "missing required fields" });
   }
-  if (!VALID_CHAINS.has(chain)) {
-    return reply.code(400).send({ error: `invalid chain: ${chain}` });
-  }
-  // Cosmos / Sui delegator addresses aren't 0x... — we only enforce the
-  // EVM regex when the staking chain is EVM-based.
-  const isEvmChain = chain === "polygon" || chain === "moonbeam" || chain === "monad";
-  if (isEvmChain && !/^0x[a-fA-F0-9]{40}$/.test(evmAddress)) {
+  if (!/^0x[a-fA-F0-9]{40}$/.test(evmAddress)) {
     return reply.code(400).send({ error: "invalid EVM address" });
   }
 
   try {
     await upsertUserIdentity({ cantonPartyId: delegator, evmAddress });
 
-    // The Daml StakingRequest template doesn't yet have `chain` / `validator`
-    // fields, so we ONLY pass the fields it knows about. Per-chain metadata
-    // is logged + persisted in our own Postgres so the orchestrator can
-    // match events by (chain, evmAddress) without a DAR redeploy.
+    // Use the known Canton delegator party for contract creation — the
+    // Loop SDK party may not exist on the local Canton participant.
+    const knownDelegator = config.cantonDelegatorParty;
+
     const result = await cantonDelegator.createContract({
       templateId: TEMPLATES.StakingRequest,
       argument: {
-        delegator,
+        delegator: knownDelegator,
         appProvider: config.cantonAppProviderParty,
         evmAddress,
         amountPol,
         requestedAt: new Date().toISOString(),
       },
-      actAs: [delegator],
+      actAs: [knownDelegator],
     });
-
-    req.log.info(
-      { chain, validator, evmAddress, amountPol },
-      "[requests] StakingRequest created"
-    );
-
-    if (chain !== "polygon") {
-      req.log.warn(
-        { chain },
-        "[requests] non-polygon stake — orchestrator will not auto-Accept this. " +
-          "Use POST /api/admin/requests/:txId/accept to force-Accept after the EVM tx confirms."
-      );
-    }
-
-    return { ok: true, transactionId: result.transactionId, delegator, chain };
+    return { ok: true, transactionId: result.transactionId, delegator: knownDelegator };
   } catch (err) {
     req.log.error(err);
     return reply.code(500).send({ error: String(err) });
   }
 });
-
-// --- Force-accept a non-Polygon StakingRequest (demo aid) ---
-// Until per-chain orchestrator watchers land, the user (or the frontend
-// after the user's wallet confirms a Moonbase/Monad tx) can call this to
-// transition the Daml position from Pending → Bonded.
-
-interface ForceAcceptBody {
-  evmAddress: string;
-  amountPol: string;
-  evmTxHash: string;
-  blockNumber?: number;
-  chain?: string;
-}
-
-app.post<{ Body: ForceAcceptBody }>(
-  "/api/requests/force-accept",
-  async (req, reply) => {
-    if (!config.demoMode && config.logLevel !== "debug") {
-      return reply.code(403).send({
-        error:
-          "force-accept disabled outside DEMO_MODE / LOG_LEVEL=debug",
-      });
-    }
-    const { evmAddress, amountPol, evmTxHash } = req.body;
-    const chain = req.body.chain ?? "polygon";
-    if (!evmAddress || !amountPol || !evmTxHash) {
-      return reply
-        .code(400)
-        .send({ error: "missing evmAddress / amountPol / evmTxHash" });
-    }
-
-    try {
-      // Find the matching pending StakingRequest on Canton.
-      const requests = await canton.activeContracts(TEMPLATES.StakingRequest);
-      const matching = requests.find((r) => {
-        const a = r.argument as { evmAddress?: string; amountPol?: string };
-        return (
-          a.evmAddress?.toLowerCase() === evmAddress.toLowerCase() &&
-          a.amountPol === amountPol
-        );
-      });
-      if (!matching) {
-        return reply
-          .code(404)
-          .send({ error: "no pending StakingRequest matched evmAddress + amountPol" });
-      }
-
-      const result = await cantonDelegator.exerciseChoice({
-        templateId: TEMPLATES.StakingRequest,
-        contractId: matching.contractId,
-        choice: "StakingRequest_Accept",
-        argument: {
-          proof: {
-            txHash: evmTxHash,
-            blockNumber: req.body.blockNumber ?? 0,
-            validatorShare:
-              chain === "polygon"
-                ? config.mockValidatorShare
-                : `${chain}::precompile`,
-          },
-          featuredRightCid: null,
-        },
-        actAs: [config.cantonAppProviderParty],
-      });
-
-      req.log.info(
-        { chain, evmAddress, evmTxHash },
-        "[requests] force-accepted non-polygon stake"
-      );
-
-      return {
-        ok: true,
-        chain,
-        contractId: matching.contractId,
-        transactionId: result.transactionId,
-      };
-    } catch (err) {
-      req.log.error(err);
-      return reply.code(500).send({ error: String(err) });
-    }
-  }
-);
 
 // --- List pending requests by EVM address ---
 
@@ -487,6 +376,8 @@ app.get<{ Querystring: { address?: string } }>(
   async (req, reply) => {
     const { address } = req.query;
     try {
+      // Canton contracts already have markersEmitted set by Daml
+      // No need to merge with Postgres - Canton is the source of truth
       const contracts = await canton.activeContracts(TEMPLATES.StakingPosition);
       const filtered = address
         ? contracts.filter((c) => {
