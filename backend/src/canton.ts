@@ -321,6 +321,9 @@ export const cantonDelegator = new CantonClient(
 // Template IDs — replace with your actual package id after `daml build`.
 // Get it from `daml damlc inspect-dar .daml/dist/cantonstake-0.0.1.dar | head -20`
 export const TEMPLATES = {
-  StakingRequest: "#cantonstake:CantonStake.Staking:StakingRequest",
-  StakingPosition: "#cantonstake:CantonStake.Staking:StakingPosition",
+  StakingRequest:           "#cantonstake:CantonStake.Staking:StakingRequest",
+  StakingPosition:          "#cantonstake:CantonStake.Staking:StakingPosition",
+  BeneficiarySplit:         "#cantonstake:CantonStake.Staking:BeneficiarySplit",
+  BeneficiarySplitUpdated:  "#cantonstake:CantonStake.Staking:BeneficiarySplitUpdated",
+  OnchainEvent:             "#cantonstake:CantonStake.Staking:OnchainEvent",
 } as const;

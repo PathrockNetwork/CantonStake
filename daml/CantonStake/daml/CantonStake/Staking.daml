@@ -14,11 +14,35 @@
 --        v
 --     Released    -- tokens claimable; position closed
 --
---   Economically meaningful events (per CIP-47 guidance):
---     Bond, Unbond. We DO NOT mark the intermediate Request/Pending steps.
+--   Reward attribution (CIP-0104, approved 2026-02-12, live since ~Mar 2026):
+--     The Global Synchronizer now derives per-app rewards directly from
+--     sequencer + mediator data: traffic spent on sub-transactions that change
+--     state managed by the app provider party is attributed to that app.
+--     Featured apps receive a proportional share of the reward pool every round.
+--
+--     CantonStake's CIP-0104 attribution path is `StakingPosition_RecordStake`,
+--     which creates an `OnchainEvent` contract on every economically meaningful
+--     transition (Bond / Unbond / Release). The create operation itself burns
+--     traffic attributable to `appProvider`, no marker required.
+--
+--   Legacy marker fallback (CIP-0047 era):
+--     Manual `FeaturedAppActivityMarker` emission is retained on
+--     `StakingRequest_Accept` and `StakingPosition_ConfirmUnbond` ONLY for
+--     backwards compatibility during the CIP-0104 rollout (Increments 1-4 are
+--     staged with 30-day delays per the CIP). The backend gates this path via
+--     the `USE_LEGACY_MARKERS` flag — set to false post-pivot, true only as a
+--     short-term fallback if the new path under-attributes traffic.
+--
+--   Beneficiary weights (75 % delegator / 25 % treasury) live on the
+--   `BeneficiarySplit` template. The default split is created at setup time
+--   and referenced by CID from each `RecordStake` exercise. Operator
+--   (== appProvider) can rotate weights via `Split_Update`, which archives
+--   the old contract, creates a new one with bumped version, and emits a
+--   `BeneficiarySplitUpdated` audit beacon.
 module CantonStake.Staking where
 
--- Splice API imports for Featured App Activity Markers (CIP-47).
+-- Splice API imports for FeaturedAppRight (CIP-0047) — used only by the
+-- legacy marker fallback path. CIP-0104 attribution does not need this.
 -- See: https://docs.sync.global/app_dev/api/splice-api-featured-app-v1/
 import qualified Splice.Api.FeaturedAppRightV1 as Featured
 
@@ -44,6 +68,112 @@ data EvmProof = EvmProof
   deriving (Eq, Show)
 
 -- -----------------------------------------------------------------------------
+-- BeneficiarySplit: operator-owned reward weight distribution.
+-- -----------------------------------------------------------------------------
+--
+-- Replaces the in-line 75/25 hardcode with a governable contract. The default
+-- split is created at setup time and referenced by CID from each RecordStake
+-- exercise. Operator (== appProvider) can rotate weights via Split_Update.
+--
+-- The beneficiaries themselves are recorded as parties; the weights must sum
+-- to 1.0 exactly (Decimal is fixed-point Numeric 10, so 0.25 + 0.75 == 1.0
+-- with no tolerance needed).
+
+template BeneficiarySplit
+  with
+    operator  : Party
+    label     : Text                    -- "default", "promo-q3-2026", etc.
+    weights   : [(Party, Decimal)]      -- (beneficiary, weight) — must sum to 1.0
+    version   : Int                     -- monotonic, bumped on each Split_Update
+    updatedAt : Text                    -- ISO 8601 timestamp from operator
+  where
+    signatory operator
+
+    ensure
+      sum (map snd weights) == 1.0
+      && all (\(_, w) -> w > 0.0) weights
+      && length weights > 0
+
+    -- Rotate weights. Archive-and-create. Emits a BeneficiarySplitUpdated
+    -- audit beacon as a side-effect for downstream indexers.
+    choice Split_Update : ContractId BeneficiarySplit
+      with
+        newWeights   : [(Party, Decimal)]
+        newUpdatedAt : Text
+      controller operator
+      do
+        newCid <- create this with
+          weights   = newWeights
+          version   = version + 1
+          updatedAt = newUpdatedAt
+        _ <- create BeneficiarySplitUpdated with
+          operator   = operator
+          label      = label
+          oldVersion = version
+          newVersion = version + 1
+          oldWeights = weights
+          newWeights = newWeights
+          updatedAt  = newUpdatedAt
+        pure newCid
+
+    -- Archive the active split. Only call when superseded out-of-band.
+    choice Split_Archive : ()
+      controller operator
+      do pure ()
+
+-- | Audit beacon emitted by Split_Update. Indexers can replay these to
+--   reconstruct the full weight history of a beneficiary split.
+template BeneficiarySplitUpdated
+  with
+    operator   : Party
+    label      : Text
+    oldVersion : Int
+    newVersion : Int
+    oldWeights : [(Party, Decimal)]
+    newWeights : [(Party, Decimal)]
+    updatedAt  : Text
+  where
+    signatory operator
+
+    choice BeneficiarySplitUpdated_Archive : ()
+      controller operator
+      do pure ()
+
+-- -----------------------------------------------------------------------------
+-- OnchainEvent: per-action CIP-0104 traffic-attribution beacon.
+-- -----------------------------------------------------------------------------
+--
+-- The CIP-0104 reward model attributes per-app traffic by summing sequencer
+-- + mediator gas spent on sub-transactions that change state managed by the
+-- app provider party. Creating an OnchainEvent on each Bond / Unbond /
+-- Release burns app-attributable traffic with no FeaturedAppActivityMarker
+-- needed. Featured apps then receive a proportional share of the reward pool
+-- every round.
+--
+-- The `splitCid` records which BeneficiarySplit was active when the event
+-- was emitted, so off-ledger reward distribution can split the resulting CC
+-- according to the weights in force at event time (not the current weights).
+
+template OnchainEvent
+  with
+    appProvider : Party
+    delegator   : Party
+    positionCid : ContractId StakingPosition
+    eventKind   : Text                  -- "Bond" | "Unbond" | "Release"
+    amountPol   : Decimal
+    splitCid    : ContractId BeneficiarySplit
+    txProof     : Optional EvmProof
+    occurredAt  : Text
+  where
+    signatory appProvider
+    observer delegator
+
+    -- Cleanup when the event has been ingested by off-ledger indexers.
+    choice OnchainEvent_Archive : ()
+      controller appProvider
+      do pure ()
+
+-- -----------------------------------------------------------------------------
 -- StakingRequest: user-initiated, pre-EVM-settlement intent.
 -- -----------------------------------------------------------------------------
 
@@ -64,8 +194,13 @@ template StakingRequest
       do pure ()
 
     -- AppProvider accepts after observing ShareMinted on the EVM side.
-    -- This is where Bonded state is first entered AND where we emit the
-    -- FeaturedAppActivityMarker (bond is an economically meaningful event).
+    -- Transitions the user to Bonded.
+    --
+    -- Primary attribution path under CIP-0104 is StakingPosition_RecordStake,
+    -- which the orchestrator exercises immediately after this Accept returns.
+    --
+    -- The legacy `featuredRightCid` parameter is retained for the
+    -- USE_LEGACY_MARKERS=true fallback only. Pass `None` post-pivot.
     choice StakingRequest_Accept : ContractId StakingPosition
       with
         proof : EvmProof
@@ -85,17 +220,11 @@ template StakingRequest
             releasedAt = None
             lastBondProof = Some proof
             lastUnbondProof = None
-            markersEmitted = 1
+            markersEmitted = 0
 
-        -- Emit activity marker for the BOND event.
-        -- This is the on-ledger evidence that our app enabled economic activity.
-        -- On DevNet, the app party can be self-featured via the wallet UI, so the
-        -- FeaturedAppRight contract will exist and this choice will succeed.
-        --
-        -- NOTE: The exact field names on AppRewardBeneficiary may differ across
-        -- Splice versions. If compilation fails here, check the version of
-        -- splice-api-featured-app-v1.dar in .daml/dars/ against:
-        -- https://docs.sync.global/app_dev/api/splice-api-featured-app-v1/
+        -- LEGACY (USE_LEGACY_MARKERS=true): emit FeaturedAppActivityMarker
+        -- with hardcoded 75/25 weights matching the default BeneficiarySplit.
+        -- Skipped under CIP-0104 — pass `None` to disable.
         case featuredRightCid of
           None -> pure ()
           Some rightCid -> do
@@ -127,23 +256,47 @@ template StakingPosition
     releasedAt         : Optional Text
     lastBondProof      : Optional EvmProof
     lastUnbondProof    : Optional EvmProof
-    markersEmitted     : Int
+    markersEmitted     : Int           -- Counter incremented on legacy marker emission
   where
     signatory appProvider
     observer delegator
 
     ensure amountPol > 0.0
 
-    -- User requests an unbond. This is a PROPOSE step, so NO marker is emitted
-    -- here (per CIP-47 guidance to avoid spam).
+    -- CIP-0104 primary attribution path. Non-consuming so the position
+    -- remains active. Creating the OnchainEvent burns sequencer + mediator
+    -- traffic attributable to `appProvider`, which the SV uses to compute
+    -- per-app reward share every round. Replaces the legacy
+    -- FeaturedAppActivityMarker emission on Accept / ConfirmUnbond.
+    nonconsuming choice StakingPosition_RecordStake : ContractId OnchainEvent
+      with
+        eventKind  : Text
+        splitCid   : ContractId BeneficiarySplit
+        txProof    : Optional EvmProof
+        occurredAt : Text
+      controller appProvider
+      do
+        create OnchainEvent with
+          appProvider = appProvider
+          delegator   = delegator
+          positionCid = self
+          eventKind   = eventKind
+          amountPol   = amountPol
+          splitCid    = splitCid
+          txProof     = txProof
+          occurredAt  = occurredAt
+
+    -- User requests an unbond. PROPOSE step — no traffic event emitted here
+    -- (per CIP-0047/0104 guidance to avoid spam attribution on intents).
     choice StakingPosition_RequestUnbond : ContractId StakingPosition
       controller delegator
       do
         assertMsg "Position must be Bonded to unbond" (status == Bonded)
         pure self  -- No state change until backend confirms EVM sellVoucher_new.
 
-    -- Backend confirms EVM sellVoucher_new succeeded. Transition to Unbonding.
-    -- This IS an economically meaningful event, so we emit an activity marker.
+    -- Backend confirms EVM sellVoucher_new succeeded. Transitions to Unbonding.
+    -- CIP-0104 attribution happens via a follow-up RecordStake exercise; the
+    -- legacy marker fallback fires inline when featuredRightCid is Some.
     choice StakingPosition_ConfirmUnbond : ContractId StakingPosition
       with
         proof : EvmProof
@@ -152,12 +305,15 @@ template StakingPosition
       controller appProvider
       do
         assertMsg "Position must be Bonded" (status == Bonded)
+        let bumped = if featuredRightCid == None
+                       then markersEmitted
+                       else markersEmitted + 1
         newCid <- create this with
           status = Unbonding
           unbondingStartedAt = None
           unbondingReadyAt = Some (show unbondingReadyEpoch)
           lastUnbondProof = Some proof
-          markersEmitted = markersEmitted + 1
+          markersEmitted = bumped
 
         case featuredRightCid of
           None -> pure ()

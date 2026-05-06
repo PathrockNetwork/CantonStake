@@ -28,9 +28,12 @@ model User {
   displayName   String?
   evmAddress    String?  @unique
 
-  positions     StakingPosition[]
-  rewardEvents  RewardEvent[]
-  rewardSweeps  RewardSweep[]
+  positions             StakingPosition[]
+  rewardEvents          RewardEvent[]
+  rewardSweeps          RewardSweep[]
+  notificationChannels  NotificationChannel[]
+  tvlSnapshots          TvlSnapshot[]
+  autoCompoundPermits   AutoCompoundPermit[]
 
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -129,6 +132,202 @@ model RewardEvent {
   cantonTxId      String?
 
   createdAt       DateTime @default(now())
+}
+
+/// CIP-0104 traffic-attribution record per (party, round) ingested from the
+/// SV's Scan API or from the seeded mock generator. The SV publishes one
+/// AppActivityRecord per app per round summarizing the traffic burned by
+/// that app's parties; CantonStake also tracks per-delegator records so
+/// the visualizer can render the 75/25 split per user.
+///
+/// Idempotency: (round, party, eventId) is unique. Re-polling the Scan API
+/// for the same round upserts in place rather than creating duplicates.
+model AppActivityRecord {
+  id            String   @id @default(cuid())
+
+  // Composite idempotency key. eventId is the Scan API-supplied event id,
+  // or a deterministic hash in mock mode.
+  roundNumber   Int
+  party         String
+  eventId       String
+
+  // Traffic share within the round (0.0 - 1.0) for this party.
+  trafficShare  Float
+
+  // CC attributed to this record before the BeneficiarySplit is applied.
+  ccAttributed  String   // decimal string
+
+  // Source of the record. "scan" = real Scan API, "mock" = seeded.
+  source        String
+
+  // Optional pointer to the OnchainEvent contract that originated this
+  // record (only set when ingested via Scan API with the linkage).
+  onchainEventCid String?
+
+  createdAt     DateTime @default(now())
+
+  @@unique([roundNumber, party, eventId])
+  @@index([roundNumber])
+  @@index([party])
+}
+
+/// User-configured notification channel. One row per (user, kind, target)
+/// combination — a user can have, say, two Telegram chat IDs and an email
+/// configured at the same time. Disabled rows are kept for audit so a
+/// re-enable doesn't lose history.
+model NotificationChannel {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+
+  kind      String   // "telegram" | "email" | "discord"
+  target    String   // chatId / email address / webhook URL
+  enabled   Boolean  @default(true)
+  label     String?  // optional user-supplied label
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  alertDeliveries AlertDelivery[]
+
+  @@index([userId])
+  @@unique([userId, kind, target])
+}
+
+/// Alert event emitted by the slashing monitor / round scheduler.
+/// Persisted before fan-out so re-runs are idempotent: the BullMQ worker
+/// checks if an AlertEvent has already been delivered to a given channel
+/// (via AlertDelivery) and skips duplicates.
+model AlertEvent {
+  id          String   @id @default(cuid())
+  kind        String   // "validator.jailed" | "validator.unjailed" | "validator.score_drop" | "round.minted"
+  payload     Json     // free-form alert detail (chain, validator name, delta, etc.)
+
+  // Optional scoping
+  userId      String?
+  chain       String?
+  validatorAddress String?
+
+  // Idempotency: source-side dedup key. The monitor sets this from the
+  // event's natural identity (e.g. "polygon:0xabc:jailed:roundN") so a
+  // replay of the same diff doesn't re-fire.
+  dedupKey    String?  @unique
+
+  createdAt   DateTime @default(now())
+
+  deliveries  AlertDelivery[]
+
+  @@index([kind])
+  @@index([chain])
+  @@index([userId])
+}
+
+/// One row per (alert, channel) delivery attempt. The notifications
+/// worker upserts on (alertId, channelId) so a retry doesn't double-send.
+model AlertDelivery {
+  id         String   @id @default(cuid())
+
+  alertId    String
+  alert      AlertEvent @relation(fields: [alertId], references: [id], onDelete: Cascade)
+
+  channelId  String
+  channel    NotificationChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  status     String   // "pending" | "delivered" | "failed" | "skipped"
+  error      String?
+  deliveredAt DateTime?
+  createdAt  DateTime @default(now())
+
+  @@unique([alertId, channelId])
+  @@index([status])
+}
+
+/// Periodic TVL snapshot for the portfolio over-time chart series.
+/// Written by the snapshot cron at portfolioSnapshotIntervalSec cadence.
+/// One row per (user, snapshotAt) — the cron writes one global row per
+/// tick if no user is connected, and per-user rows when /api/portfolio
+/// is hit interactively.
+model TvlSnapshot {
+  id           String   @id @default(cuid())
+
+  // userId is nullable so the cron can record global TVL even with no
+  // users connected (used as the demo baseline series).
+  userId       String?
+  user         User?    @relation(fields: [userId], references: [id])
+
+  evmAddress   String?
+  totalUsd     Float    // aggregate USD across all chains at snapshot time
+  perChain     Json     // { polygon: usd, moonbeam: usd, ... }
+
+  snapshotAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([snapshotAt])
+}
+
+/// Auto-compound permit. The user signs an off-chain typed message
+/// (EIP-712 for EVM, MsgGrant Authz for Cosmos, equivalents for Sui /
+/// Substrate) authorizing the keeper to compound their rewards on a
+/// specific (chain, validator) until expiresAt.
+///
+/// The signature is stored as opaque bytes; the keeper verifies it
+/// before executing each compound run. We never store the user's
+/// private key; the keeper holds its own signing key for the broadcast
+/// step but only acts within the permit's scope + expiry.
+model AutoCompoundPermit {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id])
+
+  chain        String   // "polygon" | "moonbeam" | "monad" | "cosmos" | "sui"
+  validator    String   // chain-native validator address
+  scope        String   @default("compound") // "compound" | "claim" | "redelegate"
+
+  // The signed permit material. Format depends on chain:
+  //   - EVM: EIP-712 typed-data signature (0x...)
+  //   - Cosmos: MsgGrant tx hash (the grant lives on-chain)
+  //   - Substrate / Sui: chain-specific permit bytes
+  signature    String?
+  signaturePayload String?  // raw payload that was signed, for audit
+
+  expiresAt    DateTime
+  enabled      Boolean  @default(true)
+
+  // Bound on how much can be compounded per run, in chain-native units.
+  // Empty = no per-run cap.
+  maxPerRun    String?
+
+  // Cron metadata
+  lastRunAt    DateTime?
+  lastRunStatus String?  // "success" | "failed" | "skipped"
+  lastRunError String?
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  runs         AutoCompoundRun[]
+
+  @@index([userId])
+  @@index([chain, enabled, expiresAt])
+}
+
+/// History of auto-compound executions. One row per attempt per permit.
+model AutoCompoundRun {
+  id           String   @id @default(cuid())
+  permitId     String
+  permit       AutoCompoundPermit @relation(fields: [permitId], references: [id], onDelete: Cascade)
+
+  status       String   // "success" | "failed" | "skipped"
+  reason       String?  // skip / fail explanation
+  amountClaimed String? // chain-native units claimed before redelegation
+  amountRestaked String?
+  txHash       String?  // EVM tx hash or chain-native tx id
+
+  startedAt    DateTime @default(now())
+  finishedAt   DateTime?
+
+  @@index([permitId])
+  @@index([status])
 }
 
 /// Mock native staking reward sweep with protocol-fee accounting.
