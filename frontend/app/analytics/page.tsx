@@ -8,6 +8,8 @@ import { Chip } from "@/components/primitives/Chip";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { fetchAnalyticsMarkers, fetchRewardHealth } from "@/lib/api";
 import { tokens } from "@/lib/tokens";
+import { usePrices } from "@/lib/prices";
+import { liveChains } from "@/lib/chains";
 
 const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4001";
@@ -184,6 +186,78 @@ export default function AnalyticsPage() {
                 : "no marker activity in the selected window"}
             </div>
           )}
+        </div>
+      </Card>
+
+      {/* Market Data Section */}
+      <Card style={{ marginTop: 24 }}>
+        <SectionLabel>Network market data</SectionLabel>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+            gap: 16,
+            marginTop: 16,
+          }}
+        >
+          {liveChains().map((chain) => {
+            const pricesQ = usePrices();
+            const priceKey = `${chain.id.toLowerCase()}Usd` as keyof typeof pricesQ.data;
+            const price = pricesQ.data?.[priceKey] ?? 0;
+            const changeKey = `${chain.id.toLowerCase()}Usd24hChange` as keyof typeof pricesQ.data;
+            const change = pricesQ.data?.[changeKey] as number | null | undefined;
+
+            return (
+              <div
+                key={chain.id}
+                style={{
+                  padding: "14px 16px",
+                  border: `1px solid ${tokens.hairline}`,
+                  borderRadius: 8,
+                  background: tokens.ink[900],
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <div
+                    style={{
+                      width: 24,
+                      height: 24,
+                      borderRadius: "50%",
+                      background: chain.color || tokens.neon,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 10,
+                      fontWeight: "bold",
+                    }}
+                  >
+                    {chain.symbol.charAt(0)}
+                  </div>
+                  <span className="mono" style={{ fontSize: 12, color: tokens.ink[100] }}>
+                    {chain.name}
+                  </span>
+                </div>
+                <div className="display tabular" style={{ fontSize: 20, color: tokens.ink[100] }}>
+                  ${price.toFixed(4)}
+                </div>
+                <div
+                  className="mono"
+                  style={{
+                    fontSize: 10,
+                    color: change && change >= 0 ? tokens.neon : change && change < 0 ? tokens.danger : tokens.ink[400],
+                    marginTop: 2,
+                  }}
+                >
+                  {change !== null && change !== undefined
+                    ? `${change >= 0 ? "+" : ""}${change.toFixed(2)}% (24h)`
+                    : "Testnet token"}
+                </div>
+                <div className="mono" style={{ fontSize: 9, color: tokens.ink[500], marginTop: 4 }}>
+                  {chain.testnet ? "TESTNET" : "MAINNET"}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </Card>
 

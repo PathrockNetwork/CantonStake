@@ -18,6 +18,7 @@ export type ChainConfig = {
   minStake: number;
   validators: number;
   tvl: string;
+  testnet: boolean;
   wagmiChain?: Chain;
   validatorContract?: `0x${string}`;
   explorer?: { name: string; tx: (hash: string) => string };
@@ -87,6 +88,7 @@ export const CHAINS: ChainConfig[] = [
     minStake: 0.01,
     validators: 5,
     tvl: "testnet",
+    testnet: true,
     wagmiChain: polygonAmoy,
     validatorContract,
     explorer: {
@@ -109,6 +111,7 @@ export const CHAINS: ChainConfig[] = [
     minStake: 1,
     validators: 8,
     tvl: "testnet",
+    testnet: true,
     wagmiChain: moonbaseAlpha,
     // Moonbeam's parachain-staking pallet exposed at this fixed precompile
     // on every Moonbeam runtime (mainnet, Moonriver, Moonbase Alpha).
@@ -133,6 +136,7 @@ export const CHAINS: ChainConfig[] = [
     minStake: 1,
     validators: 100,
     tvl: "testnet",
+    testnet: true,
     wagmiChain: monadTestnet,
     // Monad's staking precompile lives at this fixed system address.
     validatorContract: "0x0000000000000000000000000000000000001000",
@@ -156,6 +160,7 @@ export const CHAINS: ChainConfig[] = [
     minStake: 1,
     validators: 50,
     tvl: "testnet",
+    testnet: true,
   },
   {
     id: "sui",
@@ -172,6 +177,7 @@ export const CHAINS: ChainConfig[] = [
     minStake: 1,
     validators: 100,
     tvl: "testnet",
+    testnet: true,
   },
 ];
 
