@@ -1,0 +1,63 @@
+# CantonStake backend — Fly.io deployment
+#
+# Deploy:
+#   cd backend
+#   fly launch --no-deploy --copy-config       # first time only; creates the app
+#   fly secrets set                                                                \
+#     CANTON_APP_PROVIDER_PARTY="..." CANTON_DELEGATOR_PARTY="..."                  \
+#     MOCK_VALIDATOR_SHARE_ADDRESS=0x... AMOY_RPC_URL=https://...                   \
+#     DATABASE_URL="postgresql://..."     # Neon-issued Pooled Connection           \
+#     REDIS_URL="rediss://..."            # Upstash-issued URL                      \
+#     ANTHROPIC_API_KEY=... TELEGRAM_BOT_TOKEN=... RESEND_API_KEY=...               \
+#     SENTRY_DSN=https://... SENTRY_ENV=production                                  \
+#     AUTO_COMPOUND_KEEPER_KEY=0x...                                                \
+#     -a cantonstake-backend
+#   fly deploy
+#
+# Region picks: gru (São Paulo) is the LATAM-closest. Fly auto-routes.
+# Keep one machine running for cron schedulers (BullMQ repeatables); set
+# auto_stop_machines = false on the worker process group.
+
+app = "cantonstake-backend"
+primary_region = "gru"
+kill_signal = "SIGTERM"
+kill_timeout = "30s"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "4001"
+  NODE_ENV = "production"
+  LOG_LEVEL = "info"
+  # Demo flags default to off in cloud — flip via `fly secrets` for a demo run.
+  DEMO_MODE = "false"
+  MOCK_REWARDS = "false"
+  USE_LEGACY_MARKERS = "false"
+  AUTO_COMPOUND_DISABLED = "true"
+  PORTFOLIO_SNAPSHOTS_DISABLED = "false"
+  ALERTS_DISABLED = "false"
+
+[http_service]
+  internal_port = 4001
+  force_https = true
+  # Backend hosts BullMQ workers + cron — never auto-stop.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "15s"
+    method = "get"
+    timeout = "5s"
+    path = "/api/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+# Resource floor: 512 MB is enough for Fastify + Prisma + 4 BullMQ
+# workers at hackathon load. Bump to 1 GB if Sentry breadcrumbs or
+# Prisma's query cache start to bite.
