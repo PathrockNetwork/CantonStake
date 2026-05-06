@@ -14,6 +14,9 @@ vi.mock("@/lib/chains", () => ({
     validatorContract: "0x2222222222222222222222222222222222222222",
     wagmiChain: { id: 80002 },
   }),
+  isRealValidatorShare: false,
+  resolveValidatorShare: () =>
+    "0x2222222222222222222222222222222222222222" as `0x${string}`,
 }));
 
 vi.mock("@/lib/validators-live", () => ({

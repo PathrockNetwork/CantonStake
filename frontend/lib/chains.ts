@@ -23,8 +23,53 @@ export type ChainConfig = {
   explorer?: { name: string; tx: (hash: string) => string };
 };
 
+// Validator contract resolution. Two modes:
+//
+//   - Demo (default): NEXT_PUBLIC_MOCK_VALIDATOR_SHARE points at a single
+//     MockValidatorShare deployed on Amoy. Mirrors the production
+//     ValidatorShare ABI so the staking flow is honest end-to-end against
+//     a single contract.
+//
+//   - Real (NEXT_PUBLIC_USE_REAL_VALIDATOR_SHARE=true): the validator
+//     contract is resolved per-validator at call time from
+//     NEXT_PUBLIC_REAL_VALIDATOR_SHARES (a JSON map of "0xValidator0":
+//     "0xShareContract"). Polygon's real staking model is one
+//     ValidatorShare contract per validator, deployed by the StakeManager
+//     when the validator is registered. The Polygon adapter checks this
+//     flag and, when set, looks up the per-validator address.
+//
+// In demo mode the single mock address is the source of truth for every
+// stake interaction. In real mode the adapter consults the map and
+// throws if a validator has no entry.
+const useRealValidatorShare =
+  process.env.NEXT_PUBLIC_USE_REAL_VALIDATOR_SHARE === "true";
+
 const validatorContract = process.env
   .NEXT_PUBLIC_MOCK_VALIDATOR_SHARE as `0x${string}` | undefined;
+
+let realValidatorShares: Record<string, `0x${string}`> = {};
+if (useRealValidatorShare) {
+  try {
+    const raw = process.env.NEXT_PUBLIC_REAL_VALIDATOR_SHARES ?? "{}";
+    realValidatorShares = JSON.parse(raw) as Record<string, `0x${string}`>;
+  } catch (err) {
+    console.warn(
+      "[chains] NEXT_PUBLIC_REAL_VALIDATOR_SHARES is not valid JSON:",
+      err,
+    );
+  }
+}
+
+export function resolveValidatorShare(
+  validatorAddress: string,
+): `0x${string}` | undefined {
+  if (useRealValidatorShare) {
+    return realValidatorShares[validatorAddress.toLowerCase()];
+  }
+  return validatorContract;
+}
+
+export const isRealValidatorShare = useRealValidatorShare;
 
 export const CHAINS: ChainConfig[] = [
   {

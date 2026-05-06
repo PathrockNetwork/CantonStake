@@ -18,8 +18,8 @@ import { Chip } from "@/components/primitives/Chip";
 import { MarkerSpark } from "@/components/primitives/MarkerSpark";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { emitTrace } from "@/components/trace/useTraceLog";
-import { createStakingRequest, fetchChainStats } from "@/lib/api";
-import { polygonChain } from "@/lib/chains";
+import { createStakingRequest, fetchChainStats, fetchPositions } from "@/lib/api";
+import { liveChains, polygonChain, type ChainConfig } from "@/lib/chains";
 import { adapterFor } from "@/lib/chains/index";
 import { fmt, fmtUsd } from "@/lib/format";
 import { useCantonWallet } from "@/lib/canton";
@@ -99,10 +99,18 @@ export default function StakePage() {
   const chainId = useChainId();
   const { switchChainAsync, isPending: switchPending } = useSwitchChain();
   const { partyId, isConnected: loopConnected } = useCantonWallet();
+
+  const chains = liveChains();
+  const [selectedChainId, setSelectedChainId] = useState<ChainConfig["id"]>(
+    "polygon",
+  );
+  const selectedChain = chains.find((c) => c.id === selectedChainId) ?? polygonChain();
+  const adapter = adapterFor(selectedChain.id);
+  const isEvmStakingReady = !!selectedChain.wagmiChain;
   const polygon = polygonChain();
-  const adapter = adapterFor(polygon.id);
   const polygonId = polygon.wagmiChain!.id;
-  const wrongNetwork = isConnected && chainId !== polygonId;
+  const wrongNetwork =
+    isEvmStakingReady && isConnected && chainId !== selectedChain.wagmiChain!.id;
 
   const [amount, setAmount] = useState("0.50");
   const [step, setStep] = useState<0 | 1 | 2 | 3 | 4 | 5>(0);
@@ -121,15 +129,17 @@ export default function StakePage() {
     queryFn: () => fetchChainStats(),
     refetchInterval: 5 * 60_000,
   });
-  const polygonStats = chainStats?.chains.find((c) => c.chain === "polygon");
-  const nativeApy = polygonStats?.apyPctEstimate ?? null;
+  const stats = chainStats?.chains.find((c) => c.chain === selectedChain.id);
+  const nativeApy = stats?.apyPctEstimate ?? null;
   // CC bonus is the marginal yield from CC rewards on top of native staking.
   // Without per-validator history we estimate it as a fixed-ratio of the
   // chain's base yield until /api/rewards/health exposes a per-staker average.
-  const ccBonusApy = polygonStats ? polygonStats.apyPctEstimate * 0.35 : null;
+  const ccBonusApy = stats ? stats.apyPctEstimate * 0.35 : null;
 
   useEffect(() => {
     let cancelled = false;
+    setValidatorName(null);
+    setValidatorAddr(null);
     void adapter.getValidators().then((vs) => {
       const top = vs[0];
       if (!cancelled && top) {
@@ -159,22 +169,61 @@ export default function StakePage() {
     if (sendPending && step < 2) advance(2);
   }, [sendPending, step]);
 
+  // Snapshot the user's current marker count BEFORE staking so the
+  // post-stake poller can detect the increment.
+  const [markerBaseline, setMarkerBaseline] = useState<number | null>(null);
+
   useEffect(() => {
     if (hash && !confirming && !confirmed && step < 2) advance(2);
     if (confirming && step < 3) advance(3);
     if (confirmed && step < 4) {
       advance(4);
-      // Stage 5 — visual marker emission. Server-side orchestrator
-      // emits the actual marker; we don't have a browser-observable
-      // signal so this is a fixed delay.
-      const id = window.setTimeout(() => {
+      // Stage 5 — wait for the orchestrator to emit a real marker.
+      // Poll /api/positions every 2s for up to 30s for a markersEmitted
+      // increment vs the pre-stake baseline. Falls back to a fixed
+      // delay only if the backend doesn't surface the increment in
+      // time (so the demo doesn't deadlock visually).
+      if (!address) return;
+      let cancelled = false;
+      let timeoutId: number | undefined;
+      const fallbackId = window.setTimeout(() => {
+        if (cancelled || step >= 5) return;
         advance(5);
         setShowSpark(true);
         window.setTimeout(() => setShowSpark(false), 900);
-      }, 900);
-      return () => window.clearTimeout(id);
+      }, 30_000);
+
+      const tick = async () => {
+        if (cancelled) return;
+        try {
+          const positions = await fetchPositions(address);
+          const total = positions.reduce(
+            (s, p) => s + (p.argument.markersEmitted ?? 0),
+            0,
+          );
+          const baseline = markerBaseline ?? 0;
+          if (total > baseline) {
+            cancelled = true;
+            window.clearTimeout(fallbackId);
+            advance(5);
+            setShowSpark(true);
+            window.setTimeout(() => setShowSpark(false), 900);
+            return;
+          }
+        } catch {
+          // network blip — keep polling
+        }
+        timeoutId = window.setTimeout(tick, 2_000);
+      };
+      void tick();
+
+      return () => {
+        cancelled = true;
+        window.clearTimeout(fallbackId);
+        if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      };
     }
-  }, [hash, confirming, confirmed, step]);
+  }, [hash, confirming, confirmed, step, address, markerBaseline]);
 
   useEffect(() => {
     if (sendError) {
@@ -198,6 +247,12 @@ export default function StakePage() {
       setError("Connect both Loop and EVM wallets to stake.");
       return;
     }
+    if (!isEvmStakingReady) {
+      setError(
+        `${selectedChain.name} staking isn't wired in this build. Pick Polygon to run the live demo.`,
+      );
+      return;
+    }
 
     // Reset visuals
     setLog([]);
@@ -205,6 +260,19 @@ export default function StakePage() {
     setShowSpark(false);
     setError(null);
     resetSend();
+
+    // Snapshot baseline marker count so the post-stake poller can detect
+    // the increment caused by THIS stake.
+    try {
+      const existing = await fetchPositions(address);
+      const baseline = existing.reduce(
+        (s, p) => s + (p.argument.markersEmitted ?? 0),
+        0,
+      );
+      setMarkerBaseline(baseline);
+    } catch {
+      setMarkerBaseline(0);
+    }
 
     try {
       // Stage 01 — Canton request created (real backend call)
@@ -216,14 +284,17 @@ export default function StakePage() {
       });
 
       // Switch network if needed
-      if (chainId !== polygonId) {
-        await switchChainAsync({ chainId: polygonId });
+      const targetChainId = selectedChain.wagmiChain!.id;
+      if (chainId !== targetChainId) {
+        await switchChainAsync({ chainId: targetChainId });
       }
 
       // Stage 02 — wagmi write (advance happens in effect when isPending flips)
       const [validator] = await adapter.getValidators();
       if (!validator) {
-        throw new Error("No Polygon validator is available for staking.");
+        throw new Error(
+          `No ${selectedChain.name} validator is available for staking.`,
+        );
       }
 
       const amountWei = parseEther(amount);
@@ -233,11 +304,13 @@ export default function StakePage() {
         delegator: address,
       });
       if (tx.kind !== "evm") {
-        throw new Error(`Unexpected Polygon tx kind: ${tx.kind}`);
+        throw new Error(
+          `Unexpected ${selectedChain.name} tx kind: ${tx.kind}`,
+        );
       }
 
       sendTransaction({
-        chainId: polygonId,
+        chainId: targetChainId,
         to: tx.to,
         data: tx.data,
         value: tx.value ?? 0n,
@@ -271,7 +344,7 @@ export default function StakePage() {
         className="display"
         style={{ fontSize: 42, margin: "4px 0 14px", color: tokens.ink[100] }}
       >
-        Delegate POL.
+        Delegate {selectedChain.symbol}.
       </h1>
       <p
         className="mono"
@@ -311,16 +384,33 @@ export default function StakePage() {
         <Banner
           tone="warn"
           kind="WRONG NETWORK"
-          message={`Wallet on chain ${chainId}. Switch your EVM wallet to Polygon Amoy to use this demo validator.`}
+          message={`Wallet on chain ${chainId}. Switch your EVM wallet to ${selectedChain.name} to stake here.`}
           action={
             <Btn
               size="sm"
               variant="ghost"
-              onClick={() => switchChainAsync({ chainId: polygonId })}
+              onClick={() =>
+                switchChainAsync({
+                  chainId: selectedChain.wagmiChain!.id,
+                })
+              }
               disabled={switchPending}
             >
-              Switch to Polygon Amoy
+              Switch to {selectedChain.name}
             </Btn>
+          }
+        />
+      )}
+      {!error && !isEvmStakingReady && (
+        <Banner
+          tone="warn"
+          kind={`${selectedChain.name.toUpperCase()} STAKING NOT WIRED`}
+          message={
+            selectedChain.id === "cosmos"
+              ? "Cosmos staking requires a Keplr / Leap signing flow which isn't wired in this build. The Cosmos adapter is ready for the integration; pick Polygon to run the live demo."
+              : selectedChain.id === "sui"
+                ? "Sui staking requires the Mysten dapp-kit wallet flow which isn't wired in this build. The Sui adapter is ready for the integration; pick Polygon to run the live demo."
+                : `${selectedChain.name} staking requires its EVM chain config to be added to wagmi (and the connected wallet to support it). Adapter and tx-builders are ready; pick Polygon to run the live demo.`
           }
         />
       )}
@@ -354,6 +444,58 @@ export default function StakePage() {
               <SectionLabel style={{ marginBottom: 8 }}>Network</SectionLabel>
               <div
                 style={{
+                  display: "grid",
+                  gridTemplateColumns: `repeat(${chains.length}, 1fr)`,
+                  gap: 6,
+                }}
+              >
+                {chains.map((c) => {
+                  const active = c.id === selectedChainId;
+                  const ready = !!c.wagmiChain;
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => setSelectedChainId(c.id)}
+                      disabled={step > 0 && step < 5}
+                      style={{
+                        padding: "10px 8px",
+                        background: active ? tokens.ink[800] : "transparent",
+                        border: `1px solid ${active ? c.color : tokens.hairline}`,
+                        cursor:
+                          step > 0 && step < 5 ? "not-allowed" : "pointer",
+                        font: "inherit",
+                        color: tokens.ink[100],
+                        textAlign: "left",
+                      }}
+                    >
+                      <div
+                        className="mono"
+                        style={{
+                          fontSize: 11,
+                          color: active ? c.color : tokens.ink[200],
+                          fontWeight: 600,
+                        }}
+                      >
+                        {c.symbol}
+                      </div>
+                      <div
+                        className="mono"
+                        style={{
+                          fontSize: 9,
+                          color: tokens.ink[400],
+                          marginTop: 2,
+                        }}
+                      >
+                        {ready ? "live" : "adapter"}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+              <div
+                style={{
+                  marginTop: 8,
                   padding: "12px 14px",
                   border: `1px solid ${tokens.hairline}`,
                   display: "flex",
@@ -362,14 +504,23 @@ export default function StakePage() {
                 }}
               >
                 <div>
-                  <div className="mono" style={{ fontSize: 13, color: tokens.ink[100] }}>
-                    {polygon.name}
+                  <div
+                    className="mono"
+                    style={{ fontSize: 13, color: tokens.ink[100] }}
+                  >
+                    {selectedChain.name}
                   </div>
-                  <div className="mono" style={{ fontSize: 10, color: tokens.ink[400] }}>
-                    Testnet · Chain id {polygonId} · {polygon.symbol}
+                  <div
+                    className="mono"
+                    style={{ fontSize: 10, color: tokens.ink[400] }}
+                  >
+                    {selectedChain.type} · {selectedChain.symbol} ·{" "}
+                    {selectedChain.unbonding} unbonding
                   </div>
                 </div>
-                <Chip color={tokens.amberBright}>DEMO</Chip>
+                <Chip color={isEvmStakingReady ? tokens.neon : tokens.amberBright}>
+                  {isEvmStakingReady ? "WAGMI READY" : "ADAPTER ONLY"}
+                </Chip>
               </div>
             </div>
 
@@ -394,7 +545,7 @@ export default function StakePage() {
                   {validatorAddr
                     ? `${validatorAddr.slice(0, 10)}...${validatorAddr.slice(-6)}`
                     : "—"}
-                  {" · top-scored Polygon validator (live from validator-scoring)"}
+                  {` · top-scored ${selectedChain.name} validator (live from validator-scoring)`}
                 </div>
               </div>
             </div>
@@ -426,7 +577,7 @@ export default function StakePage() {
                   disabled={step > 0 && step < 5}
                 />
                 <span className="mono" style={{ fontSize: 13, color: tokens.ink[400] }}>
-                  {polygon.symbol}
+                  {selectedChain.symbol}
                 </span>
               </div>
               <div
@@ -487,13 +638,13 @@ export default function StakePage() {
                   You stake
                 </span>
                 <span className="mono tabular" style={{ color: tokens.ink[100] }}>
-                  {amount} {polygon.symbol}
+                  {amount} {selectedChain.symbol}
                 </span>
                 <span className="mono" style={{ color: tokens.ink[300] }}>
                   Network
                 </span>
                 <span className="mono" style={{ color: tokens.ink[100] }}>
-                  {polygon.name}
+                  {selectedChain.name}
                 </span>
                 <span className="mono" style={{ color: tokens.ink[300] }}>
                   Validator
@@ -539,12 +690,15 @@ export default function StakePage() {
                 (step > 0 && step < 5) ||
                 !isConnected ||
                 !loopConnected ||
-                !partyId
+                !partyId ||
+                !isEvmStakingReady
               }
             >
               {!isConnected || !loopConnected || !partyId
                 ? "Connect both wallets to stake"
-                : ctaLabel}
+                : !isEvmStakingReady
+                  ? `${selectedChain.name} staking not yet wired`
+                  : ctaLabel}
             </Btn>
             <div
               className="mono"
@@ -638,7 +792,8 @@ export default function StakePage() {
             }}
           >
             <div style={{ color: tokens.ink[500] }}>
-              $ cantonstake bond --network polygon-amoy --amount {amount} POL
+              $ cantonstake bond --network {selectedChain.id} --amount {amount}{" "}
+              {selectedChain.symbol}
             </div>
             <div style={{ color: tokens.ink[500], marginBottom: 10 }}>
               $ awaiting wallet signature…

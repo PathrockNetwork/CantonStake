@@ -1,7 +1,11 @@
 import { getPublicClient, readContract, watchContractEvent } from "@wagmi/core";
 import type { Address } from "viem";
 import { mockValidatorShareAbi } from "@/lib/abi";
-import { polygonChain } from "@/lib/chains";
+import {
+  isRealValidatorShare,
+  polygonChain,
+  resolveValidatorShare,
+} from "@/lib/chains";
 import type { ValidatorRow } from "@/lib/validators";
 import { fetchScoredValidators } from "@/lib/validators-live";
 import { encodeFunctionData } from "@/lib/viem-encode-function-data";
@@ -57,7 +61,20 @@ function toAdapterError(message: string, cause: unknown) {
   return networkError(message, cause);
 }
 
-function contractAddress() {
+function contractAddress(validator?: string) {
+  // Real-mode: per-validator ValidatorShare lookup. Demo-mode: single
+  // mock contract from chains.ts.
+  if (isRealValidatorShare && validator) {
+    const resolved = resolveValidatorShare(validator);
+    if (!resolved) {
+      throw new ChainAdapterError(
+        "VALIDATOR_NOT_FOUND",
+        `No real ValidatorShare contract registered for validator ${validator}. ` +
+          `Add it to NEXT_PUBLIC_REAL_VALIDATOR_SHARES.`,
+      );
+    }
+    return resolved;
+  }
   const address = polygonChain().validatorContract;
   if (!address) throw networkError("Polygon validator contract is not configured.");
   return address;
@@ -83,10 +100,14 @@ function toValidator(row: ValidatorRow): Validator {
   };
 }
 
-function evmTx(data: `0x${string}`, value?: bigint): UnsignedTx {
+function evmTx(
+  data: `0x${string}`,
+  value: bigint | undefined,
+  validator: string,
+): UnsignedTx {
   return value === undefined
-    ? { kind: "evm", to: contractAddress(), data }
-    : { kind: "evm", to: contractAddress(), data, value };
+    ? { kind: "evm", to: contractAddress(validator), data }
+    : { kind: "evm", to: contractAddress(validator), data, value };
 }
 
 async function latestUnbondFor(delegator: Address) {
@@ -166,6 +187,7 @@ export const polygonAdapter: IChainAdapter = {
           args: [args.amount, args.amount],
         }),
         args.amount,
+        args.validator,
       );
     } catch (cause) {
       throw toAdapterError("Failed to build Polygon delegate transaction.", cause);
@@ -181,6 +203,8 @@ export const polygonAdapter: IChainAdapter = {
           functionName: "sellVoucher_new",
           args: [args.amount, args.amount],
         }),
+        undefined,
+        args.validator,
       );
     } catch (cause) {
       throw toAdapterError("Failed to build Polygon undelegate transaction.", cause);
@@ -204,6 +228,8 @@ export const polygonAdapter: IChainAdapter = {
           functionName: "unstakeClaimTokens_new",
           args: [unbond.args.nonce],
         }),
+        undefined,
+        args.validator,
       );
     } catch (cause) {
       throw toAdapterError("Failed to build Polygon claim transaction.", cause);
