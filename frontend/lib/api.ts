@@ -213,6 +213,186 @@ export async function fetchAnalyticsMarkers(
   return res.json();
 }
 
+export interface UserRecord {
+  id: string;
+  cantonPartyId: string;
+  evmAddress: string | null;
+  displayName: string | null;
+  createdAt: string;
+}
+
+export async function fetchUserByEvm(address: string): Promise<UserRecord> {
+  const res = await fetch(
+    `${BACKEND_URL}/api/users/by-evm/${encodeURIComponent(address)}`,
+  );
+  if (res.status === 404) throw new Error("user not registered yet");
+  if (!res.ok) throw new Error(await res.text());
+  const body = (await res.json()) as { user: UserRecord };
+  return body.user;
+}
+
+export interface DelegationRow {
+  chain: "polygon" | "moonbeam" | "monad" | "cosmos" | "sui";
+  validator: string;
+  amount: string;
+  symbol: string;
+  status: "bonded" | "unbonding" | "released";
+  unbondingReadyAt?: number;
+}
+
+export interface PortfolioSnapshot {
+  address: string;
+  fetchedAt: string;
+  totalUsd: number;
+  delegations: DelegationRow[];
+  source: Record<string, "live" | "stub" | "cache">;
+}
+
+export async function fetchPortfolio(
+  address: string,
+  refresh = false,
+): Promise<PortfolioSnapshot> {
+  const params = refresh ? "?refresh=true" : "";
+  const res = await fetch(
+    `${BACKEND_URL}/api/portfolio/${address}${params}`,
+  );
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export interface AutoCompoundPermit {
+  id: string;
+  userId: string;
+  chain: "polygon" | "moonbeam" | "monad" | "cosmos" | "sui";
+  validator: string;
+  scope: string;
+  signature: string | null;
+  signaturePayload: string | null;
+  expiresAt: string;
+  enabled: boolean;
+  maxPerRun: string | null;
+  createdAt: string;
+}
+
+export interface AutoCompoundRun {
+  id: string;
+  permitId: string;
+  status: string;
+  reason: string | null;
+  amountClaimed: string | null;
+  amountRestaked: string | null;
+  txHash: string | null;
+  startedAt: string;
+  completedAt: string | null;
+}
+
+export async function listAutoCompoundPermits(
+  userId: string,
+): Promise<{ permits: AutoCompoundPermit[] }> {
+  const res = await fetch(
+    `${BACKEND_URL}/api/autocompound/permits?userId=${encodeURIComponent(userId)}`,
+  );
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function createAutoCompoundPermit(body: {
+  userId: string;
+  chain: "polygon" | "moonbeam" | "monad" | "cosmos" | "sui";
+  validator: string;
+  scope?: "compound" | "claim" | "redelegate";
+  signature?: string;
+  signaturePayload?: string;
+  expiresAt: string;
+  maxPerRun?: string;
+}): Promise<{ permit: AutoCompoundPermit }> {
+  const res = await fetch(`${BACKEND_URL}/api/autocompound/permits`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function disableAutoCompoundPermit(
+  id: string,
+): Promise<{ permit: AutoCompoundPermit }> {
+  const res = await fetch(`${BACKEND_URL}/api/autocompound/permits/${id}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function fetchAutoCompoundRuns(
+  permitId: string,
+): Promise<{ runs: AutoCompoundRun[] }> {
+  const res = await fetch(
+    `${BACKEND_URL}/api/autocompound/permits/${permitId}/runs`,
+  );
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export interface NotificationChannel {
+  id: string;
+  userId: string;
+  kind: "telegram" | "email" | "discord";
+  target: string;
+  label: string | null;
+  enabled: boolean;
+  createdAt: string;
+}
+
+export async function listNotificationChannels(
+  userId: string,
+): Promise<{ channels: NotificationChannel[] }> {
+  const res = await fetch(
+    `${BACKEND_URL}/api/notifications/channels?userId=${encodeURIComponent(userId)}`,
+  );
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function upsertNotificationChannel(body: {
+  userId: string;
+  kind: "telegram" | "email" | "discord";
+  target: string;
+  label?: string;
+}): Promise<{ channel: NotificationChannel }> {
+  const res = await fetch(`${BACKEND_URL}/api/notifications/channels`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function disableNotificationChannel(
+  id: string,
+): Promise<{ channel: NotificationChannel }> {
+  const res = await fetch(
+    `${BACKEND_URL}/api/notifications/channels/${id}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function sendTestNotification(
+  userId: string,
+): Promise<{ ok: boolean; alertId: string }> {
+  const res = await fetch(`${BACKEND_URL}/api/notifications/test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ userId }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export interface NarratorResponse {
   text: string;
   model: string;

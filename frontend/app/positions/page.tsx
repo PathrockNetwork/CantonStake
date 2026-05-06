@@ -1,12 +1,18 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAccount } from "wagmi";
+import { Btn } from "@/components/primitives/Btn";
 import { Card } from "@/components/primitives/Card";
 import { Chip } from "@/components/primitives/Chip";
 import { EmptyState } from "@/components/primitives/EmptyState";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
-import { fetchPositions, type PositionRow } from "@/lib/api";
+import {
+  fetchPositions,
+  sweepNativeRewards,
+  type PositionRow,
+} from "@/lib/api";
 import { fmt } from "@/lib/format";
 import { tokens } from "@/lib/tokens";
 
@@ -157,13 +163,13 @@ export default function PositionsPage() {
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "1.4fr 1fr 1fr 1fr 1fr 80px",
+                gridTemplateColumns: "1.4fr 1fr 1fr 1fr 0.8fr 110px",
                 padding: "10px 22px",
                 borderBottom: `1px solid ${tokens.hairline}`,
                 gap: 12,
               }}
             >
-              {["Contract id", "Staked", "Lifecycle", "Bonded since", "Markers", "Status"].map(
+              {["Contract id", "Staked", "Lifecycle", "Bonded since", "Markers", "Action"].map(
                 (h) => (
                   <SectionLabel key={h}>{h}</SectionLabel>
                 ),
@@ -198,11 +204,40 @@ export default function PositionsPage() {
 function Row({ p }: { p: PositionRow }) {
   const lifecycle = STATUS_TO_LIFECYCLE[p.argument.status] ?? "pending";
   const color = lifecycleColor(lifecycle);
+  const qc = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  const [okMsg, setOkMsg] = useState<string | null>(null);
+  const sweepMut = useMutation({
+    mutationFn: () => sweepNativeRewards(p.contractId),
+    onSuccess: (res) => {
+      const native =
+        res &&
+        typeof res === "object" &&
+        "sweep" in res &&
+        res.sweep &&
+        typeof res.sweep === "object" &&
+        "userPayoutPol" in res.sweep
+          ? (res.sweep as { userPayoutPol: number }).userPayoutPol
+          : null;
+      setOkMsg(
+        native !== null
+          ? `swept ${native.toFixed(4)} POL`
+          : "sweep recorded",
+      );
+      setError(null);
+      void qc.invalidateQueries({ queryKey: ["positions"] });
+      void qc.invalidateQueries({ queryKey: ["dashboard-rewards"] });
+    },
+    onError: (err) =>
+      setError(err instanceof Error ? err.message : String(err)),
+  });
+  const canSweep = lifecycle === "bonded";
+
   return (
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "1.4fr 1fr 1fr 1fr 1fr 80px",
+        gridTemplateColumns: "1.4fr 1fr 1fr 1fr 0.8fr 110px",
         padding: "14px 22px",
         borderBottom: `1px solid ${tokens.hairline}`,
         alignItems: "center",
@@ -224,8 +259,30 @@ function Row({ p }: { p: PositionRow }) {
       <div className="mono tabular" style={{ fontSize: 11, color: tokens.cc }}>
         {p.argument.markersEmitted}
       </div>
-      <div className="mono" style={{ fontSize: 10, color: tokens.ink[400] }}>
-        {p.argument.status}
+      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <Btn
+          size="sm"
+          variant="ghost"
+          onClick={() => sweepMut.mutate()}
+          disabled={!canSweep || sweepMut.isPending}
+        >
+          {sweepMut.isPending ? "Sweeping…" : "Sweep"}
+        </Btn>
+        {okMsg ? (
+          <span
+            className="mono"
+            style={{ fontSize: 9, color: tokens.neon }}
+          >
+            {okMsg}
+          </span>
+        ) : error ? (
+          <span
+            className="mono"
+            style={{ fontSize: 9, color: tokens.danger }}
+          >
+            {error.slice(0, 24)}
+          </span>
+        ) : null}
       </div>
     </div>
   );

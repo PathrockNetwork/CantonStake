@@ -16,7 +16,7 @@ import {
   type PositionRow,
 } from "@/lib/api";
 import { fmt, fmtUsd } from "@/lib/format";
-import { useCantonWallet } from "@/lib/canton";
+import { useCantonWallet, useLoopHoldings } from "@/lib/canton";
 import { usePrices } from "@/lib/prices";
 import { tokens } from "@/lib/tokens";
 
@@ -50,6 +50,7 @@ function relativeTime(iso?: string): string {
 export default function DashboardPage() {
   const { address, isConnected } = useAccount();
   const { partyId } = useCantonWallet();
+  const { ccBalance } = useLoopHoldings();
   const { data: prices } = usePrices();
   const polPriceUsd = prices?.polUsd ?? 0;
   const ccPriceUsd = prices?.ccUsd ?? 0;
@@ -124,10 +125,13 @@ export default function DashboardPage() {
       accent: tokens.ink[100],
     },
     {
-      label: "CC earned",
-      value: fmt(totalCc, 1),
+      label: ccBalance !== null ? "CC balance · Loop" : "CC earned",
+      value: ccBalance !== null ? fmt(ccBalance, 1) : fmt(totalCc, 1),
       unit: "CC",
-      sub: `≈ ${fmtUsd(totalCc * ccPriceUsd)} · CC/USD $${ccPriceUsd.toFixed(2)}`,
+      sub:
+        ccBalance !== null
+          ? `wallet · ≈ ${fmtUsd(ccBalance * ccPriceUsd)} · CC/USD $${ccPriceUsd.toFixed(2)}`
+          : `≈ ${fmtUsd(totalCc * ccPriceUsd)} · CC/USD $${ccPriceUsd.toFixed(2)}`,
       accent: tokens.cc,
     },
     {
