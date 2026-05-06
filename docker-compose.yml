@@ -54,6 +54,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    image: ${BACKEND_IMAGE:-cantonstake-backend:local}
     container_name: cantonstake-backend
     ports:
       - "4001:4001"
@@ -61,9 +62,11 @@ services:
       - PORT=4001
       - LOG_LEVEL=info
       - DEMO_MODE=${DEMO_MODE:-true}
+      - MOCK_REWARDS=${MOCK_REWARDS:-true}
+      - MOCK_REWARDS_SEED=${MOCK_REWARDS_SEED:-20260505}
       - AMOY_RPC_URL=${AMOY_RPC_URL:-https://rpc-amoy.polygon.technology}
       - MOCK_VALIDATOR_SHARE_ADDRESS=${MOCK_VALIDATOR_SHARE_ADDRESS}
-      - CANTON_JSON_API_URL=http://host.docker.internal:3975
+      - CANTON_JSON_API_URL=${CANTON_JSON_API_URL:-http://host.docker.internal:3975}
       - CANTON_APP_PROVIDER_PARTY=${CANTON_APP_PROVIDER_PARTY}
       - CANTON_AUTH_TOKEN=${CANTON_AUTH_TOKEN:-}
       - CANTON_DELEGATOR_PARTY=${CANTON_DELEGATOR_PARTY}
@@ -71,6 +74,24 @@ services:
       - FEATURED_APP_RIGHT_CID=${FEATURED_APP_RIGHT_CID:-}
       - DATABASE_URL=postgresql://cantonstake:cantonstake@postgres:5432/cantonstake
       - REDIS_URL=redis://redis:6379
+      - SCAN_API_URL=${SCAN_API_URL:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - VALIDATOR_SCORING_DISABLED=${VALIDATOR_SCORING_DISABLED:-false}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - RESEND_API_KEY=${RESEND_API_KEY:-}
+      - DISCORD_DEFAULT_WEBHOOK=${DISCORD_DEFAULT_WEBHOOK:-}
+      - AUTO_COMPOUND_DISABLED=${AUTO_COMPOUND_DISABLED:-true}
+      - AUTO_COMPOUND_KEEPER_KEY=${AUTO_COMPOUND_KEEPER_KEY:-}
+      - MOONBEAM_RPC_URL=${MOONBEAM_RPC_URL:-https://rpc.api.moonbeam.network}
+      - MONAD_RPC_URL=${MONAD_RPC_URL:-https://testnet-rpc.monad.xyz}
+      - MONAD_STAKING_CONTRACT=${MONAD_STAKING_CONTRACT:-}
+      - COSMOS_REST_URL=${COSMOS_REST_URL:-https://rest.cosmos.directory/cosmoshub}
+      - COSMOS_RPC_URL=${COSMOS_RPC_URL:-https://rpc.cosmos.directory/cosmoshub}
+      - COSMOS_KEEPER_MNEMONIC=${COSMOS_KEEPER_MNEMONIC:-}
+      - SUI_RPC_URL=${SUI_RPC_URL:-https://fullnode.mainnet.sui.io}
+      - SUI_KEEPER_PRIVATE_KEY=${SUI_KEEPER_PRIVATE_KEY:-}
+      - SENTRY_DSN=${SENTRY_DSN:-}
+      - SENTRY_ENV=${SENTRY_ENV:-production}
     depends_on:
       postgres:
         condition: service_healthy
@@ -89,6 +110,12 @@ services:
         NEXT_PUBLIC_MOCK_VALIDATOR_SHARE: ${MOCK_VALIDATOR_SHARE_ADDRESS}
         NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: ${NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID:-}
         NEXT_PUBLIC_MOCK_LOOP_PARTY_ID: ${NEXT_PUBLIC_MOCK_LOOP_PARTY_ID:-}
+        NEXT_PUBLIC_LOOP_NETWORK: ${NEXT_PUBLIC_LOOP_NETWORK:-devnet}
+        NEXT_PUBLIC_LOOP_SDK_ENABLED: ${NEXT_PUBLIC_LOOP_SDK_ENABLED:-true}
+        NEXT_PUBLIC_CC_USD: ${NEXT_PUBLIC_CC_USD:-0.16}
+        NEXT_PUBLIC_USE_REAL_VALIDATOR_SHARE: ${NEXT_PUBLIC_USE_REAL_VALIDATOR_SHARE:-false}
+        NEXT_PUBLIC_REAL_VALIDATOR_SHARES: ${NEXT_PUBLIC_REAL_VALIDATOR_SHARES:-{}}
+    image: ${FRONTEND_IMAGE:-cantonstake-frontend:local}
     container_name: cantonstake-frontend
     ports:
       - "3001:3000"
