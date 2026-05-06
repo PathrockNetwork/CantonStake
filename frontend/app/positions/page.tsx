@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useAccount } from "wagmi";
+import { useAccount, useSendTransaction, useWaitForTransactionReceipt, useSwitchChain } from "wagmi";
+import { parseEther } from "viem";
 import { Btn } from "@/components/primitives/Btn";
 import { Card } from "@/components/primitives/Card";
 import { Chip } from "@/components/primitives/Chip";
@@ -13,23 +14,24 @@ import {
   sweepNativeRewards,
   type PositionRow,
 } from "@/lib/api";
+import { liveChains, chainById } from "@/lib/chains";
+import { adapterFor } from "@/lib/chains/index";
 import { chainFromAddress } from "@/lib/chains";
 import { fmt } from "@/lib/format";
-import { lookupPositionChain } from "@/lib/position-chain-map";
+import { lookupPositionMeta, lookupPositionChain } from "@/lib/position-chain-map";
+import { useCosmosWallet } from "@/lib/cosmos/use-cosmos-wallet";
+import { useSuiWallet } from "@/lib/sui/use-sui-wallet";
 import { tokens } from "@/lib/tokens";
 
 /**
- * Positions — ported from handoff/prototype/redesign/screens.jsx (`Positions`).
+ * Positions — staking lifecycle view with Unbond and Claim actions.
  *
- * Wires the 4-stat row, table, and lifecycle timeline to real
- * `fetchPositions(address)`. The lifecycle timeline is synthesised
- * from the focused position's status + markersEmitted — the
- * orchestrator emits real lifecycle events server-side but they
- * aren't exposed via the position read API yet.
+ * Each position moves through: Pending → Bonded → Unbonding → Released
  *
- * Unstake/sweep mechanics from the previous /positions page are
- * temporarily dropped to match the prototype's read-only design.
- * Restore them as row actions if needed for the demo.
+ * Actions available:
+ * - Bonded: Sweep (claim native rewards), Unbond (start unstaking)
+ * - Unbonding: Claim (withdraw after unbonding period expires)
+ * - Released: No actions (lifecycle complete)
  */
 
 type Lifecycle = "bonded" | "unbonding" | "released" | "cancelled" | "pending";
@@ -72,8 +74,6 @@ function shortContract(id: string): string {
 }
 
 function positionChain(p: PositionRow) {
-  // Prefer the localStorage map written at stake time (knows the exact
-  // EVM chain), fall back to the address-format heuristic.
   const hint = lookupPositionChain(
     p.argument.evmAddress,
     p.argument.amountPol,
@@ -83,6 +83,10 @@ function positionChain(p: PositionRow) {
 
 export default function PositionsPage() {
   const { address, isConnected } = useAccount();
+  const cosmos = useCosmosWallet();
+  const sui = useSuiWallet();
+  const { switchChainAsync } = useSwitchChain();
+
   const { data: positions = [], isLoading } = useQuery({
     queryKey: ["positions", address],
     queryFn: () => (address ? fetchPositions(address) : Promise.resolve([])),
@@ -175,13 +179,13 @@ export default function PositionsPage() {
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "1.4fr 1fr 1fr 1fr 0.8fr 110px",
+                gridTemplateColumns: "1.4fr 1fr 1fr 1fr 0.8fr 140px",
                 padding: "10px 22px",
                 borderBottom: `1px solid ${tokens.hairline}`,
                 gap: 12,
               }}
             >
-              {["Contract id", "Staked", "Lifecycle", "Bonded since", "Markers", "Action"].map(
+              {["Contract id", "Staked", "Lifecycle", "Bonded since", "Markers", "Actions"].map(
                 (h) => (
                   <SectionLabel key={h}>{h}</SectionLabel>
                 ),
@@ -202,7 +206,15 @@ export default function PositionsPage() {
                 />
               </div>
             ) : (
-              positions.map((p) => <Row key={p.contractId} p={p} />)
+              positions.map((p) => (
+                <Row
+                  key={p.contractId}
+                  p={p}
+                  cosmos={cosmos}
+                  sui={sui}
+                  switchChainAsync={switchChainAsync}
+                />
+              ))
             )}
           </Card>
 
@@ -213,12 +225,46 @@ export default function PositionsPage() {
   );
 }
 
-function Row({ p }: { p: PositionRow }) {
-  const lifecycle = STATUS_TO_LIFECYCLE[p.argument.status] ?? "pending";
-  const color = lifecycleColor(lifecycle);
+function Row({
+  p,
+  cosmos,
+  sui,
+  switchChainAsync,
+}: {
+  p: PositionRow;
+  cosmos: ReturnType<typeof useCosmosWallet>;
+  sui: ReturnType<typeof useSuiWallet>;
+  switchChainAsync: ReturnType<typeof useSwitchChain>["switchChainAsync"];
+}) {
   const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
+
+  const { address } = useAccount();
+  const { sendTransaction } = useSendTransaction();
+  const { isSuccess: confirmed } = useWaitForTransactionReceipt({
+    hash: undefined, // Will be set during unbond/claim
+  });
+
+  const lifecycle = STATUS_TO_LIFECYCLE[p.argument.status] ?? "pending";
+  const color = lifecycleColor(lifecycle);
+  const chain = positionChain(p);
+
+  // Get position metadata (chain + validator)
+  const meta = lookupPositionMeta(p.argument.evmAddress, p.argument.amountPol);
+  const chainId = meta?.chainId ?? chain.id;
+  const validator = meta?.validator;
+
+  // Determine available actions
+  const canSweep = lifecycle === "bonded";
+  const canUnbond = lifecycle === "bonded" && !!validator;
+  const canClaim =
+    lifecycle === "unbonding" &&
+    !!p.argument.unbondingReadyAt &&
+    new Date(p.argument.unbondingReadyAt) <= new Date();
+  const hasActions = canSweep || canUnbond || canClaim;
+
+  // Sweep mutation (claim native rewards)
   const sweepMut = useMutation({
     mutationFn: () => sweepNativeRewards(p.contractId),
     onSuccess: (res) => {
@@ -233,23 +279,166 @@ function Row({ p }: { p: PositionRow }) {
           : null;
       setOkMsg(
         native !== null
-          ? `swept ${native.toFixed(4)} POL`
+          ? `swept ${native.toFixed(4)} ${chain.symbol}`
           : "sweep recorded",
       );
       setError(null);
       void qc.invalidateQueries({ queryKey: ["positions"] });
       void qc.invalidateQueries({ queryKey: ["dashboard-rewards"] });
+      setTimeout(() => setOkMsg(null), 3000);
     },
     onError: (err) =>
       setError(err instanceof Error ? err.message : String(err)),
   });
-  const canSweep = lifecycle === "bonded";
+
+  // Unbond handler
+  const handleUnbond = async () => {
+    if (!address || !validator) return;
+    setError(null);
+    setOkMsg(null);
+
+    try {
+      const adapter = adapterFor(chainId);
+      const amountWei = parseEther(p.argument.amountPol);
+
+      // Check chain type
+      const isCosmos = chainId === "cosmos";
+      const isSui = chainId === "sui";
+      const isEvm = !!chain.wagmiChain;
+
+      if (isCosmos) {
+        if (!cosmos.isConnected || !cosmos.address) {
+          setError("Connect Keplr wallet first");
+          return;
+        }
+        const tx = await adapter.buildUndelegateTx({
+          validator,
+          amount: amountWei,
+          delegator: cosmos.address,
+        });
+        if (tx.kind !== "cosmos") {
+          throw new Error("Unexpected tx kind");
+        }
+        const result = await cosmos.signAndBroadcast({
+          typeUrl: tx.typeUrl,
+          value: tx.value,
+        });
+        setOkMsg(`Unbonding... tx: ${result.txHash.slice(0, 10)}...`);
+        setTimeout(() => setOkMsg(null), 3000);
+        // Refresh positions after a delay
+        setTimeout(() => qc.invalidateQueries({ queryKey: ["positions"] }), 5000);
+      } else if (isSui) {
+        if (!sui.isConnected || !sui.address) {
+          setError("Connect Sui wallet first");
+          return;
+        }
+        const result = await sui.undelegate(validator, amountWei);
+        setOkMsg(`Unbonding... tx: ${result.digest.slice(0, 10)}...`);
+        setTimeout(() => setOkMsg(null), 3000);
+        setTimeout(() => qc.invalidateQueries({ queryKey: ["positions"] }), 5000);
+      } else if (isEvm) {
+        // Switch to the correct chain first
+        const wagmiChain = chain.wagmiChain;
+        if (wagmiChain) {
+          await switchChainAsync({ chainId: wagmiChain.id });
+        }
+
+        const tx = await adapter.buildUndelegateTx({
+          validator,
+          amount: amountWei,
+          delegator: address,
+        });
+        if (tx.kind !== "evm") {
+          throw new Error("Unexpected tx kind");
+        }
+
+        sendTransaction({
+          to: tx.to,
+          data: tx.data,
+          value: tx.value ?? 0n,
+          gas: tx.gas,
+        });
+        setOkMsg("Confirming unbond...");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  // Claim handler
+  const handleClaim = async () => {
+    if (!address || !validator) return;
+    setError(null);
+    setOkMsg(null);
+
+    try {
+      const adapter = adapterFor(chainId);
+      const isCosmos = chainId === "cosmos";
+      const isSui = chainId === "sui";
+      const isEvm = !!chain.wagmiChain;
+
+      if (isCosmos) {
+        if (!cosmos.isConnected || !cosmos.address) {
+          setError("Connect Keplr wallet first");
+          return;
+        }
+        const tx = await adapter.buildClaimTx({
+          validator,
+          delegator: cosmos.address,
+        });
+        if (tx.kind !== "cosmos") {
+          throw new Error("Unexpected tx kind");
+        }
+        const result = await cosmos.signAndBroadcast({
+          typeUrl: tx.typeUrl,
+          value: tx.value,
+        });
+        setOkMsg(`Claimed! tx: ${result.txHash.slice(0, 10)}...`);
+        setTimeout(() => setOkMsg(null), 3000);
+        setTimeout(() => qc.invalidateQueries({ queryKey: ["positions"] }), 5000);
+      } else if (isSui) {
+        if (!sui.isConnected || !sui.address) {
+          setError("Connect Sui wallet first");
+          return;
+        }
+        const result = await sui.withdraw(validator);
+        setOkMsg(`Claimed! tx: ${result.digest.slice(0, 10)}...`);
+        setTimeout(() => setOkMsg(null), 3000);
+        setTimeout(() => qc.invalidateQueries({ queryKey: ["positions"] }), 5000);
+      } else if (isEvm) {
+        const wagmiChain = chain.wagmiChain;
+        if (wagmiChain) {
+          await switchChainAsync({ chainId: wagmiChain.id });
+        }
+
+        const tx = await adapter.buildClaimTx({
+          validator,
+          delegator: address,
+        });
+        if (tx.kind !== "evm") {
+          throw new Error("Unexpected tx kind");
+        }
+
+        sendTransaction({
+          to: tx.to,
+          data: tx.data,
+          value: tx.value ?? 0n,
+          gas: tx.gas,
+        });
+        setOkMsg("Confirming claim...");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const isPending = sweepMut.isPending;
 
   return (
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "1.4fr 1fr 1fr 1fr 0.8fr 110px",
+        gridTemplateColumns: "1.4fr 1fr 1fr 1fr 0.8fr 140px",
         padding: "14px 22px",
         borderBottom: `1px solid ${tokens.hairline}`,
         alignItems: "center",
@@ -260,7 +449,7 @@ function Row({ p }: { p: PositionRow }) {
         {shortContract(p.contractId)}
       </div>
       <div className="mono tabular" style={{ fontSize: 13, color: tokens.ink[100] }}>
-        {fmt(parseFloat(p.argument.amountPol), 2)} {positionChain(p).symbol}
+        {fmt(parseFloat(p.argument.amountPol), 2)} {chain.symbol}
       </div>
       <Chip color={color} dot={lifecycle === "bonded" || lifecycle === "unbonding"}>
         {lifecycle}
@@ -271,15 +460,50 @@ function Row({ p }: { p: PositionRow }) {
       <div className="mono tabular" style={{ fontSize: 11, color: tokens.cc }}>
         {p.argument.markersEmitted}
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        <Btn
-          size="sm"
-          variant="ghost"
-          onClick={() => sweepMut.mutate()}
-          disabled={!canSweep || sweepMut.isPending}
-        >
-          {sweepMut.isPending ? "Sweeping…" : "Sweep"}
-        </Btn>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {hasActions ? (
+          <div style={{ display: "flex", gap: 4 }}>
+            {canSweep && (
+              <Btn
+                size="sm"
+                variant="ghost"
+                onClick={() => sweepMut.mutate()}
+                disabled={isPending}
+              >
+                {isPending ? "Sweeping…" : "Sweep"}
+              </Btn>
+            )}
+            {canUnbond && (
+              <Btn
+                size="sm"
+                variant="ghost"
+                onClick={handleUnbond}
+                disabled={isPending}
+                style={{ color: tokens.warning }}
+              >
+                Unbond
+              </Btn>
+            )}
+            {canClaim && (
+              <Btn
+                size="sm"
+                variant="ghost"
+                onClick={handleClaim}
+                disabled={isPending}
+                style={{ color: tokens.neon }}
+              >
+                Claim
+              </Btn>
+            )}
+          </div>
+        ) : (
+          <span
+            className="mono"
+            style={{ fontSize: 10, color: tokens.ink[500] }}
+          >
+            —
+          </span>
+        )}
         {okMsg ? (
           <span
             className="mono"
@@ -292,7 +516,7 @@ function Row({ p }: { p: PositionRow }) {
             className="mono"
             style={{ fontSize: 9, color: tokens.danger }}
           >
-            {error.slice(0, 24)}
+            {error.slice(0, 30)}
           </span>
         ) : null}
       </div>
@@ -376,7 +600,7 @@ function Timeline({ p }: { p: PositionRow }) {
             className="mono"
             style={{ fontSize: 10.5, color: tokens.ink[400], marginTop: 2 }}
           >
-            {fmt(parseFloat(p.argument.amountPol), 2)} POL · {p.argument.status}
+            {fmt(parseFloat(p.argument.amountPol), 2)} {positionChain(p).symbol} · {p.argument.status}
           </div>
         </div>
         <Chip color={lifecycleColor(lifecycle)} dot>

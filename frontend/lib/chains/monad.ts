@@ -8,6 +8,7 @@
  */
 
 import { encodeFunctionData, parseAbi, type Address } from "viem";
+import { fetchValidatorScores, type ValidatorScore } from "../api";
 import {
   ChainAdapterError,
   type IChainAdapter,
@@ -69,28 +70,14 @@ export const monadAdapter: IChainAdapter = {
 
   async getValidators(): Promise<Validator[]> {
     try {
-      const res = await fetch(
-        "https://raw.githubusercontent.com/monad-developers/validator-info/main/mainnet/validators.json",
-        { headers: { accept: "application/json" } },
-      );
-      if (!res.ok) throw networkError(`Monad validator-info ${res.status}`);
-      const body = (await res.json()) as
-        | MonadValidatorRow[]
-        | { validators?: MonadValidatorRow[] };
-      const rows = Array.isArray(body) ? body : body.validators ?? [];
-      return rows
-        .filter((v) => v.active !== false)
-        .map((v, i) => {
-          const id = String(v.id ?? i);
-          const commission = Number(v.commission ?? 5);
-          return {
-            address: id,
-            name: v.name ?? `Monad-${id}`,
-            apr: 8 * (1 - commission / 100),
-            commission,
-            uptime: 99.0,
-          };
-        });
+      const snap = await fetchValidatorScores("monad");
+      return snap.validators.map((v: ValidatorScore) => ({
+        address: v.address,
+        name: v.name,
+        apr: 8 * (1 - v.commissionPct / 100),
+        commission: v.commissionPct,
+        uptime: v.uptimePct,
+      }));
     } catch (cause) {
       throw toAdapterError("Failed to load Monad validators.", cause);
     }

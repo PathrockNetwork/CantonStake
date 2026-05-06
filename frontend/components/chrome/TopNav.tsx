@@ -16,6 +16,7 @@ interface HealthDetail {
   featuredAppRight?: string;
   cantonJsonApi?: string;
   warnings?: string[];
+  environment?: string;
 }
 
 // Detect whether the backend is running rewards in mock-seeded mode.
@@ -24,6 +25,11 @@ function isMockRewards(h: HealthDetail | undefined): boolean {
   return (
     h?.warnings?.some((w) => w.startsWith("MOCK_REWARDS=true")) ?? false
   );
+}
+
+// Detect devnet from the Canton JSON API URL.
+function isDevnet(h: HealthDetail | undefined): boolean {
+  return h?.cantonJsonApi?.includes("devnet.cantonloop.com") ?? false;
 }
 
 async function fetchHealthDetail(): Promise<HealthDetail> {
@@ -37,6 +43,7 @@ function deriveBadge(h: HealthDetail | undefined): {
   color: "neon" | "cc" | "warn";
 } {
   if (!h) return { label: "…", color: "warn" };
+  if (isDevnet(h)) return { label: "Devnet", color: "cc" };
   if (isMockRewards(h)) return { label: "Mock · Demo", color: "warn" };
   if (h.demoMode) return { label: "Demo", color: "warn" };
   if (h.featuredAppRight === "configured")

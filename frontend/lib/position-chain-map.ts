@@ -1,30 +1,37 @@
 "use client";
 
 /**
- * Tiny localStorage-backed lookup for "which chain did this stake go to?"
+ * Tiny localStorage-backed lookup for position metadata.
  *
- * The Daml StakingPosition template doesn't carry a `chain` field yet (a
- * DAR redeploy would be needed to add one). To keep the UI honest about
- * which chain each row belongs to, the stake page records the chain at
- * submit-time keyed by `(evmAddress, amountPol)`, and the
- * positions/dashboard rows read it back to render the right symbol.
+ * Stores: chain + validator address for each position so we can
+ * properly build unbond/claim transactions later.
+ *
+ * The Daml StakingPosition template doesn't carry these fields yet
+ * (a DAR redeploy would be needed to add them). To keep the UI
+ * functional, the stake page records metadata at submit-time keyed by
+ * (evmAddress, amountPol), and the positions page reads it back.
  *
  * Limits:
  *   - Only positions staked on THIS device through THIS UI populate the map.
  *   - Positions older than the localStorage entry, or staked from a
- *     different device, fall back to the address-format heuristic in
- *     `chainFromAddress`.
+ *     different device, fall back to the address-format heuristic.
  *
  * Replace this with a backend metadata table once the Daml template
- * lands a real `chain` field.
+ * lands real metadata fields.
  */
 
 import type { ChainConfig } from "@/lib/chains";
 
-const STORAGE_KEY = "cantonstake_position_chain_map";
+const STORAGE_KEY = "cantonstake_position_meta_map";
 
 type ChainId = ChainConfig["id"];
-type Map = Record<string, ChainId>;
+
+interface PositionMeta {
+  chainId: ChainId;
+  validator: string;
+}
+
+type Map = Record<string, PositionMeta>;
 
 function key(evmAddress: string, amountPol: string): string {
   return `${evmAddress.toLowerCase()}:${amountPol}`;
@@ -49,20 +56,50 @@ function writeMap(map: Map): void {
   }
 }
 
+export function recordPositionMeta(
+  evmAddress: string,
+  amountPol: string,
+  chainId: ChainId,
+  validator: string,
+): void {
+  const map = readMap();
+  map[key(evmAddress, amountPol)] = { chainId, validator };
+  writeMap(map);
+}
+
+// Legacy function name for compatibility
 export function recordPositionChain(
   evmAddress: string,
   amountPol: string,
   chainId: ChainId,
 ): void {
   const map = readMap();
-  map[key(evmAddress, amountPol)] = chainId;
+  const existing = map[key(evmAddress, amountPol)];
+  map[key(evmAddress, amountPol)] = {
+    chainId,
+    validator: existing?.validator ?? "",
+  };
   writeMap(map);
+}
+
+export function lookupPositionMeta(
+  evmAddress: string,
+  amountPol: string,
+): PositionMeta | undefined {
+  const map = readMap();
+  return map[key(evmAddress, amountPol)];
 }
 
 export function lookupPositionChain(
   evmAddress: string,
   amountPol: string,
 ): ChainId | undefined {
-  const map = readMap();
-  return map[key(evmAddress, amountPol)];
+  return lookupPositionMeta(evmAddress, amountPol)?.chainId;
+}
+
+export function lookupPositionValidator(
+  evmAddress: string,
+  amountPol: string,
+): string | undefined {
+  return lookupPositionMeta(evmAddress, amountPol)?.validator;
 }

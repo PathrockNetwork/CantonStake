@@ -19,12 +19,12 @@ import {
   type UnsignedTx,
   type Validator,
 } from "./types";
+import { fetchValidatorScores, type ValidatorScore } from "../api";
 
 const COSMOS_CHAIN_ID = "cosmos";
-// theta-testnet — the canonical Cosmos Hub testnet (chain-id `theta-testnet-001`).
-// Polypore's sentry-01 endpoint is the most stable public REST.
+// theta-testnet — KJNodes provides a stable public REST endpoint.
 const COSMOS_REST =
-  "https://rest.sentry-01.theta-testnet.polypore.xyz";
+  "https://cosmoshub-testnet.api.kjnodes.com";
 const UATOM_PER_ATOM = 1_000_000n;
 // theta-testnet unbonding window is 1 day (vs 21 days on mainnet) so the
 // demo's unbond → release flow is observable in a single sitting.
@@ -81,23 +81,14 @@ export const cosmosAdapter: IChainAdapter = {
 
   async getValidators(): Promise<Validator[]> {
     try {
-      const body = await fetchJson<{ validators?: CosmosRestValidator[] }>(
-        `${COSMOS_REST}/cosmos/staking/v1beta1/validators?status=BOND_STATUS_BONDED&pagination.limit=200`,
-      );
-      const rows = body.validators ?? [];
-      return rows
-        .filter((v) => !v.jailed)
-        .map((v) => ({
-          address: v.operator_address,
-          name: v.description?.moniker ?? v.operator_address.slice(0, 14),
-          apr:
-            (1 -
-              Number(v.commission?.commission_rates?.rate ?? "0.05")) *
-            21,
-          commission:
-            Number(v.commission?.commission_rates?.rate ?? "0.05") * 100,
-          uptime: 99.0,
-        }));
+      const snap = await fetchValidatorScores("cosmos");
+      return snap.validators.map((v: ValidatorScore) => ({
+        address: v.address,
+        name: v.name,
+        apr: (1 - v.commissionPct / 100) * 21,
+        commission: v.commissionPct,
+        uptime: v.uptimePct,
+      }));
     } catch (cause) {
       throw toAdapterError("Failed to load Cosmos validators.", cause);
     }

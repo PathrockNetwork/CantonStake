@@ -98,7 +98,7 @@ export const CHAINS: ChainConfig[] = [
     id: "moonbeam",
     phase: "live",
     hasAdapter: true,
-    symbol: "GLMR",
+    symbol: "DEV",
     name: "Moonbase Alpha",
     type: "Moonbeam testnet",
     apy: 12.0,

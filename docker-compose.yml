@@ -89,8 +89,8 @@ services:
       - MOONBEAM_RPC_URL=${MOONBEAM_RPC_URL:-https://rpc.api.moonbase.moonbeam.network}
       - MONAD_RPC_URL=${MONAD_RPC_URL:-https://testnet-rpc.monad.xyz}
       - MONAD_STAKING_CONTRACT=${MONAD_STAKING_CONTRACT:-}
-      - COSMOS_REST_URL=${COSMOS_REST_URL:-https://rest.sentry-01.theta-testnet.polypore.xyz}
-      - COSMOS_RPC_URL=${COSMOS_RPC_URL:-https://rpc.sentry-01.theta-testnet.polypore.xyz}
+      - COSMOS_REST_URL=${COSMOS_REST_URL:-https://cosmoshub-testnet.api.kjnodes.com}
+      - COSMOS_RPC_URL=${COSMOS_RPC_URL:-https://cosmoshub-testnet.rpc.kjnodes.com}
       - COSMOS_KEEPER_MNEMONIC=${COSMOS_KEEPER_MNEMONIC:-}
       - SUI_RPC_URL=${SUI_RPC_URL:-https://fullnode.testnet.sui.io:443}
       - SUI_KEEPER_PRIVATE_KEY=${SUI_KEEPER_PRIVATE_KEY:-}
@@ -132,8 +132,8 @@ services:
         NEXT_PUBLIC_SUI_RPC_URL: ${NEXT_PUBLIC_SUI_RPC_URL:-https://fullnode.testnet.sui.io:443}
         NEXT_PUBLIC_COSMOS_CHAIN_ID: ${NEXT_PUBLIC_COSMOS_CHAIN_ID:-theta-testnet-001}
         NEXT_PUBLIC_COSMOS_CHAIN_NAME: ${NEXT_PUBLIC_COSMOS_CHAIN_NAME:-Cosmos Hub Theta Testnet}
-        NEXT_PUBLIC_COSMOS_RPC: ${NEXT_PUBLIC_COSMOS_RPC:-https://rpc.sentry-01.theta-testnet.polypore.xyz}
-        NEXT_PUBLIC_COSMOS_REST: ${NEXT_PUBLIC_COSMOS_REST:-https://rest.sentry-01.theta-testnet.polypore.xyz}
+        NEXT_PUBLIC_COSMOS_RPC: ${NEXT_PUBLIC_COSMOS_RPC:-https://cosmoshub-testnet.rpc.kjnodes.com}
+        NEXT_PUBLIC_COSMOS_REST: ${NEXT_PUBLIC_COSMOS_REST:-https://cosmoshub-testnet.api.kjnodes.com}
         NEXT_PUBLIC_COSMOS_COIN_DENOM: ${NEXT_PUBLIC_COSMOS_COIN_DENOM:-ATOM}
         NEXT_PUBLIC_COSMOS_COIN_MINIMAL_DENOM: ${NEXT_PUBLIC_COSMOS_COIN_MINIMAL_DENOM:-uatom}
         NEXT_PUBLIC_COSMOS_COIN_DECIMALS: ${NEXT_PUBLIC_COSMOS_COIN_DECIMALS:-6}

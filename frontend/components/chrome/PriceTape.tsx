@@ -109,6 +109,10 @@ export function PriceTape() {
 
   const polUsd = prices?.polUsd ?? null;
   const polDelta = prices?.polUsd24hChange ?? null;
+  const glmrUsd = prices?.glmrUsd ?? null;
+  const monUsd = prices?.monUsd ?? null;
+  const atomUsd = prices?.atomUsd ?? null;
+  const suiUsd = prices?.suiUsd ?? null;
   const ccUsd = prices?.ccUsd ?? null;
 
   const latest = rounds?.rounds[0];
@@ -140,6 +144,30 @@ export function PriceTape() {
       price: polUsd !== null ? `$${polUsd.toFixed(3)}` : "—",
       delta: polDelta !== null ? fmtSigned(polDelta) : "—",
       up: polDelta === null ? null : polDelta >= 0,
+    },
+    {
+      symbol: "DEV/USD",
+      price: glmrUsd !== null ? `$${glmrUsd.toFixed(3)}` : "—",
+      delta: "TESTNET",
+      up: null,
+    },
+    {
+      symbol: "MON/USD",
+      price: monUsd !== null ? `$${monUsd.toFixed(3)}` : "—",
+      delta: "TESTNET",
+      up: null,
+    },
+    {
+      symbol: "ATOM/USD",
+      price: atomUsd !== null ? `$${atomUsd.toFixed(2)}` : "—",
+      delta: "TESTNET",
+      up: null,
+    },
+    {
+      symbol: "SUI/USD",
+      price: suiUsd !== null ? `$${suiUsd.toFixed(2)}` : "—",
+      delta: "TESTNET",
+      up: null,
     },
     {
       symbol: "NETWORK SHARE",

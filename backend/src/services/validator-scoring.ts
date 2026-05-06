@@ -314,7 +314,7 @@ async function fetchCosmos(): Promise<ScoredValidator[]> {
     status?: string;
   };
   const body = await fetchJson<{ validators?: CosmosVal[] }>(
-    "https://rest.sentry-01.theta-testnet.polypore.xyz/cosmos/staking/v1beta1/validators?pagination.limit=200&status=BOND_STATUS_BONDED"
+    "https://cosmoshub-testnet.api.kjnodes.com/cosmos/staking/v1beta1/validators?pagination.limit=200&status=BOND_STATUS_BONDED"
   );
   if (!body?.validators) return [];
 

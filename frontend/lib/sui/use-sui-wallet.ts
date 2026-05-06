@@ -32,6 +32,20 @@ export interface UseSuiWalletReturn {
     validator: string;
     amountMist: bigint;
   }) => Promise<{ digest: string }>;
+  /**
+   * Build + sign + execute a request_withdraw_stake move call. Returns the
+   * tx digest on success.
+   */
+  undelegate: (args: {
+    validator: string;
+    amountMist: bigint;
+  }) => Promise<{ digest: string }>;
+  /**
+   * Withdraw staked SUI after the unbonding epoch. Returns the digest.
+   */
+  withdraw: (args: {
+    validator: string;
+  }) => Promise<{ digest: string }>;
 }
 
 const SUI_SYSTEM_STATE = "0x5";
@@ -88,6 +102,79 @@ export function useSuiWallet(): UseSuiWalletReturn {
     [account, signAndExecute, client],
   );
 
+  const undelegate = useCallback(
+    async (args: { validator: string; amountMist: bigint }) => {
+      if (!account) throw new Error("Sui wallet not connected");
+
+      const tx = new Transaction();
+      // Find the user's StakedSui objects for this validator
+      const stakes = await client.getStakes({
+        owner: account.address,
+      });
+      const validatorStakes = stakes.filter(
+        (s) => s.validatorAddress === args.validator && s.status === "Active"
+      );
+
+      if (validatorStakes.length === 0) {
+        throw new Error("No active stake found for this validator");
+      }
+
+      // Use the first staked Sui object
+      const stakedSuiId = validatorStakes[0].stakedSuiId;
+
+      tx.moveCall({
+        target: `${SUI_SYSTEM_MODULE}::request_withdraw_stake`,
+        arguments: [
+          tx.object(SUI_SYSTEM_STATE),
+          tx.object(stakedSuiId),
+        ],
+      });
+
+      const result = await signAndExecute({ transaction: tx });
+      await client.waitForTransaction({ digest: result.digest });
+      return { digest: result.digest };
+    },
+    [account, client, signAndExecute],
+  );
+
+  const withdraw = useCallback(
+    async (args: { validator: string }) => {
+      if (!account) throw new Error("Sui wallet not connected");
+
+      const tx = new Transaction();
+      // Find pending withdraw requests for this validator
+      const stakes = await client.getStakes({
+        owner: account.address,
+      });
+      const pendingWithdraws = stakes.filter(
+        (s) =>
+          s.validatorAddress === args.validator &&
+          s.status === "PendingWithdraw"
+      );
+
+      if (pendingWithdraws.length === 0) {
+        throw new Error("No pending withdraw found for this validator");
+      }
+
+      const stakedSuiId = pendingWithdraws[0].stakedSuiId;
+
+      tx.moveCall({
+        target: `${SUI_SYSTEM_MODULE}::withdraw_stake`,
+        arguments: [
+          tx.object(SUI_SYSTEM_STATE),
+          tx.object(stakedSuiId),
+          // p_vec_u8(...) for claim - handled by the transaction builder
+          tx.pure("0x"),
+        ],
+      });
+
+      const result = await signAndExecute({ transaction: tx });
+      await client.waitForTransaction({ digest: result.digest });
+      return { digest: result.digest };
+    },
+    [account, client, signAndExecute],
+  );
+
   return {
     address: account?.address ?? null,
     isConnected: !!account,
@@ -96,5 +183,7 @@ export function useSuiWallet(): UseSuiWalletReturn {
     connect,
     disconnect: () => disconnectWallet(),
     delegate,
+    undelegate,
+    withdraw,
   };
 }

@@ -31,7 +31,7 @@ import { useCantonWallet } from "@/lib/canton";
 import { useCosmosWallet, cosmosChainId } from "@/lib/cosmos/use-cosmos-wallet";
 import { useSuiWallet } from "@/lib/sui/use-sui-wallet";
 import { usePrices } from "@/lib/prices";
-import { recordPositionChain } from "@/lib/position-chain-map";
+import { recordPositionMeta } from "@/lib/position-chain-map";
 import { tokens } from "@/lib/tokens";
 
 /**
@@ -176,7 +176,18 @@ export default function StakePage() {
   // Live prices + chain stats so the form's APY/CC numbers and USD
   // estimates aren't hardcoded.
   const { data: prices } = usePrices();
-  const polUsd = prices?.polUsd ?? 0;
+
+  // Map chain ID to its USD price
+  const chainPriceUsd = (() => {
+    switch (selectedChain.id) {
+      case "polygon": return prices?.polUsd ?? 0;
+      case "moonbeam": return prices?.glmrUsd ?? 0;
+      case "monad": return prices?.monUsd ?? 0;
+      case "cosmos": return prices?.atomUsd ?? 0;
+      case "sui": return prices?.suiUsd ?? 0;
+      default: return prices?.polUsd ?? 0;
+    }
+  })();
   const { data: chainStats } = useQuery({
     queryKey: ["chain-stats"],
     queryFn: () => fetchChainStats(),
@@ -402,27 +413,34 @@ export default function StakePage() {
         chain: selectedChain.id,
         validator: validator.address,
       });
-      recordPositionChain(address, amount, selectedChain.id);
+      recordPositionMeta(address, amount, selectedChain.id, validator.address);
 
       // Switch network if needed
-      const targetChainId = selectedChain.wagmiChain!.id;
+      const wagmiChain = selectedChain.wagmiChain;
+      if (!wagmiChain) {
+        throw new Error(`${selectedChain.name} is not configured for wallet switching.`);
+      }
+      const targetChainId = wagmiChain.id;
       if (chainId !== targetChainId) {
         // First try to add the network to MetaMask (this won't fail if already added)
+        const rpcUrls = wagmiChain.rpcUrls.default.http;
         try {
           const provider = await (connector as any)?.getProvider?.();
-          if (provider?.request) {
+          if (provider?.request && rpcUrls?.[0]) {
             await provider.request({
               method: 'wallet_addEthereumChain',
               params: [{
                 chainId: `0x${targetChainId.toString(16)}`,
-                chainName: 'Polygon Amoy',
+                chainName: selectedChain.name,
                 nativeCurrency: {
-                  name: 'POL',
-                  symbol: 'POL',
+                  name: selectedChain.symbol,
+                  symbol: selectedChain.symbol,
                   decimals: 18,
                 },
-                rpcUrls: ['https://rpc-amoy.polygon.technology'],
-                blockExplorerUrls: ['https://amoy.polygonscan.com'],
+                rpcUrls: [rpcUrls[0]],
+                blockExplorerUrls: selectedChain.explorer
+                  ? [selectedChain.explorer.tx('')]
+                  : undefined,
               }],
             });
           }
@@ -437,7 +455,7 @@ export default function StakePage() {
           await new Promise(resolve => setTimeout(resolve, 500));
         } catch (switchError) {
           throw new Error(
-            `Please switch your wallet to Polygon Amoy (chain 80002) and try again.`,
+            `Please switch your wallet to ${selectedChain.name} and try again.`,
           );
         }
       }
@@ -503,7 +521,7 @@ export default function StakePage() {
         chain: "cosmos",
         validator: validator.address,
       });
-      recordPositionChain(cosmos.address, amount, "cosmos");
+      recordPositionMeta(cosmos.address, amount, "cosmos", validator.address);
 
       advance(2);
       // amount is in ATOM; convert to uatom (1e6).
@@ -563,7 +581,7 @@ export default function StakePage() {
         chain: "sui",
         validator: validator.address,
       });
-      recordPositionChain(sui.address, amount, "sui");
+      recordPositionMeta(sui.address, amount, "sui", validator.address);
 
       advance(2);
       const amountMist = BigInt(
@@ -596,7 +614,7 @@ export default function StakePage() {
       ? ctaLabels[0]!.replace("{amount}", amount)
       : ctaLabels[step] ?? ctaLabels[0]!;
   const amountNum = parseFloat(amount || "0");
-  const usdValue = amountNum * polUsd;
+  const usdValue = amountNum * chainPriceUsd;
   // Expected CC for a single bond is best derived from the most recent
   // round's per-staked-pol attribution. Without that we estimate it as
   // the user's stake × (ccBonusApy / 365) × 1 day worth of CC at current
@@ -686,11 +704,11 @@ export default function StakePage() {
           message="Sui staking requires Slush, Suiet, or any Sui wallet extension. Click the chip in the top-right to connect."
         />
       )}
-      {!error && isEvmStakingReady && selectedChain.id !== "polygon" && (
+      {(isCosmosChain || isSuiChain) && (
         <Banner
           tone="warn"
-          kind={`${selectedChain.name.toUpperCase()} · DEMO MODE`}
-          message={`The orchestrator only watches Polygon events on its own. ${selectedChain.name} stakes progress to Bonded via a force-accept call after the EVM tx confirms (server-gated to DEMO_MODE). Make sure your wallet has testnet ${selectedChain.symbol} from the chain's faucet.`}
+          kind="COMING SOON"
+          message={`${selectedChain.name} staking is coming soon. We're currently finalizing the integration. Stay tuned!`}
         />
       )}
 
@@ -803,6 +821,52 @@ export default function StakePage() {
               </div>
             </div>
 
+            {/* Coming soon wall for Cosmos and Sui */}
+            {(isCosmosChain || isSuiChain) ? (
+              <div
+                style={{
+                  padding: "40px 22px",
+                  textAlign: "center",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  gap: 16,
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 48,
+                    marginBottom: 8,
+                  }}
+                >
+                  🔜
+                </div>
+                <SectionLabel style={{ fontSize: 24, marginBottom: 8 }}>
+                  Coming Soon
+                </SectionLabel>
+                <div
+                  style={{
+                    fontSize: 14,
+                    color: tokens.ink[400],
+                    maxWidth: 300,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  {selectedChain.name} staking is currently under development. We're finalizing the integration to bring you the best staking experience.
+                </div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: tokens.ink[500],
+                    marginTop: 8,
+                  }}
+                  className="mono"
+                >
+                  Follow us for updates on the launch
+                </div>
+              </div>
+            ) : (
+              <>
             <div>
               <SectionLabel style={{ marginBottom: 8 }}>Validator</SectionLabel>
               <div
@@ -993,6 +1057,8 @@ export default function StakePage() {
             >
               Your wallet signs · CantonStake observes · The ledger remembers
             </div>
+            </>
+          )}
           </div>
         </Card>
 
@@ -1149,7 +1215,7 @@ export default function StakePage() {
                   className="display"
                   style={{ fontSize: 22, color: tokens.ink[100], marginTop: 4 }}
                 >
-                  Bond · {fmt(amountNum * polUsd, 2)} USD
+                  Bond · {fmt(amountNum * chainPriceUsd, 2)} USD
                 </div>
                 <div
                   className="mono"
