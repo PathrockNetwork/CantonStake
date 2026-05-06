@@ -129,6 +129,18 @@ export const config = {
   suiRpcUrl: optional("SUI_RPC_URL", "https://fullnode.mainnet.sui.io"),
   suiKeeperPrivateKey: optional("SUI_KEEPER_PRIVATE_KEY"),
 
+  // Loop SDK CORS proxy. Devnet's edge (Cloudflare-fronted) blocks any
+  // origin that's not on its allowlist — including dev/IP origins. We mount
+  // a same-origin reverse proxy at /loop-proxy so the SDK calls go through
+  // our backend instead of directly to cantonloop.com. Disable in prod
+  // once fivenorth allowlists your real origin.
+  loopProxyEnabled:
+    optional("LOOP_PROXY_ENABLED", "true").toLowerCase() === "true",
+  loopProxyUpstream: optional(
+    "LOOP_API_UPSTREAM",
+    "https://devnet.cantonloop.com"
+  ),
+
   // Observability (§6). Sentry DSN unset = error capture is a no-op.
   // Prometheus /metrics is always available and never gated on env.
   sentryDsn: optional("SENTRY_DSN"),
