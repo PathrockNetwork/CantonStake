@@ -332,7 +332,7 @@ function Row({
           setError("Connect Sui wallet first");
           return;
         }
-        const result = await sui.undelegate(validator, amountWei);
+        const result = await sui.undelegate({ validator, amountMist: amountWei });
         setOkMsg(`Unbonding... tx: ${result.digest.slice(0, 10)}...`);
         setTimeout(() => setOkMsg(null), 3000);
         setTimeout(() => qc.invalidateQueries({ queryKey: ["positions"] }), 5000);
@@ -401,7 +401,7 @@ function Row({
           setError("Connect Sui wallet first");
           return;
         }
-        const result = await sui.withdraw(validator);
+        const result = await sui.withdraw({ validator });
         setOkMsg(`Claimed! tx: ${result.digest.slice(0, 10)}...`);
         setTimeout(() => setOkMsg(null), 3000);
         setTimeout(() => qc.invalidateQueries({ queryKey: ["positions"] }), 5000);

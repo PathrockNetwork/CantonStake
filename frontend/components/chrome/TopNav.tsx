@@ -40,10 +40,10 @@ async function fetchHealthDetail(): Promise<HealthDetail> {
 
 function deriveBadge(h: HealthDetail | undefined): {
   label: string;
-  color: "neon" | "cc" | "warn";
+  color: "neon" | "cc" | "warn" | "green";
 } {
   if (!h) return { label: "…", color: "warn" };
-  if (isDevnet(h)) return { label: "Devnet", color: "cc" };
+  if (isDevnet(h)) return { label: "Devnet", color: "green" };
   if (isMockRewards(h)) return { label: "Mock · Demo", color: "warn" };
   if (h.demoMode) return { label: "Demo", color: "warn" };
   if (h.featuredAppRight === "configured")
@@ -180,7 +180,9 @@ export function TopNav() {
       ? tokens.neon
       : badge.color === "cc"
         ? tokens.cc
-        : tokens.amberBright;
+        : badge.color === "green"
+          ? "#22c55e"
+          : tokens.amberBright;
 
   return (
     <header

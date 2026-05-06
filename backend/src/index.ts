@@ -596,67 +596,6 @@ app.get<{ Params: { address: string } }>(
   }
 );
 
-// --- Native reward sweep stub (5% protocol fee) ---
-
-app.post<{ Params: { positionId: string }; Body: { evmTxHash?: string } }>(
-  "/api/sweep/:positionId",
-  async (req, reply) => {
-    const { positionId } = req.params;
-    try {
-      const position = await prisma.stakingPosition.findFirst({
-        where: {
-          OR: [{ id: positionId }, { contractId: positionId }],
-        },
-        include: { user: true },
-      });
-
-      if (!position) {
-        return reply.code(404).send({ error: "position not found" });
-      }
-
-      const rewardsWei = (await publicClient.readContract({
-        address: config.mockValidatorShare as Address,
-        abi: validatorShareAbi,
-        functionName: "pendingRewards",
-        args: [position.evmAddress as Address],
-      })) as bigint;
-      const protocolFeeWei =
-        (rewardsWei * BigInt(position.protocolFeeBps)) / 10_000n;
-      const userPayoutWei = rewardsWei - protocolFeeWei;
-
-      const sweep = await prisma.rewardSweep.create({
-        data: {
-          userId: position.userId,
-          positionId: position.id,
-          nativeRewardWei: rewardsWei.toString(),
-          protocolFeeWei: protocolFeeWei.toString(),
-          userPayoutWei: userPayoutWei.toString(),
-          protocolFeeBps: position.protocolFeeBps,
-          evmTxHash: req.body?.evmTxHash,
-        },
-      });
-
-      await prisma.stakingPosition.update({
-        where: { id: position.id },
-        data: { swept: true, lastSweepAt: sweep.sweptAt },
-      });
-
-      return {
-        ok: true,
-        sweep: {
-          ...sweep,
-          nativeRewardPol: weiToPol(rewardsWei),
-          protocolFeePol: weiToPol(protocolFeeWei),
-          userPayoutPol: weiToPol(userPayoutWei),
-        },
-      };
-    } catch (err) {
-      req.log.error(err);
-      return reply.code(500).send({ error: String(err) });
-    }
-  }
-);
-
 // --- Narrator (Anthropic-powered live commentary) ---
 
 app.get<{ Params: { address: string } }>(

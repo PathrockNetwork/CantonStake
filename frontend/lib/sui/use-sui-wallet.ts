@@ -112,15 +112,15 @@ export function useSuiWallet(): UseSuiWalletReturn {
         owner: account.address,
       });
       const validatorStakes = stakes.filter(
-        (s) => s.validatorAddress === args.validator && s.status === "Active"
+        (s) => s.validatorAddress === args.validator
       );
 
-      if (validatorStakes.length === 0) {
-        throw new Error("No active stake found for this validator");
+      if (validatorStakes.length === 0 || validatorStakes[0].stakes.length === 0) {
+        throw new Error("No stake found for this validator");
       }
 
-      // Use the first staked Sui object
-      const stakedSuiId = validatorStakes[0].stakedSuiId;
+      // Use the first active staked Sui object
+      const stakedSuiId = validatorStakes[0].stakes[0].stakedSuiId;
 
       tx.moveCall({
         target: `${SUI_SYSTEM_MODULE}::request_withdraw_stake`,
@@ -142,29 +142,25 @@ export function useSuiWallet(): UseSuiWalletReturn {
       if (!account) throw new Error("Sui wallet not connected");
 
       const tx = new Transaction();
-      // Find pending withdraw requests for this validator
+      // Find the user's stake objects for this validator
       const stakes = await client.getStakes({
         owner: account.address,
       });
-      const pendingWithdraws = stakes.filter(
-        (s) =>
-          s.validatorAddress === args.validator &&
-          s.status === "PendingWithdraw"
+      const validatorStakes = stakes.filter(
+        (s) => s.validatorAddress === args.validator
       );
 
-      if (pendingWithdraws.length === 0) {
-        throw new Error("No pending withdraw found for this validator");
+      if (validatorStakes.length === 0 || validatorStakes[0].stakes.length === 0) {
+        throw new Error("No stake found for this validator");
       }
 
-      const stakedSuiId = pendingWithdraws[0].stakedSuiId;
+      const stakedSuiId = validatorStakes[0].stakes[0].stakedSuiId;
 
       tx.moveCall({
         target: `${SUI_SYSTEM_MODULE}::withdraw_stake`,
         arguments: [
           tx.object(SUI_SYSTEM_STATE),
           tx.object(stakedSuiId),
-          // p_vec_u8(...) for claim - handled by the transaction builder
-          tx.pure("0x"),
         ],
       });
 
