@@ -4,7 +4,7 @@ import { polygonAmoy } from "wagmi/chains";
 export type ChainPhase = "live" | "planned" | "soon";
 
 export type ChainConfig = {
-  id: "polygon" | "moonbeam" | "monad" | "polkadot" | "cosmos";
+  id: "polygon" | "moonbeam" | "monad" | "polkadot" | "cosmos" | "sui";
   phase: ChainPhase;
   hasAdapter?: boolean;
   symbol: string;
@@ -51,11 +51,12 @@ export const CHAINS: ChainConfig[] = [
   },
   {
     id: "moonbeam",
-    phase: "planned",
+    phase: "live",
+    hasAdapter: true,
     symbol: "GLMR",
     name: "Moonbeam",
     type: "Polkadot parachain",
-    apy: 12.4,
+    apy: 12.0,
     apyRange: "10-15%",
     unbonding: "28 days",
     ledgerApp: "Moonbeam",
@@ -66,11 +67,12 @@ export const CHAINS: ChainConfig[] = [
   },
   {
     id: "monad",
-    phase: "planned",
+    phase: "live",
+    hasAdapter: true,
     symbol: "MON",
     name: "Monad",
     type: "EVM-compatible L1",
-    apy: 9.8,
+    apy: 8.0,
     apyRange: "8-12%",
     unbonding: "14 days",
     ledgerApp: "Ethereum",
@@ -80,33 +82,35 @@ export const CHAINS: ChainConfig[] = [
     tvl: "$420M",
   },
   {
-    id: "polkadot",
-    phase: "soon",
-    symbol: "DOT",
-    name: "Polkadot",
-    type: "Relay chain",
-    apy: 14.8,
-    apyRange: "14-16%",
-    unbonding: "28 days",
-    ledgerApp: "Polkadot",
-    color: "#e6007a",
-    minStake: 1,
-    validators: 297,
-    tvl: "-",
-  },
-  {
     id: "cosmos",
-    phase: "soon",
+    phase: "live",
+    hasAdapter: true,
     symbol: "ATOM",
     name: "Cosmos",
     type: "IBC-enabled L1",
-    apy: 19.2,
+    apy: 21.0,
     apyRange: "17-22%",
     unbonding: "21 days",
     ledgerApp: "Cosmos",
     color: "#6f7390",
     minStake: 1,
     validators: 180,
+    tvl: "-",
+  },
+  {
+    id: "sui",
+    phase: "live",
+    hasAdapter: true,
+    symbol: "SUI",
+    name: "Sui",
+    type: "Move-based L1",
+    apy: 3.5,
+    apyRange: "3-4%",
+    unbonding: "1 epoch (~24h)",
+    ledgerApp: "Sui",
+    color: "#4ca2ff",
+    minStake: 1,
+    validators: 100,
     tvl: "-",
   },
 ];
@@ -116,34 +120,29 @@ export const chainById = (id: string) => CHAINS.find((chain) => chain.id === id)
 export const polygonChain = () => chainById("polygon")!;
 
 if (process.env.NODE_ENV !== "production") {
-  const live = liveChains();
   const ids = new Set<string>();
 
-  if (live.length !== 1) {
-    console.warn(`[chains] expected exactly one live chain, found ${live.length}`);
-  }
   if (polygonChain().id !== "polygon") {
     console.warn("[chains] polygonChain() did not resolve to polygon");
-  }
-  if (chainById("moonbeam")?.phase !== "planned") {
-    console.warn("[chains] moonbeam should remain planned until real wiring lands");
   }
 
   for (const chain of CHAINS) {
     if (ids.has(chain.id)) console.warn(`[chains] duplicate chain id ${chain.id}`);
     ids.add(chain.id);
 
-    if (
-      chain.phase === "live" &&
-      (!chain.wagmiChain || !chain.validatorContract || !chain.explorer)
-    ) {
-      console.warn(`[chains] live chain ${chain.id} missing config`);
-    }
     if (chain.phase === "live" && !chain.hasAdapter) {
       console.warn(`[chains] live chain ${chain.id} is missing a chain adapter`);
     }
-    if (chain.phase !== "live" && chain.wagmiChain) {
-      console.warn(`[chains] non-live chain ${chain.id} has wagmi config`);
+    if (chain.id === "polygon") {
+      if (chain.phase !== "live") {
+        console.warn("[chains] polygon should remain live");
+      }
+      if (!chain.wagmiChain || !chain.validatorContract || !chain.explorer) {
+        console.warn("[chains] polygon is missing EVM staking config");
+      }
+    }
+    if (chain.id !== "polygon" && chain.wagmiChain) {
+      console.warn(`[chains] non-polygon chain ${chain.id} unexpectedly has wagmi config`);
     }
   }
 }

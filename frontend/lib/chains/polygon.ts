@@ -2,11 +2,8 @@ import { getPublicClient, readContract, watchContractEvent } from "@wagmi/core";
 import type { Address } from "viem";
 import { mockValidatorShareAbi } from "@/lib/abi";
 import { polygonChain } from "@/lib/chains";
-import {
-  recommendedValidatorForChain,
-  validatorByAddress,
-  validatorsForChain,
-} from "@/lib/validators";
+import type { ValidatorRow } from "@/lib/validators";
+import { fetchScoredValidators } from "@/lib/validators-live";
 import { encodeFunctionData } from "@/lib/viem-encode-function-data";
 import { wagmiConfig } from "@/lib/wagmi";
 import {
@@ -19,6 +16,37 @@ import {
 
 const POLYGON_CHAIN_ID = "polygon";
 const UNBONDING_SECONDS = 21 * 24 * 60 * 60;
+
+let cachedRows: ValidatorRow[] = [];
+
+async function loadValidators(): Promise<ValidatorRow[]> {
+  const { rows } = await fetchScoredValidators(POLYGON_CHAIN_ID);
+  cachedRows = rows;
+  return rows;
+}
+
+function defaultRow(): ValidatorRow {
+  const [first] = cachedRows;
+  if (!first) {
+    throw networkError("No Polygon validators are configured.");
+  }
+  return first;
+}
+
+function rowByAddress(address: string): ValidatorRow | undefined {
+  return cachedRows.find(
+    (row) => row.address.toLowerCase() === address.toLowerCase(),
+  );
+}
+
+function assertValidatorAddress(address: string) {
+  if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+    throw new ChainAdapterError(
+      "VALIDATOR_NOT_FOUND",
+      `Invalid validator address ${address}.`,
+    );
+  }
+}
 
 function networkError(message: string, cause?: unknown) {
   return new ChainAdapterError("NETWORK", message, cause);
@@ -45,31 +73,14 @@ function publicClient() {
   return client;
 }
 
-function toValidator(validator: ReturnType<typeof validatorsForChain>[number]): Validator {
+function toValidator(row: ValidatorRow): Validator {
   return {
-    address: validator.address,
-    name: validator.name,
-    apr: validator.apr,
-    commission: validator.commission,
-    uptime: validator.uptime,
+    address: row.address,
+    name: row.name,
+    apr: row.apr,
+    commission: row.commission,
+    uptime: row.uptime,
   };
-}
-
-function defaultValidator() {
-  const validator = recommendedValidatorForChain(POLYGON_CHAIN_ID);
-  if (!validator) throw networkError("No Polygon validators are configured.");
-  return validator;
-}
-
-function assertValidator(address: string) {
-  const validator = validatorByAddress(POLYGON_CHAIN_ID, address);
-  if (!validator) {
-    throw new ChainAdapterError(
-      "VALIDATOR_NOT_FOUND",
-      `Validator ${address} not found for Polygon.`,
-    );
-  }
-  return validator;
 }
 
 function evmTx(data: `0x${string}`, value?: bigint): UnsignedTx {
@@ -103,7 +114,7 @@ async function unbondingPosition(delegator: Address): Promise<Position[]> {
   const block = await publicClient().getBlock({ blockNumber: event.blockNumber });
   return [
     {
-      validator: defaultValidator().address,
+      validator: defaultRow().address,
       amount: event.args.amount,
       status: "unbonding",
       unbondingReadyAt: Number(block.timestamp) + UNBONDING_SECONDS,
@@ -115,7 +126,8 @@ export const polygonAdapter: IChainAdapter = {
   chainId: POLYGON_CHAIN_ID,
 
   async getValidators() {
-    return validatorsForChain(POLYGON_CHAIN_ID).map(toValidator);
+    const rows = await loadValidators();
+    return rows.map(toValidator);
   },
 
   async getDelegations(address) {
@@ -128,9 +140,10 @@ export const polygonAdapter: IChainAdapter = {
       });
 
       if (amount > 0n) {
+        if (cachedRows.length === 0) await loadValidators();
         return [
           {
-            validator: defaultValidator().address,
+            validator: defaultRow().address,
             amount,
             status: "bonded",
           },
@@ -145,7 +158,7 @@ export const polygonAdapter: IChainAdapter = {
 
   async buildDelegateTx(args) {
     try {
-      assertValidator(args.validator);
+      assertValidatorAddress(args.validator);
       return evmTx(
         encodeFunctionData({
           abi: mockValidatorShareAbi,
@@ -161,7 +174,7 @@ export const polygonAdapter: IChainAdapter = {
 
   async buildUndelegateTx(args) {
     try {
-      assertValidator(args.validator);
+      assertValidatorAddress(args.validator);
       return evmTx(
         encodeFunctionData({
           abi: mockValidatorShareAbi,
@@ -176,7 +189,7 @@ export const polygonAdapter: IChainAdapter = {
 
   async buildClaimTx(args) {
     try {
-      assertValidator(args.validator);
+      assertValidatorAddress(args.validator);
       const unbond = await latestUnbondFor(args.delegator as Address);
       if (!unbond || unbond.args.nonce === undefined) {
         throw new ChainAdapterError(
@@ -218,10 +231,11 @@ export const polygonAdapter: IChainAdapter = {
     const delegator = address as Address;
     const emitLatest = async () => {
       try {
+        if (cachedRows.length === 0) await loadValidators();
         const positions = await polygonAdapter.getDelegations(address);
         cb(
           positions[0] ?? {
-            validator: defaultValidator().address,
+            validator: defaultRow().address,
             amount: 0n,
             status: "released",
           },
