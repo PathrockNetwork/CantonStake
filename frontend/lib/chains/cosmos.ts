@@ -21,10 +21,14 @@ import {
 } from "./types";
 
 const COSMOS_CHAIN_ID = "cosmos";
-const COSMOS_REST = "https://rest.cosmos.directory/cosmoshub";
+// theta-testnet — the canonical Cosmos Hub testnet (chain-id `theta-testnet-001`).
+// Polypore's sentry-01 endpoint is the most stable public REST.
+const COSMOS_REST =
+  "https://rest.sentry-01.theta-testnet.polypore.xyz";
 const UATOM_PER_ATOM = 1_000_000n;
-// Cosmos Hub unbonding period — currently 21 days, mirrors x/staking param.
-const UNBONDING_SECONDS = 21 * 24 * 60 * 60;
+// theta-testnet unbonding window is 1 day (vs 21 days on mainnet) so the
+// demo's unbond → release flow is observable in a single sitting.
+const UNBONDING_SECONDS = 24 * 60 * 60;
 
 function networkError(message: string, cause?: unknown) {
   return new ChainAdapterError("NETWORK", message, cause);

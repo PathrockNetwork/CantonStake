@@ -34,7 +34,12 @@ function kindColor(kind: TraceEntry["kind"]): string {
     case "CANTON":
       return tokens.neon;
     case "POLYGON":
+    case "EVM":
       return tokens.amberBright;
+    case "COSMOS":
+      return tokens.ink[200];
+    case "SUI":
+      return "#4ca2ff";
     case "MARKER":
       return tokens.cc;
     case "WALLET":
