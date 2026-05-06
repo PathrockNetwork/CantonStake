@@ -36,12 +36,12 @@ function deriveBadge(h: HealthDetail | undefined): {
   label: string;
   color: "neon" | "cc" | "warn";
 } {
-  if (!h) return { label: "Loading", color: "warn" };
-  if (isMockRewards(h)) return { label: "Mock Rewards · Demo", color: "warn" };
-  if (h.demoMode) return { label: "Demo · Devnet", color: "warn" };
+  if (!h) return { label: "…", color: "warn" };
+  if (isMockRewards(h)) return { label: "Mock · Demo", color: "warn" };
+  if (h.demoMode) return { label: "Demo", color: "warn" };
   if (h.featuredAppRight === "configured")
     return { label: "Featured · Live", color: "neon" };
-  return { label: "Candidate · Devnet", color: "cc" };
+  return { label: "Candidate", color: "cc" };
 }
 import {
   IconArrowRight,
@@ -100,9 +100,10 @@ function isActive(pathname: string, href: string): boolean {
 function truncateParty(partyId: string): string {
   const parts = partyId.split("::");
   if (parts.length >= 2) {
-    return `${parts[0]}::${parts[1].slice(0, 8)}...`;
+    const head = parts[0]!.length > 14 ? `${parts[0]!.slice(0, 14)}…` : parts[0];
+    return `${head}::${parts[1]!.slice(0, 4)}…`;
   }
-  return `${partyId.slice(0, 12)}...`;
+  return `${partyId.slice(0, 10)}…`;
 }
 
 function truncateAddr(addr: string): string {
@@ -130,8 +131,8 @@ function IdentityChip({
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: 8,
-        padding: "6px 10px",
+        gap: 6,
+        padding: "5px 8px",
         border: `1px solid ${active ? tokens.neon : tokens.hairline}`,
         borderRadius: 0,
         background: "transparent",
@@ -139,14 +140,15 @@ function IdentityChip({
         cursor: onClick ? "pointer" : "default",
         font: "inherit",
         transition: "border-color 120ms ease",
+        whiteSpace: "nowrap",
       }}
     >
-      <span className="mono" style={{ fontSize: 10, color: tokens.ink[400] }}>
+      <span className="mono" style={{ fontSize: 9.5, color: tokens.ink[400] }}>
         {label}
       </span>
       <span
         className="mono tabular"
-        style={{ fontSize: 11, color: tokens.ink[100] }}
+        style={{ fontSize: 10.5, color: tokens.ink[100] }}
       >
         {value}
       </span>
@@ -190,24 +192,24 @@ export function TopNav() {
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          gap: 32,
+          gap: 18,
           height: 54,
-          padding: "0 22px",
+          padding: "0 16px",
           maxWidth: 1440,
           margin: "0 auto",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 24, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 16, flexShrink: 0 }}>
           {/* Brand cluster */}
           <Link
             href="/"
-            style={{ display: "flex", alignItems: "center", gap: 10 }}
+            style={{ display: "flex", alignItems: "center", gap: 8 }}
           >
-            <Logo size={28} />
+            <Logo size={24} />
             <span
               className="display"
               style={{
-                fontSize: 21,
+                fontSize: 19,
                 fontStyle: "italic",
                 color: tokens.ink[100],
               }}
@@ -219,12 +221,12 @@ export function TopNav() {
               style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 6,
-                padding: "2px 8px",
+                gap: 5,
+                padding: "2px 6px",
                 fontSize: 9,
                 fontWeight: 500,
                 textTransform: "uppercase",
-                letterSpacing: ".1em",
+                letterSpacing: ".08em",
                 border: `1px solid ${badgeColor}`,
                 color: badgeColor,
                 whiteSpace: "nowrap",
@@ -245,7 +247,7 @@ export function TopNav() {
           </Link>
 
           {/* Nav */}
-          <nav style={{ display: "flex", gap: 2 }}>
+          <nav style={{ display: "flex", gap: 1 }}>
             {NAV.map((it) => {
               const active = isActive(pathname ?? "/", it.href);
               return (
@@ -256,15 +258,16 @@ export function TopNav() {
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
-                    gap: 7,
-                    padding: "7px 12px",
+                    gap: 5,
+                    padding: "6px 8px",
                     background: active ? tokens.ink[800] : "transparent",
                     color: active ? tokens.ink[100] : tokens.ink[400],
-                    fontSize: 11.5,
+                    fontSize: 10.5,
                     fontWeight: 500,
-                    letterSpacing: ".04em",
+                    letterSpacing: ".03em",
                     textTransform: "uppercase",
                     transition: "color 120ms ease, background 120ms ease",
+                    whiteSpace: "nowrap",
                   }}
                 >
                   {it.icon}
@@ -280,14 +283,14 @@ export function TopNav() {
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 10,
+            gap: 6,
             flexShrink: 0,
             flexWrap: "nowrap",
           }}
         >
           <CCRoundTicker />
           <IdentityChip
-            label="LOOP PARTY"
+            label="LOOP"
             value={
               loopConnected && partyId ? truncateParty(partyId) : "not connected"
             }
@@ -296,7 +299,7 @@ export function TopNav() {
             active={!loopConnected}
           />
           <IdentityChip
-            label="EVM WALLET"
+            label="EVM"
             value={isConnected && address ? truncateAddr(address) : "not connected"}
             onClick={openPicker}
             active={!isConnected}
