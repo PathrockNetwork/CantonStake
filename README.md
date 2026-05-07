@@ -253,19 +253,20 @@ sequenceDiagram
     actor User
     participant FE as Frontend
     participant Proxy as Backend /loop-proxy
-    participant Loop as devnet.cantonloop.com
+    participant LoopApi as devnet.cantonloop.com
     participant LMobile as Loop Mobile Wallet
+    participant BE as Backend API
 
     User->>FE: Click Connect Loop
     FE->>Proxy: POST /api/v1/.connect/pair/tickets (origin stripped)
-    Proxy->>Loop: same request, server-to-server
-    Loop-->>Proxy: { ticket_id }
+    Proxy->>LoopApi: same request, server-to-server
+    LoopApi-->>Proxy: { ticket_id }
     Proxy-->>FE: { ticket_id }
     FE->>FE: Open WS wss://.../loop-proxy/api/v1/.connect/pair/ws/{tid}
     FE->>User: Show QR code
     User->>LMobile: Scan QR
-    LMobile->>Loop: handshake_accept
-    Loop->>Proxy: WS message
+    LMobile->>LoopApi: handshake_accept
+    LoopApi->>Proxy: WS message
     Proxy-->>FE: WS message
     FE->>FE: localStorage persists partyId
     FE->>BE: POST /api/users (cantonPartyId, evmAddress)
