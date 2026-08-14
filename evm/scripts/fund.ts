@@ -1,3 +1,12 @@
+/**
+ * ⚠️  MOCK-ONLY SCRIPT. ⚠️
+ *
+ * Pre-funds the local MockValidatorShare fixture so it can pay out its
+ * simulated rewards. The real Polygon ValidatorShare needs nothing of the
+ * kind: delegator rewards are protocol yield distributed by the StakeManager
+ * at checkpoints and read with `getLiquidRewards(delegator)`. Running this
+ * against anything other than the local fixture is meaningless.
+ */
 import { ethers } from "hardhat";
 import * as fs from "fs";
 import * as path from "path";

@@ -9,7 +9,12 @@ import {
   useSwitchChain,
   useWaitForTransactionReceipt,
 } from "wagmi";
+import {
+  sendTransaction as sendTransactionCore,
+  waitForTransactionReceipt,
+} from "@wagmi/core";
 import { parseEther } from "viem";
+import { polygonAmoy } from "wagmi/chains";
 import { IconArrowRight } from "@/components/icons";
 import { Banner } from "@/components/primitives/Banner";
 import { Btn } from "@/components/primitives/Btn";
@@ -22,10 +27,11 @@ import {
   createStakingRequest,
   fetchChainStats,
   fetchPositions,
-  forceAcceptStakingRequest,
 } from "@/lib/api";
 import { liveChains, polygonChain, type ChainConfig } from "@/lib/chains";
+import { wagmiConfig } from "@/lib/wagmi";
 import { adapterFor } from "@/lib/chains/index";
+import { fetchStakingParams } from "@/lib/chains/polygon";
 import { fmt, fmtUsd } from "@/lib/format";
 import { useCantonWallet } from "@/lib/canton";
 import { useCosmosWallet, cosmosChainId } from "@/lib/cosmos/use-cosmos-wallet";
@@ -41,7 +47,10 @@ import { tokens } from "@/lib/tokens";
  * visible stages off REAL wagmi + backend state:
  *
  *   01 StakingRequest_Create          → backend createStakingRequest()
- *   02 MockValidatorShare.buyVoucher  → wagmi writeContract(...)
+ *   02 ValidatorShare.buyVoucher      → wagmi sendTransaction(...), preceded
+ *                                       by an ERC-20 approve() to the
+ *                                       StakeManager (buyVoucher is NOT
+ *                                       payable on the real contract)
  *   03 ShareMinted                    → useWaitForTransactionReceipt()
  *   04 StakingRequest_Accept          → orchestrator (fires after evm confirms)
  *   05 FeaturedAppActivityMarker      → animation only; no on-chain signal
@@ -66,7 +75,7 @@ interface Stage {
 // The per-chain method labels render in the trace terminal so the user
 // sees what they're actually calling on whichever chain they picked.
 const CHAIN_STAKE_METHOD: Record<ChainConfig["id"], string> = {
-  polygon: "ValidatorShare.buyVoucher()",
+  polygon: "ValidatorShare.buyVoucher()",  // preceded by POL approve()
   moonbeam: "ParachainStaking.delegate()",
   monad: "Staking.delegate(uint64)",
   cosmos: "MsgDelegate",
@@ -193,6 +202,28 @@ export default function StakePage() {
     queryFn: () => fetchChainStats(),
     refetchInterval: 5 * 60_000,
   });
+  // Live Polygon unbonding parameters. The withdrawal delay is a checkpoint
+  // COUNT, not a duration — the wall-clock figure is measured from the real
+  // checkpoint cadence, so it is fetched rather than hardcoded.
+  const { data: polygonParams } = useQuery({
+    queryKey: ["polygon-staking-params"],
+    queryFn: () => fetchStakingParams(),
+    enabled: selectedChain.id === "polygon",
+    refetchInterval: 5 * 60_000,
+  });
+
+  const unbondingLabel = (() => {
+    if (selectedChain.id !== "polygon") return selectedChain.unbonding;
+    const eta = polygonParams?.unbondingEtaSeconds;
+    if (!polygonParams) return selectedChain.unbonding;
+    const checkpoints = `${polygonParams.withdrawalDelayEpochs} checkpoints`;
+    if (!eta) return checkpoints;
+    const hours = eta / 3600;
+    const human =
+      hours >= 48 ? `~${Math.round(hours / 24)}d` : `~${Math.round(hours)}h`;
+    return `${checkpoints} (${human})`;
+  })();
+
   const stats = chainStats?.chains.find((c) => c.chain === selectedChain.id);
   const nativeApy = stats?.apyPctEstimate ?? null;
   // CC bonus is the marginal yield from CC rewards on top of native staking.
@@ -251,20 +282,10 @@ export default function StakePage() {
       stage5PollingStartedRef.current = true;
       advance(4);
 
-      // Non-Polygon chains: the orchestrator only watches Polygon's
-      // MockValidatorShare events, so we manually transition the Daml
-      // StakingRequest from Pending → Bonded once the EVM tx confirms.
-      // Server-gated to DEMO_MODE.
-      if (selectedChain.id !== "polygon" && hash) {
-        void forceAcceptStakingRequest({
-          evmAddress: address!,
-          amountPol: amount,
-          evmTxHash: hash,
-          chain: selectedChain.id,
-        }).catch((err) => {
-          console.warn("[stake] force-accept failed:", err);
-        });
-      }
+      // Non-Polygon chains: the backend's per-chain watchers decode the
+      // settled on-chain staking event and transition the Daml
+      // StakingRequest from Pending → Bonded. Nothing to do here — the
+      // stage-5 poller below waits for that to land.
 
       // Stage 5 — wait for the orchestrator to emit a real marker.
       // Poll /api/positions every 2s for up to 30s for a markersEmitted
@@ -461,6 +482,30 @@ export default function StakePage() {
       }
 
       const amountWei = parseEther(amount);
+
+      // Polygon's stake token is an ERC-20 and `buyVoucher` is NOT payable:
+      // the StakeManager pulls the tokens with transferFrom. So an approval
+      // has to confirm before the delegation is even built. This is sent
+      // through the core action rather than the hook so it doesn't overwrite
+      // the hook's `hash` — the trace UI tracks the delegation tx, not this.
+      const approval = await adapter.buildApprovalTx?.({
+        validator: validator.address,
+        amount: amountWei,
+        delegator: address,
+      });
+      if (approval) {
+        if (approval.kind !== "evm") {
+          throw new Error(`Unexpected approval tx kind: ${approval.kind}`);
+        }
+        const approveHash = await sendTransactionCore(wagmiConfig, {
+          to: approval.to,
+          data: approval.data,
+          value: 0n,
+          ...(approval.gas ? { gas: approval.gas } : {}),
+        });
+        await waitForTransactionReceipt(wagmiConfig, { hash: approveHash });
+      }
+
       const tx = await adapter.buildDelegateTx({
         validator: validator.address,
         amount: amountWei,
@@ -472,15 +517,22 @@ export default function StakePage() {
         );
       }
 
-      // Don't pass chainId - let it use the current chain after switch
-      // Polygon Amoy requires min 25 gwei priority fee
+      // Don't pass chainId - let it use the current chain after switch.
+      // The fixed 30/100 gwei floor is a Bor requirement (Amoy rejects lower
+      // priority fees). On the L1 settlement chain it would just overpay, so
+      // let the wallet estimate there.
+      const isBorChain = targetChainId === polygonAmoy.id;
       sendTransaction({
         to: tx.to,
         data: tx.data,
         value: tx.value ?? 0n,
         gas: tx.gas,
-        maxPriorityFeePerGas: 30_000_000_000n, // 30 gwei
-        maxFeePerGas: 100_000_000_000n, // 100 gwei
+        ...(isBorChain
+          ? {
+              maxPriorityFeePerGas: 30_000_000_000n, // 30 gwei
+              maxFeePerGas: 100_000_000_000n, // 100 gwei
+            }
+          : {}),
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -498,9 +550,11 @@ export default function StakePage() {
   }
 
   // Cosmos staking flow — register on Canton, sign a MsgDelegate via Keplr,
-  // broadcast to theta-testnet, then force-accept the StakingRequest. The
-  // EVM-tx-confirmation stages 2/3 are reused: stage 2 = "signing in
-  // Keplr", stage 3 = "broadcast confirmed".
+  // broadcast to theta-testnet. The backend's cosmos watcher decodes the
+  // settled MsgDelegate and accepts the StakingRequest on Canton; we just
+  // wait for the broadcast to confirm. The EVM-tx-confirmation stages 2/3
+  // are reused: stage 2 = "signing in Keplr", stage 3 = "broadcast
+  // confirmed".
   async function handleCosmosStake() {
     if (!partyId || !cosmos.address) return;
 
@@ -543,12 +597,9 @@ export default function StakePage() {
       });
       advance(3);
 
-      await forceAcceptStakingRequest({
-        evmAddress: cosmos.address,
-        amountPol: amount,
-        evmTxHash: result.txHash,
-        chain: "cosmos",
-      });
+      // The cosmos watcher accepts the StakingRequest once it decodes this
+      // settled MsgDelegate — no client-side accept call exists (or is
+      // needed) anymore.
       advance(4);
       advance(5);
       setShowSpark(true);
@@ -560,7 +611,8 @@ export default function StakePage() {
   }
 
   // Sui staking flow — request_add_stake via @mysten/dapp-kit. Same
-  // shape as cosmos: register on Canton, sign+execute, force-accept.
+  // shape as cosmos: register on Canton, sign+execute; the sui watcher
+  // accepts from the decoded on-chain event.
   async function handleSuiStake() {
     if (!partyId || !sui.address) return;
 
@@ -593,12 +645,8 @@ export default function StakePage() {
       });
       advance(3);
 
-      await forceAcceptStakingRequest({
-        evmAddress: sui.address,
-        amountPol: amount,
-        evmTxHash: result.digest,
-        chain: "sui",
-      });
+      // The sui watcher accepts the StakingRequest from the decoded
+      // StakeRequest event — no client-side accept call exists anymore.
       advance(4);
       advance(5);
       setShowSpark(true);
@@ -812,7 +860,7 @@ export default function StakePage() {
                     style={{ fontSize: 10, color: tokens.ink[400] }}
                   >
                     {selectedChain.type} · {selectedChain.symbol} ·{" "}
-                    {selectedChain.unbonding} unbonding
+                    {unbondingLabel} unbonding
                   </div>
                 </div>
                 <Chip color={isEvmStakingReady ? tokens.neon : tokens.amberBright}>

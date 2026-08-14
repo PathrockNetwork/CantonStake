@@ -3,6 +3,7 @@
 import { http, createConfig } from "wagmi";
 import { moonbaseAlpha, monadTestnet, polygonAmoy } from "wagmi/chains";
 import { coinbaseWallet, injected, safe, walletConnect } from "wagmi/connectors";
+import { polygonSettlementChain } from "@/lib/chains";
 
 const projectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || "";
 
@@ -15,10 +16,11 @@ const APP_METADATA = {
 };
 
 export const wagmiConfig = createConfig({
-  // All EVM testnets the staking flow supports. The user's wallet handles
-  // chain switching via wagmi's `useSwitchChain` when the stake page
-  // selects a non-active chain.
-  chains: [polygonAmoy, moonbaseAlpha, monadTestnet],
+  // All EVM chains the staking flow touches. Note the settlement chain
+  // (Sepolia / Ethereum mainnet): Polygon PoS staking contracts live on L1,
+  // so a POL delegation is signed there, while Bor/Amoy stays in the list for
+  // POL balance reads and explorer links.
+  chains: [polygonSettlementChain, polygonAmoy, moonbaseAlpha, monadTestnet],
   connectors: [
     // Browser-injected wallets — MetaMask, Rabby, Brave, Frame, etc.
     injected(),
@@ -41,7 +43,14 @@ export const wagmiConfig = createConfig({
       : []),
   ],
   transports: {
-    [polygonAmoy.id]: http(),
+    [polygonSettlementChain.id]: http(
+      process.env.NEXT_PUBLIC_SETTLEMENT_RPC_URL ||
+        "https://ethereum-sepolia-rpc.publicnode.com",
+    ),
+    [polygonAmoy.id]: http(
+      process.env.NEXT_PUBLIC_AMOY_RPC_URL ||
+        "https://polygon-amoy-bor-rpc.publicnode.com",
+    ),
     [moonbaseAlpha.id]: http(),
     [monadTestnet.id]: http(),
   },

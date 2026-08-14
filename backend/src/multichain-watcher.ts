@@ -3,7 +3,9 @@
  * translates them into Canton Daml choices.
  *
  * Supported chains:
- * - Polygon (Amoy): MockValidatorShare ShareMinted events
+ * - Polygon PoS: StakingInfo ShareMinted / ShareBurnedWithId events on
+ *   Ethereum L1 (Sepolia for Amoy) — one ValidatorShare per validator,
+ *   resolved per event. NOT the Bor chain, and not a single global contract.
  * - Moonbeam (Moonbase Alpha): ParachainStaking Delegated events
  * - Monad (Testnet): Staking Delegate events
  * - Cosmos (theta-testnet): MsgDelegate transactions
@@ -19,10 +21,19 @@ import {
   type Address,
   type Log,
 } from "viem";
-import { polygonAmoy } from "viem/chains";
+import { fromBase64 } from "@cosmjs/encoding";
+import { decodeTxRaw } from "@cosmjs/proto-signing";
+import { MsgDelegate } from "cosmjs-types/cosmos/staking/v1beta1/tx";
 import { config } from "./config.js";
 import { canton, TEMPLATES, type ActiveContract } from "./canton.js";
 import { prisma } from "./db.js";
+import { handlePolygonUnbondEvent, featuredRightCidForDaml } from "./orchestrator.js";
+import {
+  settlementClient,
+  shareForValidatorId,
+  stakingLoggerAbi,
+  stakingLoggerAddress,
+} from "./services/validator-share.js";
 
 // === Shared types ===
 
@@ -33,32 +44,79 @@ interface ChainWatcher {
 
 interface StakingEvent {
   evmAddress: string;
+  /**
+   * Base-unit amount scaled to 18 decimals, so the shared matcher's
+   * formatEther() yields the human-readable stake for every chain
+   * (uatom=6, MIST=9, native EVM wei=18). Use toStakeUnits() below.
+   */
   amount: bigint;
   txHash: string;
   blockNumber: number;
   chain: string;
+  /**
+   * The real identifier of the on-chain staking module / contract that
+   * custody this stake: Polygon → the per-validator ValidatorShare
+   * (resolved from the event's validatorId); Moonbeam/Monad → the
+   * staking precompile; Sui → the system staking object; Cosmos → the
+   * validator operator address from the decoded MsgDelegate. Never a
+   * fabricated placeholder.
+   */
+  validatorShare: string;
+  validatorId?: number;
+  /** Shares minted — not equal to `amount`; see exchangeRate math. */
+  shares?: bigint;
 }
 
-// === Polygon Amoy (MockValidatorShare) ===
+/** Scale a base-unit amount with `decimals` decimals into 18-decimal units. */
+function toStakeUnits(amount: bigint, decimals: number): bigint {
+  if (decimals === 18) return amount;
+  if (decimals > 18) return amount / 10n ** BigInt(decimals - 18);
+  return amount * 10n ** BigInt(18 - decimals);
+}
 
-const polygonClient = createPublicClient({
-  chain: polygonAmoy,
-  transport: http(config.amoyRpcUrl),
-});
-
-const shareMintedAbi = parseAbiItem(
-  "event ShareMinted(address indexed user, uint256 amount, uint256 tokens)"
-);
+// === Polygon PoS (real ValidatorShare, settled on Ethereum L1) ===
+//
+// Polygon PoS staking does NOT settle on Bor/Amoy. The delegation events we
+// need are emitted by the shared StakingInfo logger on Ethereum L1 (Sepolia
+// for Amoy) and carry the validatorId as their first indexed topic — the
+// ValidatorShare contracts themselves emit nothing. So we watch ONE logger
+// address and resolve the per-validator ValidatorShare from the validatorId
+// on each event. See services/validator-share.ts for the verified facts.
 
 async function watchPolygon(): Promise<void> {
-  const EVENT_POLL_MS = 5_000;
-  const INITIAL_LOOKBACK_BLOCKS = 50n;
-  const MAX_BLOCK_RANGE = 50n;
+  const POLL_MS = config.polygonWatcherPollMs;
+  const INITIAL_LOOKBACK_BLOCKS = BigInt(config.polygonWatcherLookbackBlocks);
+  const MAX_BLOCK_RANGE = BigInt(config.polygonWatcherMaxRange);
   let lastScannedBlock: bigint | undefined;
+
+  console.log(
+    `[polygon-watcher] watching StakingInfo ${stakingLoggerAddress} on chain ` +
+      `${config.stakeSettlementChainId} (${config.stakeSettlementRpcUrl})`
+  );
+
+  const getLogsBatched = async (
+    eventName: "ShareMinted" | "ShareBurnedWithId",
+    fromBlock: bigint,
+    toBlock: bigint
+  ) => {
+    const out: unknown[] = [];
+    for (let from = fromBlock; from <= toBlock; from += MAX_BLOCK_RANGE + 1n) {
+      const to = from + MAX_BLOCK_RANGE > toBlock ? toBlock : from + MAX_BLOCK_RANGE;
+      const logs = await settlementClient.getContractEvents({
+        address: stakingLoggerAddress,
+        abi: stakingLoggerAbi,
+        eventName,
+        fromBlock: from,
+        toBlock: to,
+      });
+      out.push(...logs);
+    }
+    return out;
+  };
 
   const poll = async () => {
     try {
-      const latestBlock = await polygonClient.getBlockNumber();
+      const latestBlock = await settlementClient.getBlockNumber();
       const fromBlock =
         lastScannedBlock === undefined
           ? latestBlock > INITIAL_LOOKBACK_BLOCKS
@@ -67,20 +125,77 @@ async function watchPolygon(): Promise<void> {
           : lastScannedBlock + 1n;
       if (fromBlock > latestBlock) return;
 
-      const logs = await polygonClient.getLogs({
-        address: config.mockValidatorShare as Address,
-        event: shareMintedAbi,
-        fromBlock,
-        toBlock: latestBlock,
-      });
+      const [minted, burned] = await Promise.all([
+        getLogsBatched("ShareMinted", fromBlock, latestBlock),
+        getLogsBatched("ShareBurnedWithId", fromBlock, latestBlock),
+      ]);
 
-      for (const log of logs) {
+      for (const raw of minted) {
+        const log = raw as {
+          args: { validatorId?: bigint; user?: Address; amount?: bigint; tokens?: bigint };
+          transactionHash: string;
+          blockNumber: bigint;
+        };
+        const { validatorId, user, amount, tokens } = log.args;
+        if (validatorId === undefined || user === undefined || amount === undefined) {
+          continue;
+        }
+        const share = await shareForValidatorId(validatorId);
+        if (!share) {
+          console.warn(
+            `[polygon-watcher] no ValidatorShare for validatorId ${validatorId}; skipping`
+          );
+          continue;
+        }
         await handleStakeEvent({
-          evmAddress: (log as unknown as { args: { user: Address } }).args.user,
-          amount: (log as unknown as { args: { amount: bigint } }).args.amount,
+          evmAddress: user,
+          amount,
           txHash: log.transactionHash,
           blockNumber: Number(log.blockNumber),
           chain: "polygon",
+          validatorShare: share,
+          validatorId: Number(validatorId),
+          shares: tokens,
+        });
+      }
+
+      for (const raw of burned) {
+        const log = raw as {
+          args: {
+            validatorId?: bigint;
+            user?: Address;
+            amount?: bigint;
+            tokens?: bigint;
+            nonce?: bigint;
+          };
+          transactionHash: string;
+          blockNumber: bigint;
+        };
+        const { validatorId, user, amount, tokens, nonce } = log.args;
+        if (
+          validatorId === undefined ||
+          user === undefined ||
+          amount === undefined ||
+          nonce === undefined
+        ) {
+          continue;
+        }
+        const share = await shareForValidatorId(validatorId);
+        if (!share) {
+          console.warn(
+            `[polygon-watcher] no ValidatorShare for validatorId ${validatorId}; skipping unbond`
+          );
+          continue;
+        }
+        await handlePolygonUnbondEvent({
+          user,
+          amount,
+          shares: tokens ?? 0n,
+          nonce,
+          validatorId: Number(validatorId),
+          validatorShare: share,
+          txHash: log.transactionHash,
+          blockNumber: Number(log.blockNumber),
         });
       }
 
@@ -92,7 +207,7 @@ async function watchPolygon(): Promise<void> {
 
   await poll();
   return new Promise(() => {
-    const interval = setInterval(() => void poll(), EVENT_POLL_MS);
+    const interval = setInterval(() => void poll(), POLL_MS);
     return () => clearInterval(interval);
   });
 }
@@ -149,6 +264,9 @@ async function watchMoonbeam(): Promise<void> {
           txHash: log.transactionHash,
           blockNumber: Number(log.blockNumber),
           chain: "moonbeam",
+          // Moonbase Alpha ParachainStaking precompile — the single
+          // contract custody all delegations on Moonbeam.
+          validatorShare: PARACHAIN_STAKING_PRECOMPILE,
         });
       }
 
@@ -211,12 +329,17 @@ async function watchMonad(): Promise<void> {
       });
 
       for (const log of logs) {
+        const args = (log as unknown as { args: { delegator: Address; amount: bigint; validatorId: bigint } }).args;
         await handleStakeEvent({
-          evmAddress: (log as unknown as { args: { delegator: Address } }).args.delegator,
-          amount: (log as unknown as { args: { amount: bigint } }).args.amount,
+          evmAddress: args.delegator,
+          amount: args.amount,
           txHash: log.transactionHash,
           blockNumber: Number(log.blockNumber),
           chain: "monad",
+          // Monad Testnet staking precompile — the single contract
+          // custody all delegations on Monad.
+          validatorShare: MONAD_STAKING_PRECOMPILE,
+          validatorId: args.validatorId !== undefined ? Number(args.validatorId) : undefined,
         });
       }
 
@@ -235,13 +358,30 @@ async function watchMonad(): Promise<void> {
 
 // === Cosmos (theta-testnet) ===
 
-// Cosmos uses Tendermint RPC to search for delegate transactions
+// Cosmos uses Tendermint RPC to search for delegate transactions.
+// Each matching tx is decoded from protobuf (TxRaw → TxBody → MsgDelegate)
+// to extract the REAL delegator address, validator operator address and
+// amount — a fabricated hash or an undecodable tx can never produce a
+// bonded position here.
 async function watchCosmos(): Promise<void> {
   const POLL_MS = 10_000;
+  // Height-windowed polling: each query only fetches delegate txs strictly
+  // above the last processed height, so the seen-set is a dedup safety net
+  // (capped), not the primary mechanism.
+  const SEEN_CAP = 2000;
+  const seenTxHashes = new Set<string>();
+  const seenOrder: string[] = [];
   let lastCheckedHeight = 0;
 
   const poll = async () => {
     try {
+      // The Tendermint index keys message.action by the FULL typeURL —
+      // the short form 'delegate' matches nothing (verified against
+      // theta-testnet: 0 hits vs ~100k for the full path).
+      const query =
+        lastCheckedHeight > 0
+          ? `message.action='/cosmos.staking.v1beta1.MsgDelegate' AND height>${lastCheckedHeight}`
+          : "message.action='/cosmos.staking.v1beta1.MsgDelegate'";
       const res = await fetch(config.cosmosRpcUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -250,8 +390,9 @@ async function watchCosmos(): Promise<void> {
           id: 1,
           method: "tx_search",
           params: {
-            query: "message.action='delegate'",
+            query,
             per_page: "50",
+            order_by: "desc",
           },
         }),
       });
@@ -266,6 +407,7 @@ async function watchCosmos(): Promise<void> {
             height: string;
             hash: string;
             tx_result?: {
+              code?: number;
               data?: string;
               log?: string;
             };
@@ -274,23 +416,70 @@ async function watchCosmos(): Promise<void> {
           total_count: string;
         };
       };
+      if ((body as { error?: { message?: string } }).error) {
+        console.warn(
+          "[cosmos-watcher] tx_search error:",
+          (body as { error: { message?: string } }).error.message
+        );
+        return;
+      }
 
       const txs = body.result?.txs || [];
       for (const tx of txs) {
         const height = Number(tx.height);
-        if (height <= lastCheckedHeight) continue;
+        if (height > lastCheckedHeight) lastCheckedHeight = height;
+        if (seenTxHashes.has(tx.hash)) continue;
+        seenTxHashes.add(tx.hash);
+        seenOrder.push(tx.hash);
+        if (seenOrder.length > SEEN_CAP) {
+          const drop = seenOrder.shift();
+          if (drop) seenTxHashes.delete(drop);
+        }
 
-        // Parse the base64-encoded tx to extract the delegator address and amount
-        // For now, we'll use the tx hash and let the Canton Accept handle the details
-        // In production, you'd decode the protobuf tx to get the actual values
+        // Only successful transactions carry a settled delegation.
+        if (tx.tx_result?.code !== undefined && tx.tx_result.code !== 0) {
+          continue;
+        }
+        if (!tx.tx) continue;
 
-        // For the testnet demo, we'll log and continue - the actual matching
-        // happens via the force-accept endpoint or by looking up pending requests
-        console.log(
-          `[cosmos-watcher] delegate tx at height ${height}: ${tx.hash.slice(0, 10)}...`
-        );
+        try {
+          const txRaw = decodeTxRaw(fromBase64(tx.tx));
+          for (const message of txRaw.body.messages) {
+            if (message.typeUrl !== "/cosmos.staking.v1beta1.MsgDelegate") {
+              continue;
+            }
+            const msg = MsgDelegate.decode(message.value);
+            // uatom has 6 decimals — scale to 18-decimal stake units so
+            // the shared matcher's formatEther() yields ATOM.
+            const denomDecimals = msg.amount?.denom.startsWith("u") ? 6 : 18;
+            const amount = toStakeUnits(
+              BigInt(msg.amount?.amount ?? "0"),
+              denomDecimals
+            );
+            if (amount === 0n) continue;
 
-        lastCheckedHeight = height;
+            console.log(
+              `[cosmos-watcher] delegate ${msg.amount?.amount} ${msg.amount?.denom} ` +
+                `from ${msg.delegatorAddress} to ${msg.validatorAddress} at height ${height}`
+            );
+
+            await handleStakeEvent({
+              evmAddress: msg.delegatorAddress,
+              amount,
+              txHash: tx.hash.toUpperCase(),
+              blockNumber: height,
+              chain: "cosmos",
+              // The validator's operator address — Cosmos's per-validator
+              // staking identifier.
+              validatorShare: msg.validatorAddress,
+            });
+          }
+        } catch (decodeErr) {
+          console.warn(
+            `[cosmos-watcher] failed to decode tx ${tx.hash.slice(0, 10)}...:`,
+            decodeErr instanceof Error ? decodeErr.message : decodeErr
+          );
+        }
       }
     } catch (err) {
       console.error("[cosmos-watcher]", err);
@@ -339,31 +528,58 @@ async function watchSui(): Promise<void> {
         result?: {
           data?: Array<{
             id: { txDigest: string };
+            sender?: string;
             parsedJson?: {
-              delegator: string;
-              amount: string;
+              pool_id?: string;
+              stake_amount?: string;
             };
             timestampMs: string;
           }>;
           hasNextPage: boolean;
           nextCursor: string;
         };
+        error?: { code?: number; message?: string };
       };
+
+      // Public fullnodes deprecated JSON-RPC (2026): an HTTP 200 carrying
+      // an error object means this watcher sees NOTHING — fail loudly
+      // instead of silently reporting an empty chain.
+      if (body.error) {
+        console.error(
+          `[sui-watcher] RPC rejected the call (${body.error.code}): ` +
+            `${body.error.message ?? "unknown error"} — Sui events are NOT ` +
+            `being watched. Migrate SUI_RPC_URL to a GraphQL-capable endpoint.`
+        );
+        return;
+      }
 
       const events = body.result?.data || [];
       for (const ev of events) {
-        if (!ev.parsedJson) continue;
+        // 0x3::sui_system::StakeRequest fields: pool_id (the validator's
+        // staking pool object) and stake_amount (MIST). The delegator is
+        // the transaction sender.
+        const staker = ev.sender;
+        const poolId = ev.parsedJson?.pool_id;
+        const stakeAmount = ev.parsedJson?.stake_amount;
+        if (!staker || !poolId || !stakeAmount) {
+          console.warn(
+            `[sui-watcher] StakeRequest without pool_id/stake_amount/sender: ${ev.id.txDigest}`
+          );
+          continue;
+        }
 
-        // Sui amount is in MIST (10^-9), convert to bigint
-        const amount = BigInt(ev.parsedJson.amount);
-        const evmAddress = ev.parsedJson.delegator; // Sui address
+        // MIST is 10^-9 SUI — scale to the 18-decimal stake units the
+        // shared matcher normalises with formatEther().
+        const amount = toStakeUnits(BigInt(stakeAmount), 9);
 
         await handleStakeEvent({
-          evmAddress,
+          evmAddress: staker,
           amount,
           txHash: ev.id.txDigest,
           blockNumber: Math.floor(Number(ev.timestampMs) / 1000),
           chain: "sui",
+          // The validator's own staking pool object on Sui.
+          validatorShare: poolId,
         });
       }
 
@@ -444,12 +660,12 @@ async function handleStakeEvent(event: StakingEvent): Promise<void> {
         proof: {
           txHash: event.txHash,
           blockNumber: event.blockNumber,
-          validatorShare:
-            event.chain === "polygon"
-              ? config.mockValidatorShare
-              : `${event.chain}::precompile`,
+          // The real staking module that custody this stake — per-chain
+          // identifiers set where each watcher decodes its event. Never
+          // a placeholder (see docs/PROOF_TRUST_MODEL.md).
+          validatorShare: event.validatorShare,
         },
-        featuredRightCid: null,
+        featuredRightCid: featuredRightCidForDaml(),
       },
     });
     console.log(`  -> accepted. tx=${result.transactionId}`);
@@ -472,12 +688,23 @@ async function handleStakeEvent(event: StakingEvent): Promise<void> {
       }
     }
 
+    // Per-validator staking metadata. Every downstream read (reward sweep,
+    // unbond claimability, portfolio) needs to know WHICH ValidatorShare this
+    // position lives on, because there is no global one.
+    const validatorFields = {
+      chain: event.chain,
+      ...(event.validatorShare ? { validatorShare: event.validatorShare } : {}),
+      ...(event.validatorId !== undefined ? { validatorId: event.validatorId } : {}),
+      ...(event.shares !== undefined ? { amountShares: event.shares.toString() } : {}),
+    };
+
     await prisma.stakingPosition.upsert({
       where: { contractId: newPositionCid },
       update: {
         status: "Bonded",
         evmTxHash: event.txHash,
         cantonTxId: result.transactionId,
+        ...validatorFields,
       },
       create: {
         contractId: newPositionCid,
@@ -489,6 +716,7 @@ async function handleStakeEvent(event: StakingEvent): Promise<void> {
         status: "Bonded",
         evmTxHash: event.txHash,
         cantonTxId: result.transactionId,
+        ...validatorFields,
       },
     });
     console.log(`  -> mirrored Bonded position to Postgres`);

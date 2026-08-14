@@ -1,3 +1,9 @@
+/**
+ * ⚠️  MOCK-ONLY SCRIPT. ⚠️
+ *
+ * Verifies the local MockValidatorShare E2E fixture on Polygonscan. Real
+ * ValidatorShare contracts are deployed and verified by Polygon, not by us.
+ */
 import { ethers, run } from "hardhat";
 import * as fs from "fs";
 import * as path from "path";

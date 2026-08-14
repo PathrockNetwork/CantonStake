@@ -18,10 +18,10 @@
  *
  *   - Executors are best-effort and idempotent. The per-chain logic
  *     verifies the signature, queries pending rewards, and broadcasts
- *     the compound tx. For the hackathon scope, only the Polygon mock
- *     executor is wired against MockValidatorShare; all other chains
- *     return a "skipped" run (the framework is in place for Codex /
- *     future work to extend).
+ *     the compound tx. Only the Polygon executor is wired, and it targets
+ *     the REAL per-validator ValidatorShare on the L1 settlement chain
+ *     (restake() capitalises protocol yield); all other chains return a
+ *     "skipped" run until Phase 4 provisions their keeper keys.
  *
  *   - Custody note: this service holds AUTO_COMPOUND_KEEPER_KEY for
  *     EVM broadcasts, but ONLY acts within the user's signed permit
@@ -46,6 +46,11 @@ import { privateKeyToAccount } from "viem/accounts";
 import { polygonAmoy } from "viem/chains";
 import { config } from "../config.js";
 import { prisma } from "../db.js";
+import {
+  getLiquidRewards,
+  resolveValidatorShare,
+  settlementChainDef,
+} from "./validator-share.js";
 
 // --- Types ---
 
@@ -83,9 +88,13 @@ const queue = new Queue(QUEUE_NAME, { connection: redis });
 
 // --- Polygon executor (the only live implementation) ---
 
-const validatorShareAbi = [
-  parseAbiItem("function pendingRewards(address user) view returns (uint256)"),
-  parseAbiItem("function restake() returns (bool)"),
+// Real ValidatorShare surface. `getLiquidRewards` is the delegator's share
+// of checkpoint-distributed protocol yield — the mock's `pendingRewards`
+// (a simulated APR paid from a pre-funded balance) does not exist here, and
+// `restake()` returns (amountRestaked, totalStaked), not a bool.
+const compoundValidatorShareAbi = [
+  parseAbiItem("function getLiquidRewards(address user) view returns (uint256)"),
+  parseAbiItem("function restake() returns (uint256, uint256)"),
 ] as const;
 
 async function executePolygon(
@@ -98,24 +107,28 @@ async function executePolygon(
     return { status: "skipped", reason: "user has no EVM address on file" };
   }
 
+  // The permit records the validator's SIGNER address; the contract to call
+  // is that validator's own ValidatorShare, resolved off the StakeManager.
+  const resolved = await resolveValidatorShare(ctx.validator);
+  if (!resolved) {
+    return {
+      status: "skipped",
+      reason: `no ValidatorShare registered for validator ${ctx.validator}`,
+    };
+  }
+
   const account = privateKeyToAccount(config.autoCompoundKeeperKey as Hex);
-  const publicClient = createPublicClient({
-    chain: polygonAmoy,
-    transport: http(config.amoyRpcUrl),
-  });
   const walletClient = createWalletClient({
     account,
-    chain: polygonAmoy,
-    transport: http(config.amoyRpcUrl),
+    chain: settlementChainDef,
+    transport: http(config.stakeSettlementRpcUrl),
   });
 
-  // Read pending rewards. If zero, skip — broadcasting a noop wastes gas.
-  const pending = (await publicClient.readContract({
-    address: ctx.validator as Address,
-    abi: validatorShareAbi,
-    functionName: "pendingRewards",
-    args: [ctx.evmAddress as Address],
-  })) as bigint;
+  // Read claimable protocol yield. If zero, skip — a noop wastes gas.
+  const pending = await getLiquidRewards(
+    resolved.share,
+    ctx.evmAddress as Address
+  );
 
   if (pending === 0n) {
     return { status: "skipped", reason: "no pending rewards" };
@@ -138,12 +151,12 @@ async function executePolygon(
 
   try {
     const data = encodeFunctionData({
-      abi: validatorShareAbi,
+      abi: compoundValidatorShareAbi,
       functionName: "restake",
       args: [],
     });
     const txHash = await walletClient.sendTransaction({
-      to: ctx.validator as Address,
+      to: resolved.share,
       data,
     });
     return {

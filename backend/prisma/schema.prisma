@@ -55,9 +55,18 @@ model StakingPosition {
   chain          String   @default("polygon-amoy")
   evmTxHash      String?
 
+  // Which validator this position is delegated to. Polygon deploys one
+  // ValidatorShare contract PER VALIDATOR, so the staking contract address
+  // is a property of the position, not of the deployment. Nullable because
+  // non-Polygon chains stake through a single precompile and pre-Phase-2
+  // rows predate these columns.
+  validatorAddress String?  // validator signer address
+  validatorShare   String?  // that validator's ValidatorShare contract (L1)
+  validatorId      Int?     // StakeManager validator id
+
   // Staking amounts (stored as decimal strings for precision)
   amountPol      String
-  amountShares   String?
+  amountShares   String?  // shares minted — NOT 1:1 with amountPol
 
   // Lifecycle status matching Daml state machine
   status         String   @default("Pending") // Pending | Bonded | Unbonding | Released
@@ -71,10 +80,16 @@ model StakingPosition {
   swept          Boolean  @default(false)
   lastSweepAt    DateTime?
 
-  // Unbonding schedule
-  unbondingStartedAt DateTime?
-  unbondingReadyAt   DateTime?
-  unbondingPeriod    String? // e.g. "60000000" microseconds
+  // Unbonding schedule. On Polygon the authoritative claim condition is
+  // checkpoint-based, not wall-clock: unstakeClaimTokens_new only succeeds
+  // once `unbondWithdrawEpoch + StakeManager.withdrawalDelay() <= epoch()`.
+  // unbondingReadyAt is a derived ESTIMATE from the measured checkpoint
+  // cadence and must never be treated as the gate.
+  unbondingStartedAt  DateTime?
+  unbondingReadyAt    DateTime?
+  unbondingPeriod     String? // e.g. "60000000" microseconds
+  unbondNonce         String? // ValidatorShare unbond nonce
+  unbondWithdrawEpoch String? // checkpoint epoch recorded by sellVoucher_new
 
   releasedAt     DateTime?
   createdAt      DateTime @default(now())
@@ -157,7 +172,9 @@ model AppActivityRecord {
   // CC attributed to this record before the BeneficiarySplit is applied.
   ccAttributed  String   // decimal string
 
-  // Source of the record. "scan" = real Scan API, "mock" = seeded.
+  // Source of the record: "scan" = real Scan API data. The seeded
+  // "mock" source was removed with the reward mock (real-data
+  // migration, Phase 1).
   source        String
 
   // Optional pointer to the OnchainEvent contract that originated this

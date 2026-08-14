@@ -11,15 +11,19 @@
  * its `getDelegations` shape into a `fetchDelegations<chain>` here and
  * register it in the FETCHERS map.
  *
- * For the hackathon scope, only the Polygon Amoy mock is wired. Every
- * other chain returns `[]` from a stub fetcher, which is honest in the
- * UI: no fake numbers shown.
+ * Polygon reads the real per-validator ValidatorShare contracts on the L1
+ * settlement chain. Every other chain returns `[]` from a stub fetcher, which
+ * is honest in the UI: no fake numbers shown.
  */
 
-import { createPublicClient, formatEther, http, type Address } from "viem";
-import { polygonAmoy } from "viem/chains";
+import { formatEther, type Address } from "viem";
 import IORedis from "ioredis";
 import { config } from "../config.js";
+import {
+  listActiveValidatorShares,
+  settlementClient,
+  validatorShareAbi,
+} from "./validator-share.js";
 import type { SupportedChain } from "./validator-scoring.js";
 
 // --- Types ---
@@ -84,41 +88,45 @@ async function writeChainCache(
 
 // --- Per-chain fetchers --------------------------------------------------
 
-const polygonClient = createPublicClient({
-  chain: polygonAmoy,
-  transport: http(config.amoyRpcUrl),
-});
-
-const validatorShareAbi = [
-  {
-    type: "function",
-    name: "balanceOf",
-    stateMutability: "view",
-    inputs: [{ name: "user", type: "address" }],
-    outputs: [{ type: "uint256" }],
-  },
-] as const;
-
+/**
+ * Real Polygon delegations for an address.
+ *
+ * There is no single contract to query: each validator has its own
+ * ValidatorShare, so we ask every active one at once via multicall and keep
+ * the non-zero answers. `getTotalStake` returns the stake-token value of the
+ * delegator's shares, which already accounts for the exchange rate — shares
+ * are NOT 1:1 with POL.
+ */
 async function fetchPolygon(address: string): Promise<DelegationRow[]> {
   try {
-    const balance = (await polygonClient.readContract({
-      address: config.mockValidatorShare as Address,
-      abi: validatorShareAbi,
-      functionName: "balanceOf",
-      args: [address as Address],
-    })) as bigint;
+    const validators = await listActiveValidatorShares();
+    if (validators.length === 0) return [];
 
-    if (balance === 0n) return [];
+    const results = await settlementClient.multicall({
+      contracts: validators.map((v) => ({
+        address: v.share as Address,
+        abi: validatorShareAbi,
+        functionName: "getTotalStake" as const,
+        args: [address as Address] as const,
+      })),
+      allowFailure: true,
+    });
 
-    return [
-      {
+    const rows: DelegationRow[] = [];
+    results.forEach((res, i) => {
+      if (res.status !== "success") return;
+      const amount = (res.result as readonly bigint[])[0] ?? 0n;
+      if (amount === 0n) return;
+      const v = validators[i]!;
+      rows.push({
         chain: "polygon",
-        validator: config.mockValidatorShare,
-        amount: formatEther(balance),
+        validator: v.signer,
+        amount: formatEther(amount),
         symbol: "POL",
         status: "bonded",
-      },
-    ];
+      });
+    });
+    return rows;
   } catch (err) {
     console.warn(`[portfolio-cache] polygon fetch failed:`, err);
     return [];

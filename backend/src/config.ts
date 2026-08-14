@@ -17,8 +17,49 @@ export const config = {
   logLevel: optional("LOG_LEVEL", "info"),
   demoMode: optional("DEMO_MODE", "false").toLowerCase() === "true",
 
-  amoyRpcUrl: optional("AMOY_RPC_URL", "https://rpc-amoy.polygon.technology"),
-  mockValidatorShare: required("MOCK_VALIDATOR_SHARE_ADDRESS"),
+  // Bor (Polygon Amoy) RPC. Used ONLY for POL balance reads and explorer
+  // links — Polygon PoS staking does not settle here. `rpc-amoy.polygon.
+  // technology` is not resolvable from every network, so the default is the
+  // publicnode mirror.
+  amoyRpcUrl: optional("AMOY_RPC_URL", "https://polygon-amoy-bor-rpc.publicnode.com"),
+
+  // --- Polygon PoS staking settlement layer (Phase 2 / T2.1-T2.4) ---
+  //
+  // StakeManager, the StakingInfo logger and one ValidatorShare per validator
+  // live on Ethereum L1 — Sepolia for Amoy, mainnet for Polygon mainnet. All
+  // three defaults below were verified on-chain against Sepolia
+  // (chainId 11155111) on 2026-08-14; StakeManager.logger() returns the
+  // logger address and StakeManager.token() returns POL
+  // (0x44499312f493F62f2DFd3C6435Ca3603EbFCeeBa), which the resolver reads at
+  // runtime rather than hardcoding.
+  stakeSettlementRpcUrl: optional(
+    "STAKE_SETTLEMENT_RPC_URL",
+    "https://ethereum-sepolia-rpc.publicnode.com"
+  ),
+  stakeSettlementChainId: Number(optional("STAKE_SETTLEMENT_CHAIN_ID", "11155111")),
+  stakeManagerAddress: optional(
+    "POLYGON_STAKE_MANAGER_ADDRESS",
+    "0x4AE8f648B1Ec892B6cc68C89cc088583964d08bE"
+  ),
+  stakingLoggerAddress: optional(
+    "POLYGON_STAKING_LOGGER_ADDRESS",
+    "0x5E3111a5d928D24718c1A7897261D0B9087002ed"
+  ),
+  // The validatorId → ValidatorShare registry only changes when a validator
+  // joins or leaves, so a long TTL is fine; resolveValidatorShare falls back
+  // to a direct StakeManager read on a miss.
+  validatorShareCacheTtlSec: Number(
+    optional("VALIDATOR_SHARE_CACHE_TTL_SEC", "86400")
+  ),
+  // Sepolia block time is ~12 s, so a 12 s poll with a 600-block initial
+  // lookback covers ~2 h of history on a cold start.
+  polygonWatcherPollMs: Number(optional("POLYGON_WATCHER_POLL_MS", "12000")),
+  polygonWatcherLookbackBlocks: Number(
+    optional("POLYGON_WATCHER_LOOKBACK_BLOCKS", "600")
+  ),
+  polygonWatcherMaxRange: Number(
+    optional("POLYGON_WATCHER_MAX_BLOCK_RANGE", "5000")
+  ),
 
   cantonJsonApiUrl: optional("CANTON_JSON_API_URL", "http://localhost:3975"),
   cantonAppProviderParty: required("CANTON_APP_PROVIDER_PARTY"),
@@ -47,17 +88,21 @@ export const config = {
   // Redis + BullMQ
   redisUrl: optional("REDIS_URL", "redis://localhost:6379"),
 
-  // CIP-0104 Scan API: per-app activity records the SV emits each round.
-  // Endpoint shape: GET ${scanApiUrl}/v0/events?app_activity_records=true
-  // Unset on offline demo / LocalNet — paired with MOCK_REWARDS=1.
+  // CIP-0104 Scan API: per-app activity records the SV emits each network
+  // round. Endpoint shape (verified against the LocalNet Scan on
+  // 2026-08-14): POST ${scanApiUrl}/v0/events with {"page_size": N}; each
+  // returned event carries an optional `app_activity_records` object
+  // {round_number, records: [{party, weight}]}. Unset = reward rounds run
+  // but mint 0 CC (honest empty attribution, not a fabricated stream).
   scanApiUrl: optional("SCAN_API_URL"),
-
-  // Offline demo mode: synthesises a deterministic seeded round stream so
-  // the visualiser shows a believable CC accrual without LocalNet, Scan
-  // API, or real Featured App approval. Round outputs are reproducible
-  // run-to-run for predictable demo timing.
-  mockRewards: optional("MOCK_REWARDS", "false").toLowerCase() === "true",
-  mockRewardsSeed: Number(optional("MOCK_REWARDS_SEED", "20260505")),
+  // Page size for the /v0/events poll. The LocalNet Scan does not expose a
+  // cursor, so this is a single bounded fetch per round tick.
+  scanPageSize: Number(optional("SCAN_PAGE_SIZE", "500")),
+  // Gross CC the round distributes across the weights above. The LocalNet
+  // Scan does not publish a per-round mint pool, so the pool size is a
+  // configured constant — the party set and per-party weights are real
+  // (from sequencer-derived AppActivityRecords), the pool is labelled.
+  scanRoundCcPool: Number(optional("SCAN_ROUND_CC_POOL", "100")),
 
   // Anthropic API for the live round narrator on /rewards. Falls back to
   // a templated explanation when unset (offline demo path).
