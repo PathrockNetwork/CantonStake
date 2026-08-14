@@ -16,6 +16,7 @@ import {
 } from "@/lib/api";
 import { liveChains, chainById } from "@/lib/chains";
 import { adapterFor } from "@/lib/chains/index";
+import { fetchStakingParams } from "@/lib/chains/polygon";
 import { chainFromAddress } from "@/lib/chains";
 import { fmt } from "@/lib/format";
 import { lookupPositionMeta, lookupPositionChain } from "@/lib/position-chain-map";
@@ -258,10 +259,59 @@ function Row({
   // Determine available actions
   const canSweep = lifecycle === "bonded";
   const canUnbond = lifecycle === "bonded" && !!validator;
-  const canClaim =
-    lifecycle === "unbonding" &&
-    !!p.argument.unbondingReadyAt &&
-    new Date(p.argument.unbondingReadyAt) <= new Date();
+
+  // Polygon's claim gate is checkpoint-based, not wall-clock:
+  // `unstakeClaimTokens_new` only succeeds once
+  // `unbondWithdrawEpoch + withdrawalDelay() <= epoch()`. The Daml
+  // `unbondingReadyAt` is only a projection of that using the measured
+  // cadence, so gating the button on it enables Claim while the adapter
+  // still throws UNBONDING_PERIOD. Ask the chain for the real epoch.
+  const isPolygon = chain.id === "polygon";
+  const { data: stakingParams } = useQuery({
+    queryKey: ["polygon-staking-params"],
+    queryFn: fetchStakingParams,
+    enabled: isPolygon && lifecycle === "unbonding",
+    staleTime: 60_000,
+  });
+
+  const claimGate: { ready: boolean; reason: string | null } = (() => {
+    if (lifecycle !== "unbonding") return { ready: false, reason: null };
+
+    // Non-Polygon chains settle on the timer-based release path, where the
+    // recorded timestamp IS the gate.
+    if (!isPolygon) {
+      const ts = p.argument.unbondingReadyAt;
+      return {
+        ready: !!ts && new Date(ts) <= new Date(),
+        reason: null,
+      };
+    }
+
+    const withdrawEpoch = p.chainMeta?.unbondWithdrawEpoch;
+    if (!stakingParams || !withdrawEpoch) {
+      // Never optimistically enable: without the real epoch we cannot prove
+      // claimability, and guessing is what produced the failing button.
+      return { ready: false, reason: "checking checkpoint progress…" };
+    }
+
+    const claimableAt =
+      BigInt(withdrawEpoch) + BigInt(stakingParams.withdrawalDelayEpochs);
+    const current = BigInt(stakingParams.currentEpoch);
+    if (current >= claimableAt) return { ready: true, reason: null };
+
+    const remaining = Number(claimableAt - current);
+    const eta = stakingParams.checkpointCadenceSeconds
+      ? ` (~${Math.round(
+          (remaining * stakingParams.checkpointCadenceSeconds) / 3600,
+        )}h)`
+      : "";
+    return {
+      ready: false,
+      reason: `${remaining} more checkpoint${remaining === 1 ? "" : "s"}${eta}`,
+    };
+  })();
+
+  const canClaim = claimGate.ready;
   const hasActions = canSweep || canUnbond || canClaim;
 
   // Sweep mutation (claim native rewards)
@@ -496,6 +546,16 @@ function Row({
               </Btn>
             )}
           </div>
+        ) : claimGate.reason ? (
+          // Unbonding but not yet claimable. Show the real remaining
+          // checkpoint count rather than an enabled button that reverts.
+          <span
+            className="mono"
+            style={{ fontSize: 10, color: tokens.warning }}
+            title="Polygon releases unbonds by checkpoint, not by clock time"
+          >
+            {claimGate.reason}
+          </span>
         ) : (
           <span
             className="mono"
