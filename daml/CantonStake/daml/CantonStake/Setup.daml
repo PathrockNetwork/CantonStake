@@ -12,15 +12,39 @@ module CantonStake.Setup where
 --   3. Set BENEFICIARY_SPLIT_CID=<cid> in the backend .env so the
 --      orchestrator can pass it to StakingPosition_RecordStake.
 --
--- Quick recipe (pseudocode, JSON Ledger API v2):
---   POST /v2/commands/submit-and-wait-for-transaction
---   { "commands": [{ "CreateCommand": {
---       "templateId": "<pkg>:CantonStake.Staking:BeneficiarySplit",
---       "createArguments": {
---         "operator": "<appProvider>", "label": "default",
---         "weights": [["<appProvider>", "0.25"], ["<delegator>", "0.75"]],
---         "version": 0, "updatedAt": "2026-05-05T00:00:00Z"
---       }}}], ... }
+-- Verified recipe (JSON Ledger API v2, Canton 3.5 / cn-quickstart LocalNet,
+-- exercised 2026-08-14). Two encoding details that the old pseudocode got
+-- wrong and that both return HTTP 500 "Expected ujson.Str":
+--   * `[(Party, Decimal)]` tuples encode as records with `_1` / `_2` keys,
+--     NOT as two-element JSON arrays.
+--   * Daml `Int` encodes as a JSON *string* ("0"), not a JSON number (0).
+--     The same rule applies to EvmProof.blockNumber and to
+--     StakingPosition_ConfirmUnbond's unbondingReadyEpoch.
+--
+--   POST http://localhost:3975/v2/commands/submit-and-wait-for-transaction
+--   Authorization: Bearer <CANTON_AUTH_TOKEN>
+--   { "commands": {
+--       "commands": [{ "CreateCommand": {
+--         "templateId": "#cantonstake:CantonStake.Staking:BeneficiarySplit",
+--         "createArguments": {
+--           "operator": "<appProvider>",
+--           "label": "default",
+--           "weights": [ { "_1": "<appProvider>", "_2": "0.25" },
+--                        { "_1": "<delegator>",   "_2": "0.75" } ],
+--           "version": "0",
+--           "updatedAt": "2026-08-14T00:00:00Z"
+--         }}}],
+--       "commandId": "setup-split-1", "actAs": ["<appProvider>"],
+--       "readAs": [], "workflowId": "cantonstake-setup",
+--       "deduplicationPeriod": { "Empty": {} }, "disclosedContracts": [],
+--       "synchronizerId": "", "packageIdSelectionPreference": [] } }
+--
+-- Prerequisite: upload the DAR to each participant that hosts a stakeholder
+-- party (app-provider :3975 and app-user :2975 on LocalNet):
+--   curl -X POST http://localhost:3975/v2/packages \
+--        -H "Authorization: Bearer <token>" \
+--        -H "Content-Type: application/octet-stream" \
+--        --data-binary @.daml/dist/cantonstake-0.0.1.dar
 --
 -- The default weights match the inline 75/25 split that the legacy
 -- USE_LEGACY_MARKERS=true path emits, so attribution is consistent across
