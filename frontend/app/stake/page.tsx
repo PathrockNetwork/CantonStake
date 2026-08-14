@@ -47,10 +47,14 @@ import { tokens } from "@/lib/tokens";
  * visible stages off REAL wagmi + backend state:
  *
  *   01 StakingRequest_Create          → backend createStakingRequest()
- *   02 ValidatorShare.buyVoucher      → wagmi sendTransaction(...), preceded
- *                                       by an ERC-20 approve() to the
- *                                       StakeManager (buyVoucher is NOT
- *                                       payable on the real contract)
+ *   01a/01b ERC20.approve             → Polygon only. buyVoucher is NOT
+ *                                       payable on the real contract; the
+ *                                       StakeManager pulls the tokens with
+ *                                       transferFrom, so the allowance is a
+ *                                       separately-signed tx. It gets its own
+ *                                       trace lines because it is a second
+ *                                       wallet prompt, not part of stage 02.
+ *   02 ValidatorShare.buyVoucher      → wagmi sendTransaction(...)
  *   03 ShareMinted                    → useWaitForTransactionReceipt()
  *   04 StakingRequest_Accept          → orchestrator (fires after evm confirms)
  *   05 FeaturedAppActivityMarker      → animation only; no on-chain signal
@@ -175,6 +179,9 @@ export default function StakePage() {
 
   const [amount, setAmount] = useState("0.50");
   const [step, setStep] = useState<0 | 1 | 2 | 3 | 4 | 5>(0);
+  // True while the ERC-20 allowance tx is in flight. It sits between stages
+  // 01 and 02 and needs its own wallet signature, so the CTA has to say so.
+  const [approving, setApproving] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [showSpark, setShowSpark] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -355,6 +362,19 @@ export default function StakePage() {
     emitTrace(stage);
   }
 
+  /**
+   * Append a trace line that is not one of the five numbered stages.
+   *
+   * The ERC-20 approval is a real, separately-signed transaction, so hiding
+   * it under the buyVoucher stage means the user sees two wallet prompts
+   * against one label and cannot tell which is which. It gets its own trace
+   * line without disturbing the stage state machine.
+   */
+  function logAux(stage: Stage) {
+    setLog((prev) => [...prev, { ...stage, t: Date.now() }]);
+    emitTrace(stage);
+  }
+
   async function handleStake() {
     if (step > 0 && step < 5) return;
     if (!partyId) {
@@ -394,6 +414,7 @@ export default function StakePage() {
 
     // Reset visuals
     setLog([]);
+    setApproving(false);
     setStep(0);
     setShowSpark(false);
     setError(null);
@@ -497,13 +518,30 @@ export default function StakePage() {
         if (approval.kind !== "evm") {
           throw new Error(`Unexpected approval tx kind: ${approval.kind}`);
         }
-        const approveHash = await sendTransactionCore(wagmiConfig, {
-          to: approval.to,
-          data: approval.data,
-          value: 0n,
-          ...(approval.gas ? { gas: approval.gas } : {}),
+        setApproving(true);
+        logAux({
+          code: "01a ERC20.approve()",
+          detail: `Approving ${amount} ${selectedChain.symbol} to the StakeManager · wallet prompt 1 of 2`,
+          kind: "EVM",
+          tag: "idle",
         });
-        await waitForTransactionReceipt(wagmiConfig, { hash: approveHash });
+        try {
+          const approveHash = await sendTransactionCore(wagmiConfig, {
+            to: approval.to,
+            data: approval.data,
+            value: 0n,
+            ...(approval.gas ? { gas: approval.gas } : {}),
+          });
+          await waitForTransactionReceipt(wagmiConfig, { hash: approveHash });
+          logAux({
+            code: "01b Approval",
+            detail: `Allowance confirmed · ${approveHash.slice(0, 10)}…`,
+            kind: "EVM",
+            tag: "info",
+          });
+        } finally {
+          setApproving(false);
+        }
       }
 
       const tx = await adapter.buildDelegateTx({
@@ -559,6 +597,7 @@ export default function StakePage() {
     if (!partyId || !cosmos.address) return;
 
     setLog([]);
+    setApproving(false);
     setStep(0);
     setShowSpark(false);
     setError(null);
@@ -617,6 +656,7 @@ export default function StakePage() {
     if (!partyId || !sui.address) return;
 
     setLog([]);
+    setApproving(false);
     setStep(0);
     setShowSpark(false);
     setError(null);
@@ -657,8 +697,9 @@ export default function StakePage() {
     }
   }
 
-  const ctaLabel =
-    step === 0
+  const ctaLabel = approving
+    ? `Approving ${selectedChain.symbol}… (1 of 2)`
+    : step === 0
       ? ctaLabels[0]!.replace("{amount}", amount)
       : ctaLabels[step] ?? ctaLabels[0]!;
   const amountNum = parseFloat(amount || "0");
