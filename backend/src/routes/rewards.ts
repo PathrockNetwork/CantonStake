@@ -54,23 +54,29 @@ const rewardsRoutes: FastifyPluginAsync = async (app) => {
           ? await prisma.user.findFirst({ where: { evmAddress: address } })
           : null;
 
-        const userParty = user?.cantonPartyId ?? null;
-
-        const records = userParty
-          ? await prisma.appActivityRecord.findMany({
+        // Per-user attribution comes from rewardEvents: under real
+        // (provider-party) attribution the user's share of a round is
+        // their stake-weighted slice of the app's CC, recorded at
+        // distribution time.
+        const events = user
+          ? await prisma.rewardEvent.findMany({
               where: {
-                roundNumber: { in: rounds.map((r) => r.roundNumber) },
-                party: userParty,
+                userId: user.id,
+                round: { roundNumber: { in: rounds.map((r) => r.roundNumber) } },
               },
+              select: { ccAmount: true, round: { select: { roundNumber: true } } },
             })
           : [];
-        const recordByRound = new Map(
-          records.map((r) => [r.roundNumber, r]),
-        );
+        const ccByRound = new Map<number, number>();
+        for (const ev of events) {
+          const n = ccByRound.get(ev.round.roundNumber) ?? 0;
+          ccByRound.set(ev.round.roundNumber, n + Number(ev.ccAmount));
+        }
 
         return {
           rounds: rounds.map((r) => {
-            const rec = recordByRound.get(r.roundNumber);
+            const userCc = ccByRound.get(r.roundNumber) ?? null;
+            const roundTotal = Number(r.totalCcMinted || "0");
             return {
               roundNumber: r.roundNumber,
               status: r.status,
@@ -80,8 +86,11 @@ const rewardsRoutes: FastifyPluginAsync = async (app) => {
               totalCcMinted: r.totalCcMinted,
               totalTxns: r.totalTxns,
               totalMarkers: r.totalMarkers,
-              userTrafficSharePct: rec ? rec.trafficShare * 100 : null,
-              userCcAttributed: rec ? rec.ccAttributed : null,
+              userTrafficSharePct:
+                userCc != null && roundTotal > 0
+                  ? (userCc / roundTotal) * 100
+                  : null,
+              userCcAttributed: userCc != null ? userCc.toFixed(8) : null,
             };
           }),
         };
