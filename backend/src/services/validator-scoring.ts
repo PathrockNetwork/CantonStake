@@ -24,7 +24,10 @@
  *
  * Source endpoints (all public, no API key required):
  *
- *   - Polygon  : https://staking-api.polygon.technology/api/v2/validators
+ *   - Polygon  : https://staking-api-amoy.polygon.technology/api/v2/validators
+ *                (Amoy, i.e. the testnet whose StakeManager we actually stake
+ *                against — the mainnet host lists a completely different
+ *                validator set whose signers do not exist on our StakeManager)
  *   - Moonbeam : Moonbase Alpha precompile read (selectedCandidates) via
  *                MOONBEAM_RPC_URL — free testnet API doesn't exist.
  *   - Monad    : https://raw.githubusercontent.com/monad-developers/
@@ -54,6 +57,13 @@ export interface ScoredValidator {
   chain: SupportedChain;
   address: string;          // chain-native identifier (validator addr / pubkey / object id)
   name: string;
+  // Polygon only: the numeric validatorId the StakeManager keys on, and that
+  // validator's own ValidatorShare contract. Polygon deploys one
+  // ValidatorShare per validator, so the staking contract address is a
+  // property of the validator, not of the deployment. Undefined on every
+  // other chain.
+  validatorId?: number;
+  validatorShare?: string;
   commissionPct: number;    // 0..100
   uptimePct: number;        // 0..100, best-effort (some chains don't expose; defaults to 99.0)
   jailed: boolean;
@@ -184,9 +194,15 @@ async function fetchJson<T>(
 }
 
 async function fetchPolygon(): Promise<ScoredValidator[]> {
-  // staking-api.polygon.technology returns { result: [{ id, name, signer,
+  // staking-api-amoy.polygon.technology returns { result: [{ id, name, signer,
   // status, performanceIndex, commissionPercent, selfStake, delegatedStake,
-  // ... }] } — performanceIndex is roughly an uptime proxy in basis-points-style.
+  // contractAddress, uptimePercent, ... }] } — performanceIndex is roughly an
+  // uptime proxy in basis-points-style.
+  //
+  // `contractAddress` is the validator's ValidatorShare. We take the on-chain
+  // StakeManager registry as authoritative and only fall back to the API's
+  // value if the resolver can't reach L1 — the API is a convenience, the
+  // StakeManager is the source of truth.
   type PolygonRow = {
     id: number;
     name?: string;
@@ -194,25 +210,44 @@ async function fetchPolygon(): Promise<ScoredValidator[]> {
     status?: string;
     commissionPercent?: number;
     performanceIndex?: number;
+    uptimePercent?: number;
+    contractAddress?: string;
     selfStake?: string;
     delegatedStake?: string;
     isInAuction?: boolean;
   };
   const body = await fetchJson<{ result?: PolygonRow[] }>(
-    "https://staking-api.polygon.technology/api/v2/validators?limit=200"
+    "https://staking-api-amoy.polygon.technology/api/v2/validators?limit=200"
   );
   if (!body?.result) return [];
+
+  // On-chain registry: validatorId → ValidatorShare. Best-effort; a failure
+  // here degrades to the API-reported contractAddress rather than dropping
+  // the validator list entirely.
+  let onChain = new Map<number, { signer: string; share: string }>();
+  try {
+    const { listValidatorShares } = await import("./validator-share.js");
+    const registry = await listValidatorShares();
+    onChain = new Map(
+      registry.map((v) => [v.validatorId, { signer: v.signer, share: v.share }])
+    );
+  } catch (err) {
+    console.warn("[validator-scoring] StakeManager registry unavailable:", err);
+  }
 
   const rows = body.result.map((v) => {
     const total =
       Number(v.selfStake ?? "0") + Number(v.delegatedStake ?? "0");
     const perf = Number(v.performanceIndex ?? 100);
     // performanceIndex is approximately 0..100 already; clamp.
-    const uptimePct = clamp(perf, 90, 100);
+    const uptimePct = clamp(Number(v.uptimePercent ?? perf), 90, 100);
+    const chainEntry = onChain.get(v.id);
     return {
       chain: "polygon" as const,
-      address: v.signer ?? `validator-${v.id}`,
-      name: v.name ?? `Validator ${v.id}`,
+      address: chainEntry?.signer ?? v.signer ?? `validator-${v.id}`,
+      name: v.name?.trim() || `Validator ${v.id}`,
+      validatorId: v.id,
+      validatorShare: chainEntry?.share ?? v.contractAddress,
       commissionPct: Number(v.commissionPercent ?? 10),
       uptimePct,
       jailed: v.status !== "Active" && v.status !== "active",
@@ -220,7 +255,9 @@ async function fetchPolygon(): Promise<ScoredValidator[]> {
       totalStaked: total,
     };
   });
-  return attachScores(rows);
+  // A validator with no ValidatorShare cannot be delegated to, so it must not
+  // be offered in the picker.
+  return attachScores(rows.filter((r) => Boolean(r.validatorShare)));
 }
 
 async function fetchMoonbeam(): Promise<ScoredValidator[]> {
