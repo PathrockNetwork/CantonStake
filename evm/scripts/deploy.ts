@@ -1,3 +1,11 @@
+/**
+ * ⚠️  MOCK-ONLY SCRIPT. ⚠️
+ *
+ * Deploys the local MockValidatorShare E2E fixture to Amoy. The production
+ * path does not deploy anything: Polygon's StakeManager creates one
+ * ValidatorShare per validator on Ethereum L1, and the app resolves those
+ * addresses at runtime (see backend/src/services/validator-share.ts).
+ */
 import { ethers } from "hardhat";
 import * as fs from "fs";
 import * as path from "path";

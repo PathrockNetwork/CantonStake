@@ -1,53 +1,32 @@
 /**
- * Event orchestrator: polls MockValidatorShare events on Amoy and
- * translates them into Canton Daml choices.
+ * Canton-side transition handlers for real Polygon PoS staking events.
  *
- * Flow:
+ * Flow (Phase 2 — real ValidatorShare, no mock):
  *   1. User submits a StakingRequest on Canton (frontend -> JSON API).
- *   2. User calls buyVoucher() on Amoy from their MetaMask.
- *   3. MockValidatorShare emits ShareMinted.
- *   4. This orchestrator catches ShareMinted, matches it to the pending
- *      StakingRequest by EVM address + amount, and exercises
- *      StakingRequest_Accept on Canton -> Daml emits FeaturedAppActivityMarker.
+ *   2. User approves the StakeManager to move POL, then calls
+ *      buyVoucher() on THAT VALIDATOR'S ValidatorShare — on Ethereum L1
+ *      (Sepolia for Amoy), not on Bor.
+ *   3. The shared StakingInfo logger emits
+ *      ShareMinted(validatorId, user, amount, tokens).
+ *   4. `multichain-watcher.ts` catches it, matches it to the pending
+ *      StakingRequest by EVM address + amount, resolves the per-validator
+ *      ValidatorShare address, and exercises StakingRequest_Accept.
  *   5. User later calls sellVoucher_new() -> ShareBurnedWithId ->
- *      orchestrator exercises StakingPosition_ConfirmUnbond.
- *   6. After unbonding period, user calls unstakeClaimTokens_new() ->
- *      orchestrator exercises StakingPosition_Release.
+ *      handlePolygonUnbondEvent exercises StakingPosition_ConfirmUnbond with
+ *      the REAL checkpoint-derived ready time.
+ *   6. Release only fires once the on-chain unbond record proves the
+ *      delegator actually claimed — see startReleaseChecker.
+ *
+ * The old MockValidatorShare poller that used to live here has been removed:
+ * it watched a single global contract on Amoy, which is not how Polygon
+ * staking works. The mock now only exists as a local E2E fixture
+ * (`evm/contracts/MockValidatorShare.sol`) and is off the live path.
  */
-import {
-  createPublicClient,
-  http,
-  parseAbiItem,
-  formatEther,
-  type Address,
-  type Log,
-} from "viem";
-import { polygonAmoy } from "viem/chains";
+import { formatEther, type Address } from "viem";
 import { config } from "./config.js";
 import { canton, TEMPLATES, type ActiveContract } from "./canton.js";
 import { prisma } from "./db.js";
-
-// --- Viem client ---
-
-const client = createPublicClient({
-  chain: polygonAmoy,
-  transport: http(config.amoyRpcUrl),
-});
-
-// --- Event ABIs (must match MockValidatorShare.sol) ---
-
-const shareMintedAbi = parseAbiItem(
-  "event ShareMinted(address indexed user, uint256 amount, uint256 tokens)"
-);
-
-const shareBurnedAbi = parseAbiItem(
-  "event ShareBurnedWithId(address indexed user, uint256 amount, uint256 tokens, uint256 nonce)"
-);
-
-const EVENT_POLL_MS = 5_000;
-const INITIAL_LOOKBACK_BLOCKS = 50n;
-const MAX_BLOCK_RANGE = 50n;
-const UNBONDING_PERIOD_SECONDS = 60;
+import { getUnbond } from "./services/validator-share.js";
 
 /**
  * Returns the FeaturedAppRight CID to pass into Accept / ConfirmUnbond, or
@@ -59,7 +38,7 @@ const UNBONDING_PERIOD_SECONDS = 60;
  * USE_LEGACY_MARKERS=true AND a real CID is configured (the `demo-stub`
  * sentinel always returns null).
  */
-function featuredRightCidForDaml(): string | null {
+export function featuredRightCidForDaml(): string | null {
   if (!config.useLegacyMarkers) return null;
   if (!config.featuredAppRightCid || config.featuredAppRightCid === "demo-stub") {
     return null;
@@ -73,7 +52,7 @@ function featuredRightCidForDaml(): string | null {
  * BENEFICIARY_SPLIT_CID is unset (keeps demos working without a configured
  * split contract).
  */
-async function recordStakeEvent(args: {
+export async function recordStakeEvent(args: {
   positionContractId: string;
   eventKind: "Bond" | "Unbond" | "Release";
   txProof: { txHash: string; blockNumber: number; validatorShare: string } | null;
@@ -195,7 +174,7 @@ async function upsertUserByEvm(evmAddress: string, partyId: string) {
   });
 }
 
-async function mirrorPosition(args: {
+export async function mirrorPosition(args: {
   contractId: string;
   evmAddress: string;
   partyId: string;
@@ -204,8 +183,34 @@ async function mirrorPosition(args: {
   evmTxHash?: string;
   cantonTxId?: string;
   unbondingReadyAt?: Date;
+  // Polygon: which validator this position is delegated to. The
+  // ValidatorShare address is per-validator, so it has to be persisted per
+  // position — there is no single deployment-wide address to fall back on.
+  chain?: string;
+  validatorAddress?: string;
+  validatorShare?: string;
+  validatorId?: number;
+  amountShares?: string;
+  unbondNonce?: string;
+  unbondWithdrawEpoch?: string;
 }) {
   const user = await upsertUserByEvm(args.evmAddress, args.partyId);
+  const validatorFields = {
+    ...(args.chain !== undefined ? { chain: args.chain } : {}),
+    ...(args.validatorAddress !== undefined
+      ? { validatorAddress: args.validatorAddress.toLowerCase() }
+      : {}),
+    ...(args.validatorShare !== undefined
+      ? { validatorShare: args.validatorShare }
+      : {}),
+    ...(args.validatorId !== undefined ? { validatorId: args.validatorId } : {}),
+    ...(args.amountShares !== undefined ? { amountShares: args.amountShares } : {}),
+    ...(args.unbondNonce !== undefined ? { unbondNonce: args.unbondNonce } : {}),
+    ...(args.unbondWithdrawEpoch !== undefined
+      ? { unbondWithdrawEpoch: args.unbondWithdrawEpoch }
+      : {}),
+  };
+
   return prisma.stakingPosition.upsert({
     where: { contractId: args.contractId },
     update: {
@@ -213,6 +218,7 @@ async function mirrorPosition(args: {
       cantonTxId: args.cantonTxId,
       evmTxHash: args.evmTxHash,
       unbondingReadyAt: args.unbondingReadyAt,
+      ...validatorFields,
     },
     create: {
       contractId: args.contractId,
@@ -223,6 +229,7 @@ async function mirrorPosition(args: {
       cantonTxId: args.cantonTxId,
       evmTxHash: args.evmTxHash,
       unbondingReadyAt: args.unbondingReadyAt,
+      ...validatorFields,
     },
   });
 }
@@ -231,7 +238,7 @@ async function mirrorPosition(args: {
  * Extract the createdEvent.contractId from a submit-and-wait response.
  * The JSON Ledger API returns events as an array of CreatedEvent / ArchivedEvent objects.
  */
-function extractCreatedContractId(events: unknown[]): string | null {
+export function extractCreatedContractId(events: unknown[]): string | null {
   for (const ev of events) {
     const event = ev as Record<string, unknown>;
     const nestedEvent = event.event as Record<string, unknown> | undefined;
@@ -260,82 +267,33 @@ function extractCreatedContractId(events: unknown[]): string | null {
 
 // --- Event handlers ---
 
-async function handleShareMinted(log: Log) {
-  const { args, transactionHash, blockNumber } = log as unknown as {
-    args: { user: Address; amount: bigint; tokens: bigint };
-    transactionHash: string;
-    blockNumber: bigint;
-  };
-
+/**
+ * StakingPosition_ConfirmUnbond, driven by a real
+ * `ShareBurnedWithId(validatorId, user, amount, tokens, nonce)` from the
+ * StakingInfo logger.
+ *
+ * The mock used to hardcode a 60-second unbonding period. The real contract
+ * records `unbonds_new[user][nonce] = (shares, withdrawEpoch)` and refuses to
+ * pay out until
+ *     withdrawEpoch + StakeManager.withdrawalDelay() <= StakeManager.epoch()
+ * Checkpoints are not on a fixed schedule, so the wall-clock ready time we
+ * write to Canton is an ESTIMATE derived from the measured checkpoint cadence
+ * — the epoch numbers persisted alongside it are the authoritative condition,
+ * and startReleaseChecker verifies against them rather than against the clock.
+ */
+export async function handlePolygonUnbondEvent(args: {
+  user: Address;
+  amount: bigint;
+  shares: bigint;
+  nonce: bigint;
+  validatorId: number;
+  validatorShare: Address;
+  txHash: string;
+  blockNumber: number;
+}): Promise<void> {
   console.log(
-    `[ShareMinted] user=${args.user} amount=${formatEther(args.amount)} tx=${transactionHash}`
-  );
-
-  const req = await findPendingRequest(args.user, args.amount);
-  if (!req) {
-    console.warn(
-      `  no matching pending StakingRequest for ${args.user} / ${formatEther(args.amount)}`
-    );
-    return;
-  }
-
-  try {
-    const result = await canton.exerciseChoice({
-      templateId: TEMPLATES.StakingRequest,
-      contractId: req.contractId,
-      choice: "StakingRequest_Accept",
-      argument: {
-        proof: {
-          txHash: transactionHash,
-          blockNumber: Number(blockNumber),
-          validatorShare: config.mockValidatorShare,
-        },
-        featuredRightCid: featuredRightCidForDaml(),
-      },
-    });
-    console.log(`  -> accepted. tx=${result.transactionId}`);
-
-    // Mirror to Postgres: the Accept choice archives StakingRequest and
-    // creates a new StakingPosition. Extract the new contractId from events.
-    const reqArg = req.argument as { evmAddress?: string; amountPol?: string; delegator?: string };
-    const newContractId = extractCreatedContractId(result.events) || `pending-${Date.now()}`;
-
-    await mirrorPosition({
-      contractId: newContractId,
-      evmAddress: reqArg.evmAddress || args.user,
-      partyId: reqArg.delegator || "unknown",
-      amountPol: reqArg.amountPol || formatEther(args.amount),
-      status: "Bonded",
-      evmTxHash: transactionHash,
-      cantonTxId: result.transactionId,
-    });
-    console.log(`  -> mirrored Bonded position to Postgres (contractId=${newContractId.slice(0, 16)}…)`);
-
-    // CIP-0104 traffic attribution beacon for the Bond transition.
-    await recordStakeEvent({
-      positionContractId: newContractId,
-      eventKind: "Bond",
-      txProof: {
-        txHash: transactionHash,
-        blockNumber: Number(blockNumber),
-        validatorShare: config.mockValidatorShare,
-      },
-      occurredAt: new Date().toISOString(),
-    });
-  } catch (err) {
-    console.error(`  failed to accept StakingRequest:`, err);
-  }
-}
-
-async function handleShareBurned(log: Log) {
-  const { args, transactionHash, blockNumber } = log as unknown as {
-    args: { user: Address; amount: bigint; tokens: bigint; nonce: bigint };
-    transactionHash: string;
-    blockNumber: bigint;
-  };
-
-  console.log(
-    `[ShareBurned] user=${args.user} amount=${formatEther(args.amount)} nonce=${args.nonce} tx=${transactionHash}`
+    `[ShareBurnedWithId] validator=${args.validatorId} user=${args.user} ` +
+      `amount=${formatEther(args.amount)} nonce=${args.nonce} tx=${args.txHash}`
   );
 
   const position = await findBondedPosition(args.user);
@@ -344,38 +302,50 @@ async function handleShareBurned(log: Log) {
     return;
   }
 
-  // 60 seconds = unbondingPeriodSeconds in the mock contract.
-  // On production this would be 21 days.
   try {
-    const unbondingReadyAt = new Date(Date.now() + UNBONDING_PERIOD_SECONDS * 1_000);
-    const unbondingReadyEpoch = Math.floor(unbondingReadyAt.getTime() / 1_000);
+    const unbond = await getUnbond(args.validatorShare, args.user, args.nonce);
+    const unbondingReadyAt = new Date(unbond.readyAtEstimate * 1_000);
+    console.log(
+      `  unbond nonce=${args.nonce} withdrawEpoch=${unbond.withdrawEpoch} ` +
+        `claimableAtEpoch=${unbond.claimableAtEpoch} currentEpoch=${unbond.currentEpoch} ` +
+        `(${unbond.epochsRemaining} checkpoints, ~${Math.round(unbond.etaSeconds / 3600)}h)`
+    );
+
     const result = await canton.exerciseChoice({
       templateId: TEMPLATES.StakingPosition,
       contractId: position.contractId,
       choice: "StakingPosition_ConfirmUnbond",
       argument: {
         proof: {
-          txHash: transactionHash,
-          blockNumber: Number(blockNumber),
-          validatorShare: config.mockValidatorShare,
+          txHash: args.txHash,
+          blockNumber: args.blockNumber,
+          validatorShare: args.validatorShare,
         },
-        unbondingReadyEpoch,
+        unbondingReadyEpoch: unbond.readyAtEstimate,
         featuredRightCid: featuredRightCidForDaml(),
       },
     });
     console.log(`  -> unbonding confirmed. tx=${result.transactionId}`);
 
-    // Mirror to Postgres: update position to Unbonding
-    const posArg = position.argument as { evmAddress?: string; delegator?: string; amountPol?: string };
+    const posArg = position.argument as {
+      evmAddress?: string;
+      delegator?: string;
+      amountPol?: string;
+    };
     await mirrorPosition({
       contractId: position.contractId,
       evmAddress: posArg.evmAddress || args.user,
       partyId: posArg.delegator || "unknown",
       amountPol: posArg.amountPol || formatEther(args.amount),
       status: "Unbonding",
-      evmTxHash: transactionHash,
+      evmTxHash: args.txHash,
       cantonTxId: result.transactionId,
       unbondingReadyAt,
+      chain: "polygon",
+      validatorShare: args.validatorShare,
+      validatorId: args.validatorId,
+      unbondNonce: args.nonce.toString(),
+      unbondWithdrawEpoch: unbond.withdrawEpoch.toString(),
     });
     console.log(`  -> mirrored Unbonding position to Postgres`);
 
@@ -387,84 +357,15 @@ async function handleShareBurned(log: Log) {
       positionContractId: newPositionCid,
       eventKind: "Unbond",
       txProof: {
-        txHash: transactionHash,
-        blockNumber: Number(blockNumber),
-        validatorShare: config.mockValidatorShare,
+        txHash: args.txHash,
+        blockNumber: args.blockNumber,
+        validatorShare: args.validatorShare,
       },
       occurredAt: new Date().toISOString(),
     });
   } catch (err) {
     console.error(`  failed to confirm unbond:`, err);
   }
-}
-
-// --- Event polling ---
-
-async function getLogsBatched(args: {
-  address: Address;
-  event: typeof shareMintedAbi | typeof shareBurnedAbi;
-  fromBlock: bigint;
-  toBlock: bigint;
-}) {
-  const allLogs: Log[] = [];
-  for (let from = args.fromBlock; from <= args.toBlock; from += MAX_BLOCK_RANGE + 1n) {
-    const to = from + MAX_BLOCK_RANGE > args.toBlock ? args.toBlock : from + MAX_BLOCK_RANGE;
-    const logs = await client.getLogs({
-      address: args.address,
-      event: args.event,
-      fromBlock: from,
-      toBlock: to,
-    });
-    allLogs.push(...(logs as Log[]));
-  }
-  return allLogs;
-}
-
-export function startWatchers(): void {
-  console.log(`[orchestrator] polling ${config.mockValidatorShare} on Amoy`);
-
-  let lastScannedBlock: bigint | undefined;
-  const poll = async () => {
-    try {
-      const latestBlock = await client.getBlockNumber();
-      const fromBlock =
-        lastScannedBlock === undefined
-          ? latestBlock > INITIAL_LOOKBACK_BLOCKS
-            ? latestBlock - INITIAL_LOOKBACK_BLOCKS
-            : 0n
-          : lastScannedBlock + 1n;
-      if (fromBlock > latestBlock) return;
-
-      const [mintedLogs, burnedLogs] = await Promise.all([
-        getLogsBatched({
-          address: config.mockValidatorShare as Address,
-          event: shareMintedAbi,
-          fromBlock,
-          toBlock: latestBlock,
-        }),
-        getLogsBatched({
-          address: config.mockValidatorShare as Address,
-          event: shareBurnedAbi,
-          fromBlock,
-          toBlock: latestBlock,
-        }),
-      ]);
-
-      for (const log of mintedLogs) {
-        await handleShareMinted(log as unknown as Log);
-      }
-      for (const log of burnedLogs) {
-        await handleShareBurned(log as unknown as Log);
-      }
-
-      lastScannedBlock = latestBlock;
-    } catch (err) {
-      console.error("[event-poller]", err);
-    }
-  };
-
-  void poll();
-  setInterval(() => void poll(), EVENT_POLL_MS);
 }
 
 function readyAtMillis(value: string): number {
@@ -476,12 +377,27 @@ function readyAtMillis(value: string): number {
 }
 
 /**
- * Polling-based release checker: every 15s, finds Unbonding positions
- * whose unbondingReadyAt has passed and calls Release.
+ * Polling-based release checker.
  *
- * In production you'd also check that the user has called
- * unstakeClaimTokens_new() on-chain. For the hackathon MVP we assume
- * the backend auto-releases once the timer elapses.
+ * The mock version released a position as soon as a 60-second wall-clock
+ * timer elapsed. On real Polygon that is wrong twice over: the delay is
+ * checkpoint-based, and the stake is not actually returned until the
+ * delegator themselves calls `unstakeClaimTokens_new`.
+ *
+ * So for a Polygon position (one that carries a resolved ValidatorShare and
+ * an unbond nonce) we release only when the chain says so:
+ *
+ *   - `unbonds_new[user][nonce].shares == 0` means the record was deleted,
+ *     i.e. the delegator's claim landed. That is the release signal.
+ *   - Still-existing-but-not-yet-claimable records are skipped with the real
+ *     remaining checkpoint count logged.
+ *   - Existing-and-claimable records are also skipped: the funds are still
+ *     on the ValidatorShare until the user claims. We never fabricate a
+ *     Released position for stake the user still has to withdraw.
+ *
+ * Positions with no on-chain unbond metadata (non-Polygon chains, or
+ * pre-migration rows) keep the old timestamp behaviour so this change stays
+ * scoped to Polygon.
  */
 export function startReleaseChecker(): void {
   setInterval(async () => {
@@ -495,10 +411,73 @@ export function startReleaseChecker(): void {
           evmAddress?: string;
         };
         if (arg.status !== "Unbonding") continue;
-        if (!arg.unbondingReadyAt) continue;
-        const readyAt = readyAtMillis(arg.unbondingReadyAt);
-        if (!Number.isFinite(readyAt)) continue;
-        if (now < readyAt) continue;
+
+        const mirrored = await prisma.stakingPosition.findUnique({
+          where: { contractId: p.contractId },
+        });
+
+        // Daml's StakingPosition_Release takes a required EvmProof, so this
+        // is always populated before the exercise.
+        let releaseProof: {
+          txHash: string;
+          blockNumber: number;
+          validatorShare: string;
+        };
+
+        if (mirrored?.validatorShare && mirrored.unbondNonce) {
+          // Real Polygon position — ask the chain, not the clock.
+          let unbond;
+          try {
+            unbond = await getUnbond(
+              mirrored.validatorShare as Address,
+              (arg.evmAddress ?? mirrored.evmAddress) as Address,
+              BigInt(mirrored.unbondNonce)
+            );
+          } catch (err) {
+            console.warn(
+              `[release-checker] unbond read failed for ${p.contractId}:`,
+              err
+            );
+            continue;
+          }
+
+          if (unbond.exists) {
+            if (!unbond.claimable) {
+              console.log(
+                `[release-checker] ${arg.evmAddress} still unbonding: ` +
+                  `${unbond.epochsRemaining} checkpoints to go ` +
+                  `(epoch ${unbond.currentEpoch}/${unbond.claimableAtEpoch})`
+              );
+            } else {
+              console.log(
+                `[release-checker] ${arg.evmAddress} unbond is claimable ` +
+                  `(epoch ${unbond.currentEpoch} >= ${unbond.claimableAtEpoch}) ` +
+                  `— waiting for the delegator to call unstakeClaimTokens_new`
+              );
+            }
+            continue;
+          }
+
+          releaseProof = {
+            txHash: mirrored.evmTxHash ?? "claimed",
+            blockNumber: 0,
+            validatorShare: mirrored.validatorShare,
+          };
+        } else {
+          // Non-Polygon / legacy position: fall back to the recorded ready
+          // timestamp. Phase 3 replaces this for the other chains.
+          if (!arg.unbondingReadyAt) continue;
+          const readyAt = readyAtMillis(arg.unbondingReadyAt);
+          if (!Number.isFinite(readyAt)) continue;
+          if (now < readyAt) continue;
+          releaseProof = {
+            txHash: mirrored?.evmTxHash ?? "auto-release",
+            blockNumber: 0,
+            // Deliberately not an address: nothing on-chain was verified on
+            // this path. Phase 3 replaces it with a real per-chain identifier.
+            validatorShare: `${mirrored?.chain ?? "unknown"}::timer-release`,
+          };
+        }
 
         console.log(`[release-checker] releasing position for ${arg.evmAddress}`);
         try {
@@ -506,13 +485,7 @@ export function startReleaseChecker(): void {
             templateId: TEMPLATES.StakingPosition,
             contractId: p.contractId,
             choice: "StakingPosition_Release",
-            argument: {
-              proof: {
-                txHash: "auto-release",
-                blockNumber: 0,
-                validatorShare: config.mockValidatorShare,
-              },
-            },
+            argument: { proof: releaseProof },
           });
 
           // Mirror to Postgres: update position to Released

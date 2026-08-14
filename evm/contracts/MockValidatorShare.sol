@@ -3,26 +3,41 @@ pragma solidity ^0.8.24;
 
 /**
  * @title MockValidatorShare
- * @notice Amoy-deployable mock of Polygon's ValidatorShare contract.
+ * @notice ⚠️  LOCAL E2E TEST FIXTURE ONLY — NOT ON THE LIVE PATH. ⚠️
  *
- * @dev Polygon's real StakeManager and ValidatorShare contracts live on
- *      Ethereum L1 (mainnet) or Sepolia (testnet) — NOT on Polygon PoS.
- *      For hackathon purposes we deploy a simplified mock on Amoy that
- *      exposes the same interface and emits the same events, so the
- *      frontend and backend can exercise the REAL buyVoucher/sellVoucher
- *      flow against real on-chain transactions.
+ * @dev As of Phase 2 of the real-data migration, CantonStake stakes against
+ *      the REAL Polygon PoS contracts: `StakeManager`, the shared
+ *      `StakingInfo` logger, and one `ValidatorShare` per validator, all
+ *      deployed on Ethereum L1 (Sepolia for Amoy). This contract is retained
+ *      only so the fast local harness can exercise the UI flow without an L1
+ *      testnet; it is reachable exclusively when
+ *      `NEXT_PUBLIC_USE_REAL_VALIDATOR_SHARE` is NOT "true", and no backend
+ *      code path references it at all any more.
  *
- *      Differences from the production contract (documented for honesty):
- *        - No fx/share-price drift (1:1 shares:POL). Production uses a
- *          dynamic exchangeRate based on accumulated rewards.
- *        - Rewards accrue linearly at a fixed APR. Production accrues via
- *          checkpoint distribution from the StakeManager.
- *        - Unbonding period defaults to 60s (not 21 days/80 checkpoints).
+ *      It is NOT a drop-in equivalent of the production contract. Known
+ *      divergences, and what the real contract does instead:
+ *
+ *        - buyVoucher is `payable` here. On the real ValidatorShare it is
+ *          NOT payable: the stake token is an ERC-20 and the delegator must
+ *          `approve(StakeManager, amount)` first, because
+ *          StakeManager.delegationDeposit does the transferFrom.
+ *        - 1:1 shares:POL. The real contract mints
+ *          `amount * precision / exchangeRate()`, where precision is 100 for
+ *          the original foundation validators (validatorId < 8) and 1e29 for
+ *          all later ones.
+ *        - Rewards accrue linearly at a fixed APR and are paid out of a
+ *          balance the OWNER pre-funds. Real rewards are protocol yield
+ *          distributed at checkpoints by the StakeManager and read via
+ *          `getLiquidRewards(delegator)`; nothing is pre-funded.
+ *        - Unbonding is a 60-second wall clock. The real delay is a
+ *          CHECKPOINT COUNT — `StakeManager.withdrawalDelay()`, currently 80
+ *          — and `unstakeClaimTokens_new` reverts until
+ *          `withdrawEpoch + withdrawalDelay <= StakeManager.epoch()`.
+ *        - Events are emitted by this contract, with no validatorId. The real
+ *          ShareMinted / ShareBurnedWithId / DelegatorClaimedRewards events
+ *          are emitted by the shared StakingInfo logger and carry
+ *          `validatorId` as their first indexed topic.
  *        - No slashing, no commissions, no signer keys.
- *
- *      Everything else — including event signatures — matches Polygon's
- *      real contract so this is a drop-in swap for the mainnet flow when
- *      the app is productionized on Ethereum.
  */
 contract MockValidatorShare {
     // --- State ---
