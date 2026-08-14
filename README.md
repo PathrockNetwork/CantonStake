@@ -537,8 +537,9 @@ All routes return JSON. POST/PUT/DELETE expect `Content-Type: application/json`.
 | `PORT` | HTTP port | `4000` |
 | `LOG_LEVEL` | Pino log level | `info` |
 | `DEMO_MODE` | Enables demo-only routes | `false` |
-| `MOCK_REWARDS` | Use seeded record stream instead of Scan API | `false` |
-| `MOCK_REWARDS_SEED` | Deterministic seed for round generation | `20260505` |
+| `SCAN_API_URL` | Canton Scan API base for CIP-0104 attribution (unset = rounds mint 0 CC) | empty |
+| `SCAN_PAGE_SIZE` | Page size for the Scan /v0/events poll | `500` |
+| `SCAN_ROUND_CC_POOL` | Gross CC distributed per network round (configured — the Scan publishes no mint pool; parties + weights are real) | `100` |
 | `AMOY_RPC_URL` | Polygon Amoy JSON-RPC | `https://rpc-amoy.polygon.technology` |
 | `MOCK_VALIDATOR_SHARE_ADDRESS` | Deployed mock contract address | required |
 | `CANTON_JSON_API_URL` | Canton JSON Ledger API | `http://localhost:3975` |
