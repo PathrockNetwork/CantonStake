@@ -30,22 +30,26 @@ function clearStored() {
   window.dispatchEvent(new Event(CHANGE_EVENT));
 }
 
-function generatePartyId(displayName: string): string {
+// The direct-connect provider can only attach to a party that already
+// exists on the target ledger — it has no way to allocate one. The party
+// must be pinned via env (e.g. the LocalNet app_user party); fabricating
+// a random party id would produce an identity no ledger knows about.
+function requireConfiguredPartyId(): string {
   const configured = process.env.NEXT_PUBLIC_MOCK_LOOP_PARTY_ID;
-  if (configured) return configured;
-  const hex = Array.from(crypto.getRandomValues(new Uint8Array(16)))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-  return `${displayName}::1220${hex}`;
+  if (configured && configured !== "PLACEHOLDER_READ_FROM_LOCALNET") {
+    return configured;
+  }
+  throw new Error(
+    "NEXT_PUBLIC_MOCK_LOOP_PARTY_ID is not set to a real ledger party — " +
+      "use the Loop SDK provider (preferred) or pin the LocalNet party in env"
+  );
 }
 
 /**
- * Loop provider — passkey/biometric identity flow on Canton.
- *
- * This is the mock implementation. Swap point for the real SDK is
- * documented in references/loop-sdk/README.md (loop.init / loop.connect).
- * When swapping: keep this file's exported shape; replace the body of
- * connect/disconnect with the SDK calls.
+ * Direct-connect Loop provider — attaches to a pre-existing Canton party
+ * without the SDK QR flow. Used where the real Loop SDK can't run (SSR,
+ * LocalNet). Swap point for the real SDK is documented in
+ * references/loop-sdk/README.md (loop.init / loop.connect).
  */
 export const loopProvider: ICantonProvider = {
   id: "loop",
@@ -63,7 +67,7 @@ export const loopProvider: ICantonProvider = {
     await new Promise((r) => setTimeout(r, 800));
     const name = displayName ?? "Delegator";
     const identity: CantonIdentity = {
-      partyId: generatePartyId(name),
+      partyId: requireConfiguredPartyId(),
       displayName: name,
     };
 
