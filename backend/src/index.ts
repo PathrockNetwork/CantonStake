@@ -424,7 +424,34 @@ app.get<{ Querystring: { address?: string } }>(
             return a.evmAddress?.toLowerCase() === address.toLowerCase();
           })
         : contracts;
-      return { positions: filtered };
+
+      // Canton owns the lifecycle, but the authoritative claim condition on
+      // Polygon is checkpoint-based: unstakeClaimTokens_new only succeeds once
+      // `unbondWithdrawEpoch + withdrawalDelay() <= epoch()`. That epoch lives
+      // on-chain and in the Postgres mirror, never in the Daml contract — the
+      // contract's unbondingReadyAt is a cadence-derived ESTIMATE. Attach the
+      // mirror's real values so the UI can gate on the epoch instead of a
+      // timestamp that drifts whenever checkpoints are slow.
+      const mirrors = await prisma.stakingPosition.findMany({
+        where: { contractId: { in: filtered.map((c) => c.contractId) } },
+        select: {
+          contractId: true,
+          chain: true,
+          validatorAddress: true,
+          validatorShare: true,
+          validatorId: true,
+          unbondNonce: true,
+          unbondWithdrawEpoch: true,
+        },
+      });
+      const byCid = new Map(mirrors.map((m) => [m.contractId, m]));
+
+      return {
+        positions: filtered.map((c) => ({
+          ...c,
+          chainMeta: byCid.get(c.contractId) ?? null,
+        })),
+      };
     } catch (err) {
       req.log.error(err);
       return reply.code(500).send({ error: String(err) });

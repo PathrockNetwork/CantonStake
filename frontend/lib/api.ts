@@ -10,10 +10,29 @@ export interface PositionRow {
     status: "Pending" | "Bonded" | "Unbonding" | "Released" | "Cancelled";
     bondedAt?: string;
     unbondingStartedAt?: string;
+    /**
+     * Cadence-derived ESTIMATE of when the unbond becomes claimable. Never
+     * use it as the gate — on Polygon the authoritative condition is
+     * checkpoint-based (`chainMeta.unbondWithdrawEpoch + withdrawalDelay
+     * <= currentEpoch`), and checkpoints do not arrive on a fixed clock.
+     */
     unbondingReadyAt?: string;
     releasedAt?: string;
     markersEmitted: number;
   };
+  /**
+   * Real per-position chain data from the Postgres mirror. Null for
+   * positions created before the per-validator migration, and for chains
+   * that stake through a single precompile.
+   */
+  chainMeta?: {
+    chain: string;
+    validatorAddress: string | null;
+    validatorShare: string | null;
+    validatorId: number | null;
+    unbondNonce: string | null;
+    unbondWithdrawEpoch: string | null;
+  } | null;
 }
 
 export interface RequestRow {
