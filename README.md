@@ -4,7 +4,9 @@
 
 **Stake any chain. Earn on Canton.**
 
-Self-custodial multi-chain staking dApp built on Canton Network. Stake POL, GLMR, MON, ATOM, or SUI from your own wallet and earn Canton Coin (CC) rewards on top of native validator yield, distributed every 10-minute round via an on-ledger 75/25 beneficiary split.
+Self-custodial multi-chain staking dApp built on Canton Network. Stake from your own wallet and earn Canton Coin (CC) rewards on top of native validator yield, distributed every 10-minute round via an on-ledger 75/25 beneficiary split.
+
+**Polygon (POL) and Cosmos (ATOM) are the two production paths.** Moonbeam, Sui and Monad adapters exist at lower maturity — see [chain status](#multi-chain-staking) before relying on them.
 
 ![Canton Network](https://img.shields.io/badge/Canton-Network-00ff9d?style=flat-square)
 ![Daml](https://img.shields.io/badge/Daml-3.5-7c4dff?style=flat-square&logo=daml)
@@ -58,13 +60,25 @@ CantonStake unifies multi-chain staking into one self-custodial flow on Canton N
 ## Core Features
 
 ### Multi-chain staking
-Five testnet chain adapters wired end-to-end: Polygon Amoy, Moonbase Alpha, Monad Testnet, Cosmos Hub theta-testnet, and Sui Testnet. Each routes through its native wallet primitive (Wagmi for EVM, Keplr/Leap for Cosmos, Mysten dapp-kit for Sui).
+Five testnet chain adapters, each routing through its native wallet primitive (Wagmi for EVM, Keplr/Leap for Cosmos, Mysten dapp-kit for Sui). They are **not at equal maturity** — the table below is the honest status as of 2026-08-14:
+
+| Chain | Status | Notes |
+|---|---|---|
+| **Polygon Amoy** | Production path | Real `StakeManager` + per-validator `ValidatorShare` on Sepolia (Polygon PoS settles on Ethereum L1, not Bor). Live `exchangeRate` share math, checkpoint-based unbonding. Read path verified end-to-end against chain; **no user delegation has been broadcast yet** — that needs a funded wallet |
+| **Cosmos Hub theta-testnet** | Production path | Real protobuf `TxRaw → MsgDelegate` decode, live APY derived from the chain's own x/mint + x/staking modules |
+| **Moonbase Alpha** | Degraded | Parachain-staking precompile wired; validator-scoring precompile read currently failing |
+| **Sui Testnet** | Inactive | Event decode fixed, but public fullnodes deprecated JSON-RPC and the GraphQL endpoint is unreachable from our host. The watcher fails loudly rather than silently watching nothing. Point `SUI_RPC_URL` at a GraphQL-capable node to activate |
+| **Monad Testnet** | Estimate only | Monad publishes no reward schedule, so its APY is labelled `source: "estimate"` and is never presented as live data |
+
+See [`docs/REAL_DATA_MIGRATION.md`](docs/REAL_DATA_MIGRATION.md) for the full mock-to-real audit and what remains.
 
 ### Self-custodial by construction
 Keys never leave the user's wallet. CantonStake's backend orchestrator only observes chain events and exercises Daml choices on the user's behalf within the scope they signed for. The auto-compound keeper holds its own EVM signing key only to broadcast pre-authorised compound transactions.
 
 ### Canton Coin reward rounds
-A BullMQ scheduler ticks every 10 minutes, ingests CIP-0104 `AppActivityRecord` entries from the SV Scan API, and distributes CC across active bonded positions. Idempotent on `(roundNumber, party, eventId)` so re-polling never double-credits.
+A BullMQ scheduler ticks every 10 minutes, ingests CIP-0104 `AppActivityRecord` entries from the SV Scan API, and distributes CC across active bonded positions pro-rata bonded stake. Idempotent on `(roundNumber, party, eventId)` so re-polling never double-credits.
+
+Parties and traffic weights are read live from the Scan API. The Scan publishes no per-round mint pool, so the **gross CC per round is a configured constant** (`SCAN_ROUND_CC_POOL`) rather than a network-sourced figure — labelled as such rather than presented as live.
 
 ### On-ledger 75/25 beneficiary split
 The `BeneficiarySplit` Daml template enforces `sum(weights) == 1.0` and routes CC to the delegator's Loop party and the app treasury at distribution time. Operator can rotate weights via `Split_Update`, which emits a `BeneficiarySplitUpdated` audit beacon.
@@ -74,6 +88,8 @@ Backend service polls each chain's public validator API on a 1-hour cron, normal
 
 ### Auto-compound keeper
 Per-chain executors broadcast claim+restake on the user's behalf within their signed permit's scope and expiry. Polygon uses EIP-712, Cosmos uses MsgGrant Authz, Moonbeam uses parachain-staking precompile bonds, Monad uses its staking precompile's `compound()`, and Sui re-stakes via `request_add_stake`.
+
+**Not currently active.** Every executor self-reports `skipped` with a reason until keeper keys are provisioned and funded per chain (`AUTO_COMPOUND_KEEPER_KEY` and the per-chain secrets). The code paths are implemented; the keys are an operator action.
 
 ### Slashing & reward alerts
 Slashing monitor diffs validator scores hourly and emits `validator.score_drop` / `validator.jailed` events. Notifications router fans out to Telegram, Resend (email), and Discord webhooks per the user's configured channels — soft-deletable, audit-logged, idempotent on `(alertId, channelId)`.
@@ -85,7 +101,7 @@ Slashing monitor diffs validator scores hourly and emits `validator.score_drop` 
 The `/rewards` page surfaces an Anthropic-powered live commentary on the current round, contextualised with the user's lifetime CC, latest round share, and milestone crossings (10/100/1000 CC). Falls back to a templated explainer when no API key is set.
 
 ### Cross-chain portfolio view
-`/portfolio` aggregates delegations across all five adapters into one table, with bonded/unbonding counts, USD totals, and per-row source tags (`live` / `cache` / `stub`). Refreshes every 30 seconds.
+`/portfolio` aggregates delegations across every adapter into one table, with bonded/unbonding counts, USD totals, and per-row source tags. A `stub` tag means that adapter's live fetch returned nothing — it is shown, not hidden, so an inactive chain never masquerades as an empty portfolio. Refreshes every 30 seconds.
 
 ### Loop wallet integration
 Browser flow via `@fivenorth/loop-sdk` for Canton party identity. Bypasses Loop devnet's CORS allowlist via a Fastify reverse proxy at `/loop-proxy/*` so dev origins work without fivenorth-side allowlisting.
