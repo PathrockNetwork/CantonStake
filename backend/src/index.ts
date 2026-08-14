@@ -17,7 +17,7 @@ import { createPublicClient, formatEther, http, type Address } from "viem";
 import { polygonAmoy } from "viem/chains";
 import { config } from "./config.js";
 import { canton, cantonDelegator, TEMPLATES } from "./canton.js";
-import { startReleaseChecker } from "./orchestrator.js";
+import { startReleaseChecker, featuredRightCidForDaml } from "./orchestrator.js";
 import { startMultichainWatchers } from "./multichain-watcher.js";
 import { prisma } from "./db.js";
 import { startRewardScheduler, shutdownRewardSystem, redisConnection, enqueueRound } from "./reward-rounds.js";
@@ -48,6 +48,7 @@ import portfolioRoutes from "./routes/portfolio.js";
 import autoCompoundRoutes from "./routes/auto-compound.js";
 import rewardsRoutes from "./routes/rewards.js";
 import chainsRoutes from "./routes/chains.js";
+import polygonRoutes from "./routes/polygon.js";
 import loopProxyRoutes from "./routes/loop-proxy.js";
 
 const publicClient = createPublicClient({
@@ -180,7 +181,11 @@ app.get("/metrics", async (_req, reply) => {
 app.get("/api/health", async () => ({
   status: "ok",
   cantonJsonApi: config.cantonJsonApiUrl,
-  validatorShare: config.mockValidatorShare,
+  // Polygon staking settles on Ethereum L1. There is no single validator
+  // contract to report — one ValidatorShare exists per validator — so the
+  // StakeManager that resolves them is what identifies the deployment.
+  stakeManager: config.stakeManagerAddress,
+  stakeSettlementChainId: config.stakeSettlementChainId,
   featuredAppRight: config.featuredAppRightCid ? "configured" : "missing",
   demoMode: config.demoMode,
   time: new Date().toISOString(),
@@ -207,8 +212,8 @@ app.get("/api/health/detail", async () => {
     orderBy: { roundNumber: "desc" },
   });
   const warnings = [
-    !config.featuredAppRightCid && !config.mockRewards
-      ? "FEATURED_APP_RIGHT_CID missing: reward rounds will be skipped (set MOCK_REWARDS=true for offline demo)"
+    !config.featuredAppRightCid
+      ? "FEATURED_APP_RIGHT_CID missing: reward rounds will be skipped"
       : null,
     config.featuredAppRightCid === "demo-stub"
       ? "FEATURED_APP_RIGHT_CID=demo-stub: scheduler runs, Daml marker exercise is disabled"
@@ -216,8 +221,8 @@ app.get("/api/health/detail", async () => {
     !config.demoMode && config.logLevel !== "debug"
       ? "Manual reward trigger disabled outside DEMO_MODE/debug"
       : null,
-    config.mockRewards
-      ? "MOCK_REWARDS=true: reward rounds use seeded mock data (offline demo mode)"
+    !config.scanApiUrl
+      ? "SCAN_API_URL unset: reward rounds mint 0 CC (no real attribution source)"
       : null,
     config.useLegacyMarkers
       ? "USE_LEGACY_MARKERS=true: legacy FeaturedAppActivityMarker emission is enabled"
@@ -237,7 +242,9 @@ app.get("/api/health/detail", async () => {
     status: "ok",
     cantonJsonApi: config.cantonJsonApiUrl,
     cantonDelegatorParty: config.cantonDelegatorParty,
-    validatorShare: config.mockValidatorShare,
+    stakeManager: config.stakeManagerAddress,
+    stakingLogger: config.stakingLoggerAddress,
+    stakeSettlementChainId: config.stakeSettlementChainId,
     featuredAppRight: config.featuredAppRightCid ? "configured" : "missing",
     demoMode: config.demoMode,
     database: dbStatus,
@@ -378,88 +385,6 @@ app.post<{ Body: CreateRequestBody }>("/api/requests", async (req, reply) => {
     return reply.code(500).send({ error: String(err) });
   }
 });
-
-// --- Force-accept a non-Polygon StakingRequest (demo aid) ---
-// Until per-chain orchestrator watchers land, the user (or the frontend
-// after the user's wallet confirms a Moonbase/Monad tx) can call this to
-// transition the Daml position from Pending → Bonded.
-
-interface ForceAcceptBody {
-  evmAddress: string;
-  amountPol: string;
-  evmTxHash: string;
-  blockNumber?: number;
-  chain?: string;
-}
-
-app.post<{ Body: ForceAcceptBody }>(
-  "/api/requests/force-accept",
-  async (req, reply) => {
-    if (!config.demoMode && config.logLevel !== "debug") {
-      return reply.code(403).send({
-        error:
-          "force-accept disabled outside DEMO_MODE / LOG_LEVEL=debug",
-      });
-    }
-    const { evmAddress, amountPol, evmTxHash } = req.body;
-    const chain = req.body.chain ?? "polygon";
-    if (!evmAddress || !amountPol || !evmTxHash) {
-      return reply
-        .code(400)
-        .send({ error: "missing evmAddress / amountPol / evmTxHash" });
-    }
-
-    try {
-      // Find the matching pending StakingRequest on Canton.
-      const requests = await canton.activeContracts(TEMPLATES.StakingRequest);
-      const matching = requests.find((r) => {
-        const a = r.argument as { evmAddress?: string; amountPol?: string };
-        return (
-          a.evmAddress?.toLowerCase() === evmAddress.toLowerCase() &&
-          a.amountPol === amountPol
-        );
-      });
-      if (!matching) {
-        return reply
-          .code(404)
-          .send({ error: "no pending StakingRequest matched evmAddress + amountPol" });
-      }
-
-      const result = await cantonDelegator.exerciseChoice({
-        templateId: TEMPLATES.StakingRequest,
-        contractId: matching.contractId,
-        choice: "StakingRequest_Accept",
-        argument: {
-          proof: {
-            txHash: evmTxHash,
-            blockNumber: req.body.blockNumber ?? 0,
-            validatorShare:
-              chain === "polygon"
-                ? config.mockValidatorShare
-                : `${chain}::precompile`,
-          },
-          featuredRightCid: null,
-        },
-        actAs: [config.cantonAppProviderParty],
-      });
-
-      req.log.info(
-        { chain, evmAddress, evmTxHash },
-        "[requests] force-accepted non-polygon stake"
-      );
-
-      return {
-        ok: true,
-        chain,
-        contractId: matching.contractId,
-        transactionId: result.transactionId,
-      };
-    } catch (err) {
-      req.log.error(err);
-      return reply.code(500).send({ error: String(err) });
-    }
-  }
-);
 
 // --- List pending requests by EVM address ---
 
@@ -667,6 +592,9 @@ await app.register(rewardsRoutes);
 
 // --- Chain catalog stats (live APY/TVL/validator count) ---
 await app.register(chainsRoutes);
+
+// --- Polygon staking params + validator-share registry ---
+await app.register(polygonRoutes);
 
 // --- Loop SDK reverse proxy (CORS bypass for dev origins) ---
 await app.register(loopProxyRoutes);
