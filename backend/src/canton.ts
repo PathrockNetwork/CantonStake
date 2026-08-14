@@ -25,6 +25,28 @@ export interface ActiveContract {
   argument: Record<string, unknown>;
 }
 
+/**
+ * The Canton 3.5 JSON API encodes Daml Int (and Numeric) as JSON
+ * *strings* — a raw JSON number in a payload fails server-side with
+ * `LEDGER_API_INTERNAL_ERROR: Expected ujson.Str`. Every JS number in a
+ * choice argument / create argument therefore becomes a string here,
+ * centrally, rather than at each call site.
+ */
+function damlEncode(value: unknown): unknown {
+  if (typeof value === "number") return String(value);
+  if (typeof value === "bigint") return value.toString();
+  if (Array.isArray(value)) return value.map(damlEncode);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+        k,
+        damlEncode(v),
+      ])
+    );
+  }
+  return value;
+}
+
 class CantonClient {
   constructor(
     private readonly baseUrl: string,
@@ -60,7 +82,7 @@ class CantonClient {
               templateId: args.templateId,
               contractId: args.contractId,
               choice: args.choice,
-              choiceArgument: args.argument,
+              choiceArgument: damlEncode(args.argument),
             },
           },
         ],
@@ -105,7 +127,7 @@ class CantonClient {
           {
             CreateCommand: {
               templateId: args.templateId,
-              createArguments: args.argument,
+              createArguments: damlEncode(args.argument),
             },
           },
         ],
