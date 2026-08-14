@@ -123,9 +123,9 @@ async function processRound(job: Job<RoundPayload>) {
     const totalMarkers = totalTxns;
     const markerToTxRatio = totalTxns > 0 ? totalMarkers / totalTxns : null;
 
-    // Mock mode bypasses the FeaturedAppRight gate: the seeded record
-    // stream IS the source of truth for offline demos.
-    if (!config.mockRewards && !config.featuredAppRightCid) {
+    // Real attribution requires the FeaturedAppRight: without it the
+    // network attributes no traffic to this app's provider party.
+    if (!config.featuredAppRightCid) {
       await prisma.rewardRound.update({
         where: { id: round.id },
         data: {
@@ -145,28 +145,25 @@ async function processRound(job: Job<RoundPayload>) {
       return;
     }
 
-    // 3. Calculate per-user CC distribution from CIP-0104 attribution records.
-    //    Each record's `ccAttributed` is the gross CC for that party in this
-    //    round; the BeneficiarySplit (75 user / 25 treasury) is applied at
-    //    distribution time. Rounds with no records mint 0 CC and complete.
+    // 3. Calculate per-user CC distribution from CIP-0104 attribution
+    //    records. Under real attribution the Scan attributes traffic to
+    //    the app's *provider* party (the Featured App that drove it), so
+    //    the app's gross CC for the round is split across bonded stakers
+    //    pro-rata their bonded stake — the app's own distribution rule,
+    //    not a Scan-derived per-user number. Records naming any other
+    //    party (future per-user attribution) distribute to that party's
+    //    position directly. Rounds with no records mint 0 CC and complete.
     let totalCcMinted = 0;
     const userByParty = new Map(
       bondedPositions.map((p) => [p.user.cantonPartyId, p])
     );
 
-    for (const rec of activityRecords) {
-      const position = userByParty.get(rec.party);
-      const cc = Number(rec.ccAttributed);
+    const applyReward = async (
+      position: (typeof bondedPositions)[number],
+      cc: number
+    ) => {
       const userShare = cc * 0.75;
       const treasuryShare = cc * 0.25;
-      totalCcMinted += cc;
-
-      if (!position) {
-        console.log(
-          `  [round #${roundNumber}] activity record for unknown party ${rec.party} — skipping reward event (CC counted in totals)`
-        );
-        continue;
-      }
 
       await prisma.rewardEvent.create({
         data: {
@@ -189,9 +186,48 @@ async function processRound(job: Job<RoundPayload>) {
           markersEmitted: { increment: 1 },
         },
       });
+    };
 
+    for (const rec of activityRecords) {
+      const cc = Number(rec.ccAttributed);
+      totalCcMinted += cc;
+
+      if (rec.party === config.cantonAppProviderParty) {
+        // Provider-party attribution: split the app's round CC across
+        // bonded positions pro-rata bonded stake.
+        if (bondedPositions.length === 0) {
+          console.log(
+            `  [round #${roundNumber}] provider attribution of ${cc.toFixed(2)} CC with no bonded positions — counted in totals only`
+          );
+          continue;
+        }
+        const totalStake = bondedPositions.reduce(
+          (s, p) => s + parseFloat(p.amountPol || "0"),
+          0
+        );
+        for (const position of bondedPositions) {
+          const stake = parseFloat(position.amountPol || "0");
+          const share = totalStake > 0 ? stake / totalStake : 1 / bondedPositions.length;
+          const userCc = cc * share;
+          await applyReward(position, userCc);
+          console.log(
+            `  [round #${roundNumber}] CC for ${position.user.cantonPartyId} (stake-weighted ${(share * 100).toFixed(1)}%): ${(userCc * 0.75).toFixed(8)} (user) + ${(userCc * 0.25).toFixed(8)} (treasury) [${ingestion.source}]`
+          );
+        }
+        continue;
+      }
+
+      const position = userByParty.get(rec.party);
+      if (!position) {
+        console.log(
+          `  [round #${roundNumber}] activity record for unknown party ${rec.party} — skipping reward event (CC counted in totals)`
+        );
+        continue;
+      }
+
+      await applyReward(position, cc);
       console.log(
-        `  [round #${roundNumber}] CC for ${rec.party}: ${userShare.toFixed(8)} (user) + ${treasuryShare.toFixed(8)} (treasury) [${ingestion.source}]`
+        `  [round #${roundNumber}] CC for ${rec.party}: ${(cc * 0.75).toFixed(8)} (user) + ${(cc * 0.25).toFixed(8)} (treasury) [${ingestion.source}]`
       );
     }
 

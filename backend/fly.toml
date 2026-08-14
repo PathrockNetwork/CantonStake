@@ -32,7 +32,7 @@ kill_timeout = "30s"
   LOG_LEVEL = "info"
   # Demo flags default to off in cloud — flip via `fly secrets` for a demo run.
   DEMO_MODE = "false"
-  MOCK_REWARDS = "false"
+  SCAN_API_URL = ""
   USE_LEGACY_MARKERS = "false"
   AUTO_COMPOUND_DISABLED = "true"
   PORTFOLIO_SNAPSHOTS_DISABLED = "false"
