@@ -13,7 +13,7 @@ import {
   sendTransaction as sendTransactionCore,
   waitForTransactionReceipt,
 } from "@wagmi/core";
-import { parseEther } from "viem";
+import { formatUnits, parseEther } from "viem";
 import { polygonAmoy } from "wagmi/chains";
 import { IconArrowRight } from "@/components/icons";
 import { Banner } from "@/components/primitives/Banner";
@@ -27,8 +27,14 @@ import {
   createStakingRequest,
   fetchChainStats,
   fetchPositions,
+  fetchWatcherStatus,
 } from "@/lib/api";
-import { liveChains, polygonChain, type ChainConfig } from "@/lib/chains";
+import {
+  liveChains,
+  polygonChain,
+  validatorMinAmounts,
+  type ChainConfig,
+} from "@/lib/chains";
 import { wagmiConfig } from "@/lib/wagmi";
 import { adapterFor } from "@/lib/chains/index";
 import { fetchStakingParams } from "@/lib/chains/polygon";
@@ -37,6 +43,7 @@ import { useCantonWallet } from "@/lib/canton";
 import { useCosmosWallet, cosmosChainId } from "@/lib/cosmos/use-cosmos-wallet";
 import { useSuiWallet } from "@/lib/sui/use-sui-wallet";
 import { usePrices } from "@/lib/prices";
+import { isMainnet } from "@/lib/network";
 import { recordPositionMeta } from "@/lib/position-chain-map";
 import { tokens } from "@/lib/tokens";
 
@@ -67,7 +74,7 @@ import { tokens } from "@/lib/tokens";
  * If the wagmi write fails (rejected, wrong network, RPC error), step
  * resets and an error banner replaces the wrong-network banner.
  */
-type ChainKind = "CANTON" | "EVM" | "COSMOS" | "SUI" | "MARKER";
+type ChainKind = "CANTON" | "EVM" | "COSMOS" | "SUI" | "MOVE" | "SUBSTRATE" | "SVM" | "MARKER";
 
 interface Stage {
   code: string;
@@ -80,26 +87,41 @@ interface Stage {
 // sees what they're actually calling on whichever chain they picked.
 const CHAIN_STAKE_METHOD: Record<ChainConfig["id"], string> = {
   polygon: "ValidatorShare.buyVoucher()",  // preceded by POL approve()
-  moonbeam: "ParachainStaking.delegate()",
   monad: "Staking.delegate(uint64)",
   cosmos: "MsgDelegate",
+  celestia: "MsgDelegate",
+  osmosis: "MsgDelegate",
   sui: "0x3::sui_system::request_add_stake",
+  aptos: "0x1::stake::add_stake",
+  polkadot: "nominationPools.bond()",
+  bnb: "StakeHub.delegate()",
+  solana: "Stake.delegate()",
 };
 
 const CHAIN_CONFIRM_EVENT: Record<ChainConfig["id"], string> = {
   polygon: "ShareMinted",
-  moonbeam: "Delegated",
   monad: "Delegate",
   cosmos: "tx committed",
+  celestia: "tx committed",
+  osmosis: "tx committed",
   sui: "tx finalized",
+  aptos: "AddStakeEvent",
+  polkadot: "Bonded",
+  bnb: "Delegated",
+  solana: "delegateStake",
 };
 
 const CHAIN_KIND: Record<ChainConfig["id"], ChainKind> = {
   polygon: "EVM",
-  moonbeam: "EVM",
   monad: "EVM",
   cosmos: "COSMOS",
+  celestia: "COSMOS",
+  osmosis: "COSMOS",
   sui: "SUI",
+  aptos: "MOVE",
+  polkadot: "SUBSTRATE",
+  bnb: "EVM",
+  solana: "SVM",
 };
 
 function buildStages(chain: ChainConfig): Stage[] {
@@ -150,6 +172,78 @@ function buildCtaLabels(chain: ChainConfig): string[] {
 
 type LogEntry = Stage & { t: number };
 
+// Where to get testnet funds per chain. Polygon is special: staking
+// settles on Ethereum Sepolia, so the wallet needs Sepolia ETH (gas) and
+// the testnet POL ERC-20 there — Amoy-side POL alone is not stakeable.
+const FUNDING_HINTS: Record<ChainConfig["id"], React.ReactNode> = {
+  polygon: (
+    <>
+      Staking settles on Ethereum Sepolia — you need Sepolia ETH for gas +
+      testnet POL there. ETH:{" "}
+      <a href="https://sepoliafaucet.com" target="_blank" rel="noreferrer">sepoliafaucet.com</a>,{" "}
+      <a href="https://cloud.google.com/application/web3/faucet/ethereum/sepolia" target="_blank" rel="noreferrer">Google faucet</a>.
+      POL:{" "}
+      <a href="https://www.alchemy.com/faucets/polygon-amoy" target="_blank" rel="noreferrer">Alchemy Amoy faucet</a>,{" "}
+      <a href="https://faucet.quicknode.com/polygon/amoy" target="_blank" rel="noreferrer">QuickNode</a>{" "}
+      (claim, then check the POL balance shows on Sepolia).
+    </>
+  ),
+  monad: (
+    <>
+      Get Monad testnet MON from{" "}
+      <a href="https://faucet.monad.xyz" target="_blank" rel="noreferrer">the Monad faucet</a>.
+    </>
+  ),
+  cosmos: (
+    <>
+      Get theta-testnet ATOM from{" "}
+      <a href="https://faucet.theta-testnet.polypore.xyz" target="_blank" rel="noreferrer">the Polypore faucet</a>.
+    </>
+  ),
+  sui: (
+    <>
+      Get Sui testnet SUI from{" "}
+      <a href="https://faucet.sui.io" target="_blank" rel="noreferrer">the Sui faucet</a>.
+    </>
+  ),
+  celestia: (
+    <>
+      Get mocha testnet TIA from{" "}
+      <a href="https://faucet.celenium.io" target="_blank" rel="noreferrer">the Celenium faucet</a>.
+    </>
+  ),
+  osmosis: (
+    <>
+      Get Osmosis testnet OSMO from{" "}
+      <a href="https://faucet.testnet.osmosis.zone" target="_blank" rel="noreferrer">the Osmosis faucet</a>.
+    </>
+  ),
+  aptos: (
+    <>
+      Get Aptos testnet APT from{" "}
+      <a href="https://aptos.dev/network/faucet" target="_blank" rel="noreferrer">the Aptos faucet</a>.
+    </>
+  ),
+  polkadot: (
+    <>
+      Westend WND comes from the{" "}
+      <a href="https://wiki.polkadot.com/docs/en/maintain-networks#westend-test-network" target="_blank" rel="noreferrer">Westend faucet (Matrix bot)</a>.
+    </>
+  ),
+  bnb: (
+    <>
+      Get Chapel testnet tBNB from{" "}
+      <a href="https://testnet.bnbchain.org/faucet-smart" target="_blank" rel="noreferrer">the BNB faucet</a>.
+    </>
+  ),
+  solana: (
+    <>
+      Get Solana testnet SOL from{" "}
+      <a href="https://faucet.solana.com" target="_blank" rel="noreferrer">the Solana faucet</a>.
+    </>
+  ),
+};
+
 export default function StakePage() {
   const { address, isConnected, connector } = useAccount();
   const chainId = useChainId();
@@ -164,12 +258,18 @@ export default function StakePage() {
     "polygon",
   );
   const selectedChain = chains.find((c) => c.id === selectedChainId) ?? polygonChain();
-  const adapter = adapterFor(selectedChain.id);
-  const isEvmStakingReady = !!selectedChain.wagmiChain;
+  // Adapter-less chains (newly added networks) have a live settlement
+  // watcher but no in-app staking flow yet — the CTA must say so instead
+  // of dead-ending in a wallet prompt that can never finish.
+  const stakingUiReady = selectedChain.hasAdapter !== false;
+  const adapter = stakingUiReady ? adapterFor(selectedChain.id) : null;
+  // Non-null wherever staking flows run (guarded by stakingUiReady checks).
+  const chainAdapter = adapter!;
+  const isEvmStakingReady = stakingUiReady && !!selectedChain.wagmiChain;
   const isCosmosChain = selectedChain.id === "cosmos";
   const isSuiChain = selectedChain.id === "sui";
   const isWalletReadyForChain =
-    isEvmStakingReady ||
+    (stakingUiReady && !!selectedChain.wagmiChain) ||
     (isCosmosChain && cosmos.isConnected) ||
     (isSuiChain && sui.isConnected);
   const polygon = polygonChain();
@@ -197,10 +297,15 @@ export default function StakePage() {
   const chainPriceUsd = (() => {
     switch (selectedChain.id) {
       case "polygon": return prices?.polUsd ?? 0;
-      case "moonbeam": return prices?.glmrUsd ?? 0;
       case "monad": return prices?.monUsd ?? 0;
       case "cosmos": return prices?.atomUsd ?? 0;
+      case "celestia": return prices?.tiaUsd ?? 0;
+      case "osmosis": return prices?.osmoUsd ?? 0;
       case "sui": return prices?.suiUsd ?? 0;
+      case "aptos": return prices?.aptUsd ?? 0;
+      case "polkadot": return prices?.dotUsd ?? 0;
+      case "bnb": return prices?.bnbUsd ?? 0;
+      case "solana": return prices?.solUsd ?? 0;
       default: return prices?.polUsd ?? 0;
     }
   })();
@@ -218,6 +323,28 @@ export default function StakePage() {
     enabled: selectedChain.id === "polygon",
     refetchInterval: 5 * 60_000,
   });
+  // Backend watcher reachability per chain. A chain whose watcher can't
+  // reach its RPC settles nothing — staking there would strand the Canton
+  // request in Pending forever, so those chains render disabled.
+  const { data: watcherStatus } = useQuery({
+    queryKey: ["watcher-status"],
+    queryFn: fetchWatcherStatus,
+    refetchInterval: 60_000,
+  });
+  const watcherByChain = new Map(
+    (watcherStatus ?? []).map((w) => [w.chain as ChainConfig["id"], w]),
+  );
+  const selectedWatcher = watcherByChain.get(selectedChain.id);
+  const selectedChainOffline = selectedWatcher?.status === "unreachable";
+
+  // Per-validator buyVoucher floor for the selected top validator, live from
+  // the backend registry (the same fetch that refreshes the ValidatorShare
+  // map — see ensureValidatorSharesLive). Mainnet minimums differ from the
+  // testnet deployment, so only the live value is truthful.
+  const validatorMinWei =
+    selectedChain.id === "polygon" && validatorAddr
+      ? validatorMinAmounts.get(validatorAddr.toLowerCase()) ?? null
+      : null;
 
   const unbondingLabel = (() => {
     if (selectedChain.id !== "polygon") return selectedChain.unbonding;
@@ -242,7 +369,7 @@ export default function StakePage() {
     let cancelled = false;
     setValidatorName(null);
     setValidatorAddr(null);
-    void adapter.getValidators().then((vs) => {
+    void chainAdapter.getValidators().then((vs) => {
       const top = vs[0];
       if (!cancelled && top) {
         setValidatorName(top.name);
@@ -377,6 +504,18 @@ export default function StakePage() {
 
   async function handleStake() {
     if (step > 0 && step < 5) return;
+    if (!stakingUiReady) {
+      setError(
+        `${selectedChain.name}: settlement watcher is live, but the in-app staking flow lands next. Positions on this chain currently settle from native wallets.`,
+      );
+      return;
+    }
+    if (selectedChainOffline) {
+      setError(
+        `${selectedChain.name} is offline — the settlement watcher cannot reach this chain right now.`,
+      );
+      return;
+    }
     if (!partyId) {
       setError("Connect Loop wallet first.");
       return;
@@ -403,12 +542,21 @@ export default function StakePage() {
     }
     if (!isEvmStakingReady) {
       setError(
-        `${selectedChain.name} staking isn't wired in this build. Pick Polygon, Moonbase Alpha, or Monad Testnet.`,
+        `${selectedChain.name} staking isn't wired in this build. Pick Polygon or Monad Testnet.`,
       );
       return;
     }
     if (!address) {
       setError("Connect an EVM wallet to stake on this chain.");
+      return;
+    }
+
+    // buyVoucher reverts below the validator's on-chain minAmount. Failing
+    // fast here gives a readable message instead of a reverted wallet tx.
+    if (validatorMinWei !== null && parseEther(amount || "0") < validatorMinWei) {
+      setError(
+        `Below this validator's minimum stake of ${String(Number(formatUnits(validatorMinWei, 18)))} ${selectedChain.symbol}.`,
+      );
       return;
     }
 
@@ -439,7 +587,7 @@ export default function StakePage() {
       // which chain + validator the stake was for. The validator-scoring
       // service returns the top-scored entry; for this MVP we always pick
       // the first one and let the user override via the picker UI later.
-      const [validator] = await adapter.getValidators();
+      const [validator] = await chainAdapter.getValidators();
       if (!validator) {
         throw new Error(
           `No ${selectedChain.name} validator is available for staking.`,
@@ -509,7 +657,7 @@ export default function StakePage() {
       // has to confirm before the delegation is even built. This is sent
       // through the core action rather than the hook so it doesn't overwrite
       // the hook's `hash` — the trace UI tracks the delegation tx, not this.
-      const approval = await adapter.buildApprovalTx?.({
+      const approval = await chainAdapter.buildApprovalTx?.({
         validator: validator.address,
         amount: amountWei,
         delegator: address,
@@ -544,7 +692,7 @@ export default function StakePage() {
         }
       }
 
-      const tx = await adapter.buildDelegateTx({
+      const tx = await chainAdapter.buildDelegateTx({
         validator: validator.address,
         amount: amountWei,
         delegator: address,
@@ -603,7 +751,7 @@ export default function StakePage() {
     setError(null);
 
     try {
-      const [validator] = await adapter.getValidators();
+      const [validator] = await chainAdapter.getValidators();
       if (!validator) throw new Error("No Cosmos validator available.");
 
       advance(1);
@@ -621,7 +769,7 @@ export default function StakePage() {
       const amountUatom = BigInt(
         Math.floor(parseFloat(amount || "0") * 1_000_000),
       );
-      const tx = await adapter.buildDelegateTx({
+      const tx = await chainAdapter.buildDelegateTx({
         validator: validator.address,
         amount: amountUatom,
         delegator: cosmos.address,
@@ -662,7 +810,7 @@ export default function StakePage() {
     setError(null);
 
     try {
-      const [validator] = await adapter.getValidators();
+      const [validator] = await chainAdapter.getValidators();
       if (!validator) throw new Error("No Sui validator available.");
 
       advance(1);
@@ -737,6 +885,14 @@ export default function StakePage() {
         the lifecycle and emits a Canton activity marker after bonding. Custody
         never leaves your wallet.
       </p>
+
+      {isMainnet && (
+        <Banner
+          tone="error"
+          kind="MAINNET — REAL FUNDS"
+          message="This deployment follows mainnet networks. Every stake, unstake and gas payment moves real value. There are no faucets and no undo."
+        />
+      )}
 
       {error && (
         <Banner
@@ -838,21 +994,31 @@ export default function StakePage() {
                 {chains.map((c) => {
                   const active = c.id === selectedChainId;
                   const ready = !!c.wagmiChain;
+                  const watcher = watcherByChain.get(c.id);
+                  const offline = watcher?.status === "unreachable";
                   return (
                     <button
                       key={c.id}
                       type="button"
                       onClick={() => setSelectedChainId(c.id)}
-                      disabled={step > 0 && step < 5}
+                      disabled={(step > 0 && step < 5) || offline}
+                      title={
+                        offline
+                          ? `Watcher offline — the backend cannot reach this chain's RPC (${watcher?.lastError ?? "unreachable"}). Staking is disabled until it's back.`
+                          : undefined
+                      }
                       style={{
                         padding: "10px 8px",
                         background: active ? tokens.ink[800] : "transparent",
                         border: `1px solid ${active ? c.color : tokens.hairline}`,
                         cursor:
-                          step > 0 && step < 5 ? "not-allowed" : "pointer",
+                          (step > 0 && step < 5) || offline
+                            ? "not-allowed"
+                            : "pointer",
                         font: "inherit",
-                        color: tokens.ink[100],
+                        color: offline ? tokens.ink[400] : tokens.ink[100],
                         textAlign: "left",
+                        opacity: offline ? 0.55 : 1,
                       }}
                     >
                       <div
@@ -869,11 +1035,17 @@ export default function StakePage() {
                         className="mono"
                         style={{
                           fontSize: 9,
-                          color: tokens.ink[400],
+                          color: offline ? tokens.ink[400] : tokens.ink[400],
                           marginTop: 2,
                         }}
                       >
-                        {ready ? "live" : "adapter"}
+                        {offline
+                          ? "offline"
+                          : c.hasAdapter === false
+                            ? "watcher"
+                            : ready
+                              ? "live"
+                              : "adapter"}
                       </div>
                     </button>
                   );
@@ -1017,7 +1189,33 @@ export default function StakePage() {
                 style={{ fontSize: 10, color: tokens.ink[400], marginTop: 6 }}
               >
                 Estimated value: {fmtUsd(usdValue)}
+                {validatorMinWei !== null &&
+                  ` · validator minimum ${String(Number(formatUnits(validatorMinWei, 18)))} ${selectedChain.symbol}`}
               </div>
+
+              {/* Testnet funding pointer — the #1 dead end for a new
+                  visitor is an empty wallet. What's needed differs per
+                  chain (Polygon settles on Sepolia, not Bor). Mainnet
+                  mode shows a real-funds warning instead: there are no
+                  faucents on mainnet. */}
+              {!isMainnet && (
+                <div
+                  className="mono"
+                  style={{
+                    fontSize: 10,
+                    color: tokens.ink[500],
+                    marginTop: 8,
+                    lineHeight: 1.6,
+                  }}
+                >
+                  {FUNDING_HINTS[selectedChain.id] && (
+                    <>
+                      <span style={{ color: tokens.ink[400] }}>Need testnet funds? </span>
+                      {FUNDING_HINTS[selectedChain.id]}
+                    </>
+                  )}
+                </div>
+              )}
             </div>
 
             <div
@@ -1120,12 +1318,18 @@ export default function StakePage() {
               }
               disabled={
                 (step > 0 && step < 5) ||
+                selectedChainOffline ||
+                !stakingUiReady ||
                 !loopConnected ||
                 !partyId ||
                 !isWalletReadyForChain
               }
             >
-              {!loopConnected || !partyId
+              {selectedChainOffline
+                ? `${selectedChain.name} watcher offline`
+                : !stakingUiReady
+                  ? `${selectedChain.name} · staking UI next`
+                  : !loopConnected || !partyId
                 ? "Connect Loop wallet to stake"
                 : !isWalletReadyForChain
                   ? isCosmosChain

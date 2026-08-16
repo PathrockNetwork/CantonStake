@@ -9,6 +9,7 @@ import {
 import {
   isRealValidatorShare,
   knownValidatorShares,
+  ensureValidatorSharesLive,
   polygonChain,
   POLYGON_SETTLEMENT_CHAIN_ID,
   resolveValidatorShare,
@@ -60,6 +61,9 @@ const MOCK_UNBONDING_SECONDS = 60;
 let cachedRows: ValidatorRow[] = [];
 
 async function loadValidators(): Promise<ValidatorRow[]> {
+  // Real mode: refresh the ValidatorShare registry from the backend first —
+  // the baked env map is a build-time snapshot and wrong on mainnet mode.
+  await ensureValidatorSharesLive();
   const { rows } = await fetchScoredValidators(POLYGON_CHAIN_ID);
   cachedRows = rows;
   return rows;
