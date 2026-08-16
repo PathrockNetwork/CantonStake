@@ -274,7 +274,7 @@ model TvlSnapshot {
 
   evmAddress   String?
   totalUsd     Float    // aggregate USD across all chains at snapshot time
-  perChain     Json     // { polygon: usd, moonbeam: usd, ... }
+  perChain     Json     // { polygon: usd, monad: usd, ... }
 
   snapshotAt   DateTime @default(now())
 
@@ -296,7 +296,7 @@ model AutoCompoundPermit {
   userId       String
   user         User     @relation(fields: [userId], references: [id])
 
-  chain        String   // "polygon" | "moonbeam" | "monad" | "cosmos" | "sui"
+  chain        String   // "polygon" | "monad" | "cosmos" | "sui"
   validator    String   // chain-native validator address
   scope        String   @default("compound") // "compound" | "claim" | "redelegate"
 

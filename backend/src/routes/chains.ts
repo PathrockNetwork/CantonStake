@@ -21,7 +21,7 @@
  *                              (Cosmos Hub: mint params + staking pool)
  *   - "documented-schedule"  — a constant from the chain's own published
  *                              reward schedule, no free per-epoch API
- *                              (Polygon, Moonbeam, Sui)
+ *                              (Polygon, Sui)
  *   - "estimate"             — no published schedule exists at all
  *                              (Monad, until it publishes mainnet
  *                              economics) — shown as an estimate, never
@@ -40,18 +40,28 @@ import {
 // Cited in source for auditability.
 const BASE_YIELD: Record<SupportedChain, number> = {
   polygon: 0.045, // ~4.5% — Polygon Heimdall block reward / total staked
-  moonbeam: 0.12, // ~12% — Moonbeam parachain inflation, post-2023 schedule
   monad: 0.08, // no published schedule — estimate only
   cosmos: 0.21, // fallback only; live value derived from the mint module
+  celestia: 0.10, // ~10% — Celestia genesis-era target staking rate
+  osmosis: 0.12, // ~12% — Osmosis staking aperture (mid-range, varies with fee share)
   sui: 0.035, // ~3.5% — Sui staking yield as of 2026 epochs
+  aptos: 0.07, // ~7% — Aptos target, set by validator count / staked ratio
+  polkadot: 0.12, // ~12% — Polkadot inflation-funded nomination yield (net of inflation)
+  bnb: 0.05, // ~5% — BNB Chain native staking rate (post-BC-fusion)
+  solana: 0.07, // ~7% — Solana issuance-adjusted staking yield
 };
 
 const BASE_YIELD_SOURCE: Record<SupportedChain, BaseYieldSource> = {
   polygon: "documented-schedule",
-  moonbeam: "documented-schedule",
   monad: "estimate",
   cosmos: "documented-schedule", // upgraded to "live" when the fetch succeeds
+  celestia: "documented-schedule",
+  osmosis: "documented-schedule",
   sui: "documented-schedule",
+  aptos: "documented-schedule",
+  polkadot: "documented-schedule",
+  bnb: "documented-schedule",
+  solana: "documented-schedule",
 };
 
 type BaseYieldSource = "live" | "documented-schedule" | "estimate";

@@ -1,7 +1,7 @@
 "use client";
 
 import { http, createConfig } from "wagmi";
-import { moonbaseAlpha, monadTestnet, polygonAmoy } from "wagmi/chains";
+import { bscTestnet, monadTestnet, polygonAmoy } from "wagmi/chains";
 import { coinbaseWallet, injected, safe, walletConnect } from "wagmi/connectors";
 import { polygonSettlementChain } from "@/lib/chains";
 
@@ -20,7 +20,7 @@ export const wagmiConfig = createConfig({
   // (Sepolia / Ethereum mainnet): Polygon PoS staking contracts live on L1,
   // so a POL delegation is signed there, while Bor/Amoy stays in the list for
   // POL balance reads and explorer links.
-  chains: [polygonSettlementChain, polygonAmoy, moonbaseAlpha, monadTestnet],
+  chains: [polygonSettlementChain, polygonAmoy, monadTestnet, bscTestnet],
   connectors: [
     // Browser-injected wallets — MetaMask, Rabby, Brave, Frame, etc.
     injected(),
@@ -51,8 +51,8 @@ export const wagmiConfig = createConfig({
       process.env.NEXT_PUBLIC_AMOY_RPC_URL ||
         "https://polygon-amoy-bor-rpc.publicnode.com",
     ),
-    [moonbaseAlpha.id]: http(),
     [monadTestnet.id]: http(),
+    [bscTestnet.id]: http(),
   },
   ssr: true,
 });

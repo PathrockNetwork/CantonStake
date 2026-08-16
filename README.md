@@ -6,7 +6,7 @@
 
 Self-custodial multi-chain staking dApp built on Canton Network. Stake from your own wallet and earn Canton Coin (CC) rewards on top of native validator yield, distributed every 10-minute round via an on-ledger 75/25 beneficiary split.
 
-**Polygon (POL) and Cosmos (ATOM) are the two production paths.** Moonbeam, Sui and Monad adapters exist at lower maturity — see [chain status](#multi-chain-staking) before relying on them.
+**Polygon (POL) and Cosmos (ATOM) are the two production paths.** Sui and Monad adapters exist at lower maturity — see [chain status](#multi-chain-staking) before relying on them.
 
 ![Canton Network](https://img.shields.io/badge/Canton-Network-00ff9d?style=flat-square)
 ![Daml](https://img.shields.io/badge/Daml-3.5-7c4dff?style=flat-square&logo=daml)
@@ -66,7 +66,6 @@ Five testnet chain adapters, each routing through its native wallet primitive (W
 |---|---|---|
 | **Polygon Amoy** | Production path | Real `StakeManager` + per-validator `ValidatorShare` on Sepolia (Polygon PoS settles on Ethereum L1, not Bor). Live `exchangeRate` share math, checkpoint-based unbonding. Read path verified end-to-end against chain; **no user delegation has been broadcast yet** — that needs a funded wallet |
 | **Cosmos Hub theta-testnet** | Production path | Real protobuf `TxRaw → MsgDelegate` decode, live APY derived from the chain's own x/mint + x/staking modules |
-| **Moonbase Alpha** | Degraded | Parachain-staking precompile wired; validator-scoring precompile read currently failing |
 | **Sui Testnet** | Inactive | Event decode fixed, but public fullnodes deprecated JSON-RPC and the GraphQL endpoint is unreachable from our host. The watcher fails loudly rather than silently watching nothing. Point `SUI_RPC_URL` at a GraphQL-capable node to activate |
 | **Monad Testnet** | Estimate only | Monad publishes no reward schedule, so its APY is labelled `source: "estimate"` and is never presented as live data |
 
@@ -87,7 +86,7 @@ The `BeneficiarySplit` Daml template enforces `sum(weights) == 1.0` and routes C
 Backend service polls each chain's public validator API on a 1-hour cron, normalises into a `ScoredValidator` shape, and caches in Redis. Composite score combines uptime, commission, slash history, and stake concentration. Drives the validator picker UI on the staking flow.
 
 ### Auto-compound keeper
-Per-chain executors broadcast claim+restake on the user's behalf within their signed permit's scope and expiry. Polygon uses EIP-712, Cosmos uses MsgGrant Authz, Moonbeam uses parachain-staking precompile bonds, Monad uses its staking precompile's `compound()`, and Sui re-stakes via `request_add_stake`.
+Per-chain executors broadcast claim+restake on the user's behalf within their signed permit's scope and expiry. Polygon uses EIP-712, Cosmos uses MsgGrant Authz, Monad uses its staking precompile's `compound()`, and Sui re-stakes via `request_add_stake`.
 
 **Not currently active.** Every executor self-reports `skipped` with a reason until keeper keys are provisioned and funded per chain (`AUTO_COMPOUND_KEEPER_KEY` and the per-chain secrets). The code paths are implemented; the keys are an operator action.
 
@@ -146,7 +145,6 @@ flowchart TB
     subgraph Chains["Chains"]
         CANTON[Canton DevNet · Daml]
         POLY[Polygon Amoy]
-        MOON[Moonbase Alpha]
         MON[Monad Testnet]
         COS[Cosmos theta-testnet]
         SUI[Sui Testnet]
@@ -371,7 +369,6 @@ npm run dev
 Each demo chain needs testnet tokens. Grab them before running the full flow:
 
 - **Polygon Amoy** — https://faucet.polygon.technology/
-- **Moonbase Alpha** — https://faucet.moonbeam.network/
 - **Monad Testnet** — https://faucet.monad.xyz/
 - **Cosmos theta-testnet** — `#testnet-faucet` channel on the Cosmos Discord
 - **Sui Testnet** — `#testnet-faucet` on the Sui Discord (`!faucet 0x...`)
@@ -544,6 +541,14 @@ All routes return JSON. POST/PUT/DELETE expect `Content-Type: application/json`.
 
 ---
 
+## Network Modes
+
+One deployment serves one network mode — `NETWORK_MODE=testnet|mainnet`
+swaps every chain endpoint/contract at once, with a hard
+`MAINNET_CONFIRMED=yes` interlock for mainnet and a visible mode badge in
+the UI. See **[docs/NETWORK_MODES.md](docs/NETWORK_MODES.md)** for the full
+per-chain table and the known mainnet gaps.
+
 ## Environment Variables
 
 ### Backend — `backend/.env`
@@ -574,12 +579,17 @@ All routes return JSON. POST/PUT/DELETE expect `Content-Type: application/json`.
 | `DISCORD_DEFAULT_WEBHOOK` | Fallback Discord webhook | empty |
 | `AUTO_COMPOUND_DISABLED` | Skip keeper | `true` |
 | `AUTO_COMPOUND_KEEPER_KEY` | EVM keeper signing key | empty |
-| `MOONBEAM_RPC_URL` | Moonbase Alpha RPC | `https://rpc.api.moonbase.moonbeam.network` |
 | `MONAD_RPC_URL` | Monad Testnet RPC | `https://testnet-rpc.monad.xyz` |
 | `COSMOS_REST_URL` | theta-testnet REST | `https://rest.sentry-01.theta-testnet.polypore.xyz` |
 | `COSMOS_RPC_URL` | theta-testnet RPC | `https://rpc.sentry-01.theta-testnet.polypore.xyz` |
 | `COSMOS_KEEPER_MNEMONIC` | Cosmos auto-compound keeper mnemonic | empty |
 | `SUI_RPC_URL` | Sui Testnet RPC | `https://fullnode.testnet.sui.io:443` |
+| `CELESTIA_RPC_URL` / `CELESTIA_REST_URL` | Celestia mocha testnet RPC/LCD | POPS public endpoints |
+| `OSMOSIS_RPC_URL` / `OSMOSIS_REST_URL` | Osmosis testnet RPC/LCD | official endpoints |
+| `APTOS_REST_URL` | Aptos testnet fullnode REST | `https://fullnode.testnet.aptoslabs.com` |
+| `WESTEND_RPC_URL` | Polkadot Westend Substrate RPC | `https://westend-rpc.polkadot.io` |
+| `BNB_RPC_URL` | BNB Chain Chapel RPC (StakeHub `0x…2002`) | publicnode |
+| `SOLANA_RPC_URL` | Solana testnet RPC | `https://api.testnet.solana.com` |
 | `SUI_KEEPER_PRIVATE_KEY` | Sui keeper private key | empty |
 | `LOOP_PROXY_ENABLED` | Enable `/loop-proxy/*` reverse proxy | `true` |
 | `LOOP_API_UPSTREAM` | Upstream URL the proxy forwards to | `https://devnet.cantonloop.com` |
@@ -653,7 +663,6 @@ All routes return JSON. POST/PUT/DELETE expect `Content-Type: application/json`.
 | Reward attribution | CIP-0104 (App Activity Records) with CIP-0047 fallback |
 | Beneficiary split | On-ledger Daml `BeneficiarySplit` template (75/25 default) |
 | Polygon staking | MockValidatorShare on Amoy (real `ValidatorShare` swap behind feature flag) |
-| Moonbeam staking | Parachain-staking precompile (`0x...0800`) on Moonbase Alpha |
 | Monad staking | Staking precompile (`0x...1000`) on Monad Testnet |
 | Cosmos staking | x/staking + Authz `MsgGrant` on theta-testnet |
 | Sui staking | `0x3::sui_system::request_add_stake` on Sui Testnet |

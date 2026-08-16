@@ -7,7 +7,7 @@
  * per-chain fetchers, Redis caches the snapshot, and a HTTP route
  * (`/api/portfolio/:address`) returns the aggregate to the UI. This is
  * the abstraction Codex's future chain adapters plug into — when a
- * Moonbeam / Monad / Cosmos / Sui adapter lands on the frontend, mirror
+ * Monad / Cosmos / Sui adapter lands on the frontend, mirror
  * its `getDelegations` shape into a `fetchDelegations<chain>` here and
  * register it in the FETCHERS map.
  *
@@ -34,7 +34,7 @@ export interface DelegationRow {
   chain: PortfolioChain;
   validator: string;
   amount: string;          // chain-native units, decimal string
-  symbol: string;          // POL / GLMR / MON / ATOM / SUI
+  symbol: string;          // POL / MON / ATOM / SUI
   status: "bonded" | "unbonding" | "released";
   unbondingReadyAt?: number;
 }
@@ -145,10 +145,15 @@ const FETCHERS: Record<
   (address: string) => Promise<DelegationRow[]>
 > = {
   polygon: fetchPolygon,
-  moonbeam: fetchStub,
   monad: fetchStub,
   cosmos: fetchStub,
+  celestia: fetchStub,
+  osmosis: fetchStub,
   sui: fetchStub,
+  aptos: fetchStub,
+  polkadot: fetchStub,
+  bnb: fetchStub,
+  solana: fetchStub,
 };
 
 // --- Public API ----------------------------------------------------------
@@ -177,7 +182,6 @@ export async function getChainDelegations(
 // the hackathon; the UI displays them as "indicative".
 const USD_PER: Record<string, number> = {
   POL: 0.45,
-  GLMR: 0.18,
   MON: 0.55,
   ATOM: 4.5,
   SUI: 1.2,
@@ -193,10 +197,15 @@ export async function getPortfolio(
 ): Promise<PortfolioSnapshot> {
   const chains: PortfolioChain[] = [
     "polygon",
-    "moonbeam",
     "monad",
     "cosmos",
+    "celestia",
+    "osmosis",
     "sui",
+    "aptos",
+    "polkadot",
+    "bnb",
+    "solana",
   ];
 
   const results = await Promise.all(

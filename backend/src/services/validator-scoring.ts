@@ -28,8 +28,6 @@
  *                (Amoy, i.e. the testnet whose StakeManager we actually stake
  *                against — the mainnet host lists a completely different
  *                validator set whose signers do not exist on our StakeManager)
- *   - Moonbeam : Moonbase Alpha precompile read (selectedCandidates) via
- *                MOONBEAM_RPC_URL — free testnet API doesn't exist.
  *   - Monad    : https://raw.githubusercontent.com/monad-developers/
  *                validator-info/main/mainnet/validators.json
  *   - Cosmos   : theta-testnet REST (Polypore sentry-01)
@@ -48,10 +46,15 @@ import { diffAndAlert } from "./slashing-monitor.js";
 
 export type SupportedChain =
   | "polygon"
-  | "moonbeam"
   | "monad"
   | "cosmos"
-  | "sui";
+  | "celestia"
+  | "osmosis"
+  | "sui"
+  | "aptos"
+  | "polkadot"
+  | "bnb"
+  | "solana";
 
 export interface ScoredValidator {
   chain: SupportedChain;
@@ -260,56 +263,6 @@ async function fetchPolygon(): Promise<ScoredValidator[]> {
   return attachScores(rows.filter((r) => Boolean(r.validatorShare)));
 }
 
-async function fetchMoonbeam(): Promise<ScoredValidator[]> {
-  // Moonbase Alpha doesn't expose a free public collator listing API
-  // (Subscan testnet requires a key). The parachain-staking precompile
-  // at 0x...0800 exposes `selectedCandidates() returns (address[])` which
-  // gives us the live active set. We pair each address with a per-
-  // candidate `candidateCount(addr) returns (uint256)` read for a stake
-  // proxy, and use defaults for commission + uptime (the precompile
-  // doesn't surface those).
-  const { createPublicClient, http, parseAbi } = await import("viem");
-  const { moonbaseAlpha } = await import("viem/chains");
-
-  const STAKING_PRECOMPILE =
-    "0x0000000000000000000000000000000000000800" as const;
-  const stakingAbi = parseAbi([
-    "function selectedCandidates() view returns (address[])",
-    "function candidateCount() view returns (uint256)",
-  ]);
-
-  try {
-    const client = createPublicClient({
-      chain: moonbaseAlpha,
-      transport: http(config.moonbeamRpcUrl),
-    });
-    const candidates = (await client.readContract({
-      address: STAKING_PRECOMPILE,
-      abi: stakingAbi,
-      functionName: "selectedCandidates",
-    })) as readonly `0x${string}`[];
-
-    const rows = candidates.map((addr, i) => ({
-      chain: "moonbeam" as const,
-      address: addr,
-      name: `Moonbase Collator #${i + 1}`,
-      // The precompile doesn't surface commission; Moonbase Alpha's
-      // default new-collator commission is 20% (parachain runtime).
-      commissionPct: 20,
-      uptimePct: 99.0,
-      jailed: false,
-      slashCount: 0,
-      // Without a per-candidate stake read we use a uniform default;
-      // the score formula's concentration penalty kicks off zero.
-      totalStaked: 0,
-    }));
-    return attachScores(rows);
-  } catch (err) {
-    console.warn("[validator-scoring] moonbase precompile read failed:", err);
-    return [];
-  }
-}
-
 async function fetchMonad(): Promise<ScoredValidator[]> {
   // Pulled from the monad-developers/validator-info repo's mainnet JSON.
   // The schema is informally documented; fields below are best-effort.
@@ -339,9 +292,13 @@ async function fetchMonad(): Promise<ScoredValidator[]> {
   return attachScores(partial);
 }
 
-async function fetchCosmos(): Promise<ScoredValidator[]> {
-  // Cosmos Hub theta-testnet — Polypore sentry-01 REST endpoint.
-  // Same x/staking schema as mainnet, just a smaller validator set.
+// --- Cosmos-shape validator fetchers (shared x/staking REST schema) ---
+
+async function fetchCosmosChain(
+  chain: SupportedChain,
+  restBase: string,
+  denomDecimals: number
+): Promise<ScoredValidator[]> {
   type CosmosVal = {
     operator_address: string;
     description?: { moniker?: string };
@@ -351,21 +308,115 @@ async function fetchCosmos(): Promise<ScoredValidator[]> {
     status?: string;
   };
   const body = await fetchJson<{ validators?: CosmosVal[] }>(
-    "https://cosmoshub-testnet.api.kjnodes.com/cosmos/staking/v1beta1/validators?pagination.limit=200&status=BOND_STATUS_BONDED"
+    `${restBase.replace(/\/$/, "")}/cosmos/staking/v1beta1/validators?pagination.limit=200&status=BOND_STATUS_BONDED`
   );
   if (!body?.validators) return [];
 
   const partial = body.validators.map((v) => ({
-    chain: "cosmos" as const,
+    chain,
     address: v.operator_address,
     name: v.description?.moniker ?? v.operator_address.slice(0, 14),
     commissionPct: Number(v.commission?.commission_rates?.rate ?? "0.05") * 100,
     uptimePct: 99.0,            // Cosmos REST doesn't ship uptime; would need a Mintscan call per-val
     jailed: v.jailed === true || v.status !== "BOND_STATUS_BONDED",
     slashCount: 0,
-    totalStaked: Number(v.tokens ?? "0") / 1e6, // uatom → ATOM
+    totalStaked: Number(v.tokens ?? "0") / 10 ** denomDecimals,
   }));
   return attachScores(partial);
+}
+
+function fetchCosmos(): Promise<ScoredValidator[]> {
+  // Cosmos Hub theta-testnet — Polypore sentry-01 REST endpoint.
+  // Same x/staking schema as mainnet, just a smaller validator set.
+  return fetchCosmosChain("cosmos", config.cosmosRestUrl, 6);
+}
+
+function fetchCelestia(): Promise<ScoredValidator[]> {
+  // Celestia mocha testnet — POPS public LCD (verified 2026-08-16).
+  return fetchCosmosChain("celestia", config.celestiaRestUrl, 6);
+}
+
+function fetchOsmosis(): Promise<ScoredValidator[]> {
+  // Osmosis testnet — official LCD (verified 2026-08-16).
+  return fetchCosmosChain("osmosis", config.osmosisRestUrl, 6);
+}
+
+// --- Aptos: the stake::ValidatorSet resource on 0x1 (the REST
+// /v1/validators endpoint is not served by these fullnodes) ---
+
+async function fetchAptos(): Promise<ScoredValidator[]> {
+  const body = await fetchJson<{ data?: { active_validators?: Array<{
+    addr?: string;
+    voting_power?: string;
+  }> } }>(
+    `${config.aptosRestUrl.replace(/\/$/, "")}/v1/accounts/0x1/resource/0x1::stake::ValidatorSet`
+  );
+  const validators = body?.data?.active_validators;
+  if (!Array.isArray(validators)) return [];
+
+  const partial = validators.map((v) => ({
+    chain: "aptos" as const,
+    address: v.addr ?? "unknown",
+    // Aptos pools are commission-free for delegators by protocol design;
+    // names aren't in this resource.
+    name: `Aptos pool ${v.addr?.slice(0, 10) ?? "?"}`,
+    commissionPct: 0,
+    uptimePct: 99.0,
+    jailed: false,
+    slashCount: 0,
+    totalStaked: Number(v.voting_power ?? "0") / 1e8, // octa → APT
+  }));
+  return attachScores(partial);
+}
+
+// --- Solana: getVoteAccounts via the testnet RPC ---
+
+async function fetchSolana(): Promise<ScoredValidator[]> {
+  const body = await fetchJson<{
+    result?: {
+      current?: Array<{
+        votePubkey: string;
+        commission: number;
+        lastVote: number;
+        activatedStake: string;
+      }>;
+    };
+  }>(config.solanaRpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "getVoteAccounts",
+      params: [],
+    }),
+  });
+  const current = body?.result?.current;
+  if (!Array.isArray(current)) return [];
+
+  const partial = current.map((v) => ({
+    chain: "solana" as const,
+    address: v.votePubkey,
+    name: `Vote ${v.votePubkey.slice(0, 8)}…`,
+    commissionPct: v.commission,   // percent on Solana, not bps
+    uptimePct: 99.0,
+    jailed: false,
+    slashCount: 0,
+    totalStaked: Number(v.activatedStake ?? "0") / 1e9, // lamports → SOL
+  }));
+  return attachScores(partial);
+}
+
+// --- Polkadot + BNB: no free per-validator listing endpoint verified yet.
+// Honest stubs — the chain stats UI shows source:"stub" for these until a
+// real fetcher lands (see docs/CHAIN_EXPANSION_RESEARCH.md §4). ---
+
+async function fetchPolkadot(): Promise<ScoredValidator[]> {
+  return [];
+}
+
+async function fetchBnb(): Promise<ScoredValidator[]> {
+  return [];
 }
 
 async function fetchSui(): Promise<ScoredValidator[]> {
@@ -412,10 +463,15 @@ async function fetchSui(): Promise<ScoredValidator[]> {
 
 const FETCHERS: Record<SupportedChain, () => Promise<ScoredValidator[]>> = {
   polygon: fetchPolygon,
-  moonbeam: fetchMoonbeam,
   monad: fetchMonad,
   cosmos: fetchCosmos,
+  celestia: fetchCelestia,
+  osmosis: fetchOsmosis,
   sui: fetchSui,
+  aptos: fetchAptos,
+  polkadot: fetchPolkadot,
+  bnb: fetchBnb,
+  solana: fetchSolana,
 };
 
 export async function refreshChain(
@@ -467,10 +523,15 @@ export async function getAllScores(): Promise<
 > {
   const chains: SupportedChain[] = [
     "polygon",
-    "moonbeam",
     "monad",
     "cosmos",
+    "celestia",
+    "osmosis",
     "sui",
+    "aptos",
+    "polkadot",
+    "bnb",
+    "solana",
   ];
   const entries = await Promise.all(
     chains.map(async (c) => [c, await getScores(c)] as const)
@@ -497,7 +558,7 @@ const worker = new Worker<RefreshPayload>(
     const target = job.data.chain;
     const chains: SupportedChain[] =
       target === "all"
-        ? ["polygon", "moonbeam", "monad", "cosmos", "sui"]
+        ? ["polygon", "monad", "cosmos", "celestia", "osmosis", "sui", "aptos", "polkadot", "bnb", "solana"]
         : [target];
     for (const c of chains) {
       const snap = await refreshChain(c);

@@ -122,7 +122,7 @@ export default function HomePage() {
               margin: 0,
             }}
           >
-            Delegate POL, GLMR, MON, ATOM, or SUI from your own wallet. Canton
+            Delegate POL, MON, ATOM, or SUI from your own wallet. Canton
             records the staking lifecycle across every chain, emits reward
             markers at each economic transition, and routes Canton Coin through
             an on-ledger 75/25 beneficiary split every 10 minutes.

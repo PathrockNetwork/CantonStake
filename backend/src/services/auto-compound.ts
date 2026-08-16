@@ -56,7 +56,6 @@ import {
 
 export type CompoundChain =
   | "polygon"
-  | "moonbeam"
   | "monad"
   | "cosmos"
   | "sui";
@@ -163,76 +162,6 @@ async function executePolygon(
       status: "success",
       amountClaimed: pending.toString(),
       amountRestaked: pending.toString(),
-      txHash,
-    };
-  } catch (err) {
-    return { status: "failed", reason: String(err) };
-  }
-}
-
-// --- Moonbeam executor (parachain-staking precompile via viem) ---
-//
-// Compounding on Moonbeam = bond more from the user's free balance using
-// `delegatorBondMore`. Pending rewards on Moonbeam auto-accrue into the
-// delegator's free balance each round, so the keeper just bonds the
-// difference. We require a positive maxPerRun cap (enforced like Polygon)
-// to bound the amount bonded.
-
-import { moonbaseAlpha } from "viem/chains";
-
-const moonbeamStakingAbi = [
-  parseAbiItem(
-    "function delegatorBondMore(address candidate, uint256 more)"
-  ),
-] as const;
-
-async function executeMoonbeam(
-  ctx: ExecutorContext
-): Promise<ExecutorResult> {
-  if (!config.autoCompoundKeeperKey) {
-    return { status: "skipped", reason: "AUTO_COMPOUND_KEEPER_KEY unset" };
-  }
-  if (!ctx.evmAddress) {
-    return { status: "skipped", reason: "user has no EVM address on file" };
-  }
-  if (!ctx.maxPerRun) {
-    return {
-      status: "skipped",
-      reason: "moonbeam compound requires a non-zero maxPerRun cap",
-    };
-  }
-
-  let amount: bigint;
-  try {
-    amount = BigInt(ctx.maxPerRun);
-  } catch {
-    return { status: "skipped", reason: `maxPerRun ${ctx.maxPerRun} is not a uint` };
-  }
-  if (amount === 0n) {
-    return { status: "skipped", reason: "maxPerRun is zero" };
-  }
-
-  const account = privateKeyToAccount(config.autoCompoundKeeperKey as Hex);
-  const walletClient = createWalletClient({
-    account,
-    chain: moonbaseAlpha,
-    transport: http(config.moonbeamRpcUrl),
-  });
-
-  try {
-    const data = encodeFunctionData({
-      abi: moonbeamStakingAbi,
-      functionName: "delegatorBondMore",
-      args: [ctx.validator as Address, amount],
-    });
-    const txHash = await walletClient.sendTransaction({
-      to: "0x0000000000000000000000000000000000000800" as Address,
-      data,
-    });
-    return {
-      status: "success",
-      amountClaimed: amount.toString(),
-      amountRestaked: amount.toString(),
       txHash,
     };
   } catch (err) {
@@ -483,7 +412,6 @@ const EXECUTORS: Record<
   (ctx: ExecutorContext) => Promise<ExecutorResult>
 > = {
   polygon: executePolygon,
-  moonbeam: executeMoonbeam,
   monad: executeMonad,
   cosmos: executeCosmos,
   sui: executeSui,

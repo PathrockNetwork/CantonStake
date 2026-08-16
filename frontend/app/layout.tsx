@@ -7,7 +7,7 @@ import { GlobalLiveTrace } from "@/components/trace/GlobalLiveTrace";
 export const metadata: Metadata = {
   title: "CantonStake — Canton-Native Delegation",
   description:
-    "Multichain staking platform. Delegate native tokens across Cosmos, Moonbeam, Monad, and Polygon to earn Canton Coin rewards.",
+    "Multichain staking platform. Delegate native tokens across Cosmos, Monad, and Polygon to earn Canton Coin rewards.",
   icons: {
     icon: "/icon.png",
     apple: "/apple-icon.png",

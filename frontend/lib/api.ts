@@ -70,7 +70,7 @@ export async function createStakingRequest(body: {
   evmAddress: string;
   amountPol: string;
   delegator: string;
-  chain?: "polygon" | "moonbeam" | "monad" | "cosmos" | "sui";
+  chain?: "polygon" | "monad" | "cosmos" | "celestia" | "osmosis" | "sui" | "aptos" | "polkadot" | "bnb" | "solana";
   validator?: string;
 }): Promise<{
   ok: boolean;
@@ -202,6 +202,27 @@ export interface RewardHealth {
   } | null;
 }
 
+export interface WatcherStatus {
+  chain: string;
+  status: "ok" | "unreachable" | "unknown";
+  lastError: string | null;
+  lastSuccessAt: string | null;
+  consecutiveFailures: number;
+}
+
+/** Per-chain watcher reachability + the deployment's network mode. */
+export async function fetchWatcherStatus(): Promise<
+  WatcherStatus[] & { networkMode?: string }
+> {
+  const res = await fetch(`${BACKEND_URL}/api/watchers`);
+  if (!res.ok) throw new Error(await res.text());
+  const json = (await res.json()) as {
+    watchers: WatcherStatus[];
+    networkMode?: string;
+  };
+  return Object.assign(json.watchers, { networkMode: json.networkMode });
+}
+
 export interface ChainStat {
   chain: string;
   validatorCount: number;
@@ -258,7 +279,7 @@ export async function fetchUserByEvm(address: string): Promise<UserRecord> {
 }
 
 export interface DelegationRow {
-  chain: "polygon" | "moonbeam" | "monad" | "cosmos" | "sui";
+  chain: "polygon" | "monad" | "cosmos" | "celestia" | "osmosis" | "sui" | "aptos" | "polkadot" | "bnb" | "solana";
   validator: string;
   amount: string;
   symbol: string;
@@ -289,7 +310,7 @@ export async function fetchPortfolio(
 export interface AutoCompoundPermit {
   id: string;
   userId: string;
-  chain: "polygon" | "moonbeam" | "monad" | "cosmos" | "sui";
+  chain: "polygon" | "monad" | "cosmos" | "celestia" | "osmosis" | "sui" | "aptos" | "polkadot" | "bnb" | "solana";
   validator: string;
   scope: string;
   signature: string | null;
@@ -324,7 +345,7 @@ export async function listAutoCompoundPermits(
 
 export async function createAutoCompoundPermit(body: {
   userId: string;
-  chain: "polygon" | "moonbeam" | "monad" | "cosmos" | "sui";
+  chain: "polygon" | "monad" | "cosmos" | "celestia" | "osmosis" | "sui" | "aptos" | "polkadot" | "bnb" | "solana";
   validator: string;
   scope?: "compound" | "claim" | "redelegate";
   signature?: string;

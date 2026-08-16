@@ -21,10 +21,15 @@ import {
 
 const SUPPORTED: SupportedChain[] = [
   "polygon",
-  "moonbeam",
   "monad",
   "cosmos",
+  "celestia",
+  "osmosis",
   "sui",
+  "aptos",
+  "polkadot",
+  "bnb",
+  "solana",
 ];
 
 function isSupported(chain: string): chain is SupportedChain {

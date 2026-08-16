@@ -54,33 +54,6 @@ export const VALIDATORS: Partial<Record<ChainConfig["id"], ValidatorRow[]>> = {
       totalStaked: "54.1M POL",
     },
   ],
-  moonbeam: [
-    {
-      address: "0x9a2c000000000000000000000000000000f471",
-      name: "Stakefish",
-      apr: 12.4,
-      uptime: 99.96,
-      commission: 5,
-      recommended: true,
-      totalStaked: "12.4M GLMR",
-    },
-    {
-      address: "0x4f8e00000000000000000000000000000023b1",
-      name: "Everstake",
-      apr: 12.0,
-      uptime: 99.98,
-      commission: 4,
-      totalStaked: "9.8M GLMR",
-    },
-    {
-      address: "0xc0in00000000000000000000000000000000ba5e",
-      name: "Coinbase Cloud",
-      apr: 11.8,
-      uptime: 99.99,
-      commission: 8,
-      totalStaked: "7.2M GLMR",
-    },
-  ],
   monad: [
     {
       address: "0x1d7b0000000000000000000000000000008e29",
