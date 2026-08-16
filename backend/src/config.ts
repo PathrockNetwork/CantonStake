@@ -12,7 +12,28 @@ function optional(key: string, fallback = ""): string {
   return process.env[key] ?? fallback;
 }
 
+// --- Network mode ----------------------------------------------------------
+//
+// One deployment serves ONE mode. NETWORK_MODE=mainnet swaps every chain
+// endpoint/contract to its mainnet counterpart (defaults below; explicit
+// env vars still win). Mainnet additionally requires MAINNET_CONFIRMED=yes
+// — the backend refuses to start otherwise, because mainnet means REAL
+// CAPITAL at risk (docs/NETWORK_MODES.md).
+
+const NETWORK_MODE = optional("NETWORK_MODE", "testnet").toLowerCase();
+const isMainnet = NETWORK_MODE === "mainnet";
+
+/** Mode-aware default: env override wins, else testnet/mainnet value. */
+function modeDefault<T>(envKey: string, testnet: T, mainnet: T): T {
+  const v = process.env[envKey];
+  if (v !== undefined && v !== "") return (typeof testnet === "number" ? Number(v) : v) as T;
+  return isMainnet ? mainnet : testnet;
+}
+
 export const config = {
+  networkMode: (isMainnet ? "mainnet" : "testnet") as "testnet" | "mainnet",
+  mainnetConfirmed: optional("MAINNET_CONFIRMED", "no").toLowerCase() === "yes",
+
   port: Number(optional("PORT", "4000")),
   logLevel: optional("LOG_LEVEL", "info"),
   demoMode: optional("DEMO_MODE", "false").toLowerCase() === "true",
@@ -21,7 +42,10 @@ export const config = {
   // links — Polygon PoS staking does not settle here. `rpc-amoy.polygon.
   // technology` is not resolvable from every network, so the default is the
   // publicnode mirror.
-  amoyRpcUrl: optional("AMOY_RPC_URL", "https://polygon-amoy-bor-rpc.publicnode.com"),
+  amoyRpcUrl: modeDefault("AMOY_RPC_URL",
+    "https://polygon-amoy-bor-rpc.publicnode.com", // Bor (Amoy)
+    "https://polygon-bor-rpc.publicnode.com"       // Bor (mainnet)
+  ),
 
   // --- Polygon PoS staking settlement layer (Phase 2 / T2.1-T2.4) ---
   //
@@ -32,18 +56,39 @@ export const config = {
   // logger address and StakeManager.token() returns POL
   // (0x44499312f493F62f2DFd3C6435Ca3603EbFCeeBa), which the resolver reads at
   // runtime rather than hardcoding.
-  stakeSettlementRpcUrl: optional(
-    "STAKE_SETTLEMENT_RPC_URL",
-    "https://ethereum-sepolia-rpc.publicnode.com"
+  // Mainnet default is mevblocker: probed 2026-08-16, the only free
+  // endpoint that consistently accepts both eth_call and 50-300-block
+  // eth_getLogs windows. publicnode intermittently rejects even 50-block
+  // windows as "archive" under load; llamarpc/blockpi were 521; blastapi
+  // 400; blxrbdn has no eth_getLogs; ankr/cloudflare need keys; drpc caps
+  // below 300. mevblocker requires a User-Agent header — viem's Node fetch
+  // sends one, but bare curl/urllib without one get 403. A personal key
+  // (Alchemy/Infura/QuickNode) via this env var still overrides and lifts
+  // every limit.
+  stakeSettlementRpcUrl: modeDefault("STAKE_SETTLEMENT_RPC_URL",
+    "https://ethereum-sepolia-rpc.publicnode.com", // Sepolia for Amoy
+    "https://rpc.mevblocker.io"                    // Ethereum L1 for mainnet
   ),
-  stakeSettlementChainId: Number(optional("STAKE_SETTLEMENT_CHAIN_ID", "11155111")),
-  stakeManagerAddress: optional(
-    "POLYGON_STAKE_MANAGER_ADDRESS",
-    "0x4AE8f648B1Ec892B6cc68C89cc088583964d08bE"
+  // Failover peer for the settlement client (viem fallback transport):
+  // when the primary errors or times out, the request retries here. Empty
+  // on testnet — publicnode Sepolia alone has been solid.
+  stakeSettlementFallbackRpcUrl: modeDefault("STAKE_SETTLEMENT_FALLBACK_RPC_URL",
+    "",
+    "https://ethereum-rpc.publicnode.com"
   ),
-  stakingLoggerAddress: optional(
-    "POLYGON_STAKING_LOGGER_ADDRESS",
-    "0x5E3111a5d928D24718c1A7897261D0B9087002ed"
+  // Polygon PoS staking settles on Ethereum L1: Sepolia (11155111) for
+  // Amoy, Ethereum (1) for mainnet.
+  stakeSettlementChainId: modeDefault("STAKE_SETTLEMENT_CHAIN_ID", 11155111, 1),
+  // Verified on-chain 2026-08-16: mainnet StakeManager proxy at
+  // 0x5e3ef2…d908 returns token() = POL (0x455e53…c3f6) and logger() =
+  // 0xa59c84…512b; Sepolia addresses verified in the real-data migration.
+  stakeManagerAddress: modeDefault("POLYGON_STAKE_MANAGER_ADDRESS",
+    "0x4AE8f648B1Ec892B6cc68C89cc088583964d08bE",  // Sepolia (Amoy)
+    "0x5e3Ef299fDDf15eAa0432E6e66473ace8c13D908"   // Ethereum mainnet
+  ),
+  stakingLoggerAddress: modeDefault("POLYGON_STAKING_LOGGER_ADDRESS",
+    "0x5E3111a5d928D24718c1A7897261D0B9087002ed",  // Sepolia (Amoy)
+    "0xa59C847Bd5aC0172Ff4FE912C5d29E5A71A7512B"   // Ethereum mainnet
   ),
   // The validatorId → ValidatorShare registry only changes when a validator
   // joins or leaves, so a long TTL is fine; resolveValidatorShare falls back
@@ -52,14 +97,16 @@ export const config = {
     optional("VALIDATOR_SHARE_CACHE_TTL_SEC", "86400")
   ),
   // Sepolia block time is ~12 s, so a 12 s poll with a 600-block initial
-  // lookback covers ~2 h of history on a cold start.
+  // lookback covers ~2 h of history on a cold start. MAINNET FREE-TIER
+  // LIMIT: publicnode's Ethereum mainnet rejects eth_getLogs ranges above
+  // ~64 blocks (verified 2026-08-16: 128 blocked, 64 ok), so mainnet
+  // defaults keep every request inside one block-batch. Incremental polls
+  // are 1-2 blocks anyway; only the cold-start lookback is affected. A
+  // personal RPC key (Alchemy/Infura/QuickNode via STAKE_SETTLEMENT_RPC_URL)
+  // removes the cap entirely.
   polygonWatcherPollMs: Number(optional("POLYGON_WATCHER_POLL_MS", "12000")),
-  polygonWatcherLookbackBlocks: Number(
-    optional("POLYGON_WATCHER_LOOKBACK_BLOCKS", "600")
-  ),
-  polygonWatcherMaxRange: Number(
-    optional("POLYGON_WATCHER_MAX_BLOCK_RANGE", "5000")
-  ),
+  polygonWatcherLookbackBlocks: modeDefault("POLYGON_WATCHER_LOOKBACK_BLOCKS", 600, 50),
+  polygonWatcherMaxRange: modeDefault("POLYGON_WATCHER_MAX_BLOCK_RANGE", 5000, 50),
 
   cantonJsonApiUrl: optional("CANTON_JSON_API_URL", "http://localhost:3975"),
   cantonAppProviderParty: required("CANTON_APP_PROVIDER_PARTY"),
@@ -163,22 +210,64 @@ export const config = {
   // Per-chain RPC + keeper configuration — testnet defaults across the
   // board. Each is optional; when its keeper credentials are missing
   // the corresponding executor returns status="skipped".
-  // Moonbase Alpha — Moonbeam testnet (chain id 1287)
-  moonbeamRpcUrl: optional(
-    "MOONBEAM_RPC_URL",
-    "https://rpc.api.moonbase.moonbeam.network"
-  ),
   // Monad Testnet (chain id 10143)
-  monadRpcUrl: optional("MONAD_RPC_URL", "https://testnet-rpc.monad.xyz"),
+  monadRpcUrl: modeDefault("MONAD_RPC_URL",
+    "https://testnet-rpc.monad.xyz",
+    "https://rpc.monad.xyz"
+  ),
   monadStakingContract: optional("MONAD_STAKING_CONTRACT"),
   // Cosmos Hub theta-testnet — Polypore sentry-01 endpoints
-  cosmosRestUrl: optional(
-    "COSMOS_REST_URL",
-    "https://cosmoshub-testnet.api.kjnodes.com"
+  cosmosRestUrl: modeDefault("COSMOS_REST_URL",
+    "https://cosmoshub-testnet.api.kjnodes.com", // theta-testnet
+    "https://cosmos-api.polkachu.com"            // Cosmos Hub mainnet
   ),
-  cosmosRpcUrl: optional(
-    "COSMOS_RPC_URL",
-    "https://cosmoshub-testnet.rpc.kjnodes.com"
+  cosmosRpcUrl: modeDefault("COSMOS_RPC_URL",
+    "https://cosmoshub-testnet.rpc.kjnodes.com", // theta-testnet
+    "https://cosmos-rpc.polkachu.com"            // Cosmos Hub mainnet
+  ),
+  // Celestia mocha testnet (public POPS endpoints, verified reachable
+  // 2026-08-16). utia has 6 decimals like uatom.
+  celestiaRpcUrl: modeDefault("CELESTIA_RPC_URL",
+    "https://rpc-mocha.pops.one",        // mocha testnet
+    "https://celestia-rpc.polkachu.com"  // mainnet
+  ),
+  celestiaRestUrl: modeDefault("CELESTIA_REST_URL",
+    "https://api-mocha.pops.one",        // mocha testnet
+    "https://celestia-api.polkachu.com"  // mainnet
+  ),
+  // Osmosis testnet (official endpoints, verified 2026-08-16).
+  osmosisRpcUrl: modeDefault("OSMOSIS_RPC_URL",
+    "https://rpc.testnet.osmosis.zone", // testnet
+    "https://rpc.osmosis.zone"          // mainnet
+  ),
+  osmosisRestUrl: modeDefault("OSMOSIS_REST_URL",
+    "https://lcd.testnet.osmosis.zone", // testnet
+    "https://lcd.osmosis.zone"          // mainnet
+  ),
+  // Aptos testnet fullnode (REST, verified reachable 2026-08-16).
+  aptosRestUrl: modeDefault("APTOS_REST_URL",
+    "https://fullnode.testnet.aptoslabs.com",
+    "https://fullnode.mainnet.aptoslabs.com"
+  ),
+  // Polkadot Westend testnet (Substrate RPC over HTTPS; Cloudflare-hosted,
+  // blocks non-browser UAs — viem/fetch default UA works).
+  // Substrate RPC: Westend testnet / Polkadot mainnet — same runtime
+  // shapes (nominationPools), different chain.
+  polkadotRpcUrl: modeDefault("POLKADOT_RPC_URL",
+    "https://westend-rpc.polkadot.io",
+    "https://rpc.polkadot.io"
+  ),
+  // BNB Smart Chain Chapel testnet.
+  // StakeHub lives at the same 0x…2002 address on both networks
+  // (verified against a real mainnet Delegated event, 2026-08-16).
+  bnbRpcUrl: modeDefault("BNB_RPC_URL",
+    "https://bsc-testnet-rpc.publicnode.com", // Chapel
+    "https://bsc-rpc.publicnode.com"          // BSC mainnet
+  ),
+  // Solana testnet.
+  solanaRpcUrl: modeDefault("SOLANA_RPC_URL",
+    "https://api.testnet.solana.com",
+    "https://api.mainnet-beta.solana.com"
   ),
   cosmosKeeperMnemonic: optional("COSMOS_KEEPER_MNEMONIC"),
   cosmosKeeperPrefix: optional("COSMOS_KEEPER_PREFIX", "cosmos"),

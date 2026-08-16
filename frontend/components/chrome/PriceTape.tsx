@@ -109,7 +109,6 @@ export function PriceTape() {
 
   const polUsd = prices?.polUsd ?? null;
   const polDelta = prices?.polUsd24hChange ?? null;
-  const glmrUsd = prices?.glmrUsd ?? null;
   const monUsd = prices?.monUsd ?? null;
   const atomUsd = prices?.atomUsd ?? null;
   const suiUsd = prices?.suiUsd ?? null;
@@ -144,12 +143,6 @@ export function PriceTape() {
       price: polUsd !== null ? `$${polUsd.toFixed(3)}` : "—",
       delta: polDelta !== null ? fmtSigned(polDelta) : "—",
       up: polDelta === null ? null : polDelta >= 0,
-    },
-    {
-      symbol: "DEV/USD",
-      price: glmrUsd !== null ? `$${glmrUsd.toFixed(3)}` : "—",
-      delta: "TESTNET",
-      up: null,
     },
     {
       symbol: "MON/USD",
