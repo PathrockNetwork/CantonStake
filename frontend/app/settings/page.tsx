@@ -25,7 +25,18 @@ const CHAIN_NAME: Record<string, string> = Object.fromEntries(
   CHAINS.map((c) => [c.id, c.name]),
 );
 
-const COMPOUND_CHAINS = ["polygon", "moonbeam", "monad", "cosmos", "sui"] as const;
+const COMPOUND_CHAINS = [
+  "polygon",
+  "monad",
+  "cosmos",
+  "celestia",
+  "osmosis",
+  "sui",
+  "aptos",
+  "polkadot",
+  "bnb",
+  "solana",
+] as const;
 type CompoundChain = (typeof COMPOUND_CHAINS)[number];
 
 const NOTIFY_KINDS = [

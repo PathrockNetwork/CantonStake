@@ -1,8 +1,9 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { fetchChainStats, type ChainStat } from "@/lib/api";
+import { fetchChainStats, fetchWatcherStatus, type ChainStat } from "@/lib/api";
 import { CHAINS } from "@/lib/chains";
+import { networkMode } from "@/lib/network";
 import { tokens } from "@/lib/tokens";
 
 const CHAIN_LABEL: Record<string, string> = Object.fromEntries(
@@ -28,6 +29,15 @@ function statusFor(stat: ChainStat | undefined): {
 }
 
 export function SystemStatus() {
+  // The backend is the source of truth for the deployment's network mode
+  // (it is what settles); the build-time frontend value is the fallback.
+  const { data: watchers } = useQuery({
+    queryKey: ["watcher-status"],
+    queryFn: fetchWatcherStatus,
+    refetchInterval: 60_000,
+  });
+  const backendMode = watchers?.networkMode;
+
   const { data } = useQuery({
     queryKey: ["chain-stats-system-status"],
     queryFn: () => fetchChainStats(),
@@ -39,7 +49,18 @@ export function SystemStatus() {
   for (const c of data?.chains ?? []) byChain.set(c.chain, c);
 
   // Layout: one row per supported chain + a Canton row at the top
-  const chains = ["polygon", "moonbeam", "monad", "cosmos", "sui"] as const;
+  const chains = [
+    "polygon",
+    "monad",
+    "cosmos",
+    "celestia",
+    "osmosis",
+    "sui",
+    "aptos",
+    "polkadot",
+    "bnb",
+    "solana",
+  ] as const;
 
   return (
     <div
@@ -57,9 +78,24 @@ export function SystemStatus() {
           color: tokens.ink[400],
           textTransform: "uppercase",
           marginBottom: 12,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
         }}
       >
         System status
+        <span
+          className="mono"
+          style={{
+            fontSize: 9,
+            padding: "2px 6px",
+            border: `1px solid ${backendMode === "mainnet" ? "rgba(239,68,68,.5)" : tokens.hairline}`,
+            color: backendMode === "mainnet" ? "#ef4444" : tokens.ink[300],
+            textTransform: "uppercase",
+          }}
+        >
+          {backendMode ?? networkMode} net
+        </span>
       </div>
 
       <div
