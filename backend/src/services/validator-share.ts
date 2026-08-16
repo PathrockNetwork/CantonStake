@@ -51,6 +51,7 @@
 import IORedis from "ioredis";
 import {
   createPublicClient,
+  fallback,
   http,
   parseAbi,
   type Address,
@@ -80,10 +81,21 @@ export const settlementChainDef = settlementChain();
 /**
  * L1 client for everything staking-related. Note this is deliberately NOT the
  * Bor/Amoy client — Bor only carries POL balances and explorer links.
+ *
+ * Mainnet runs two free endpoints through viem's fallback transport because
+ * neither is reliable alone: mevblocker occasionally stalls eth_getLogs past
+ * the 10 s timeout, publicnode intermittently rejects even 50-block windows
+ * as "archive" (see config.stakeSettlementRpcUrl for the full probe log).
+ * A failed or timed-out request on the primary retries on the fallback.
  */
+const settlementTransports = [http(config.stakeSettlementRpcUrl)];
+if (config.stakeSettlementFallbackRpcUrl) {
+  settlementTransports.push(http(config.stakeSettlementFallbackRpcUrl));
+}
+
 export const settlementClient: PublicClient = createPublicClient({
   chain: settlementChainDef,
-  transport: http(config.stakeSettlementRpcUrl),
+  transport: fallback(settlementTransports),
 }) as PublicClient;
 
 export const stakeManagerAddress = config.stakeManagerAddress as Address;
@@ -153,7 +165,11 @@ const rootChainAbi = parseAbi([
 // --- Redis cache ----------------------------------------------------------
 
 const redis = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
-const PREFIX = "vshare:";
+// Chain-scoped: the same key set serves Sepolia and mainnet depending on
+// NETWORK_MODE, and a mode flip must never serve the other chain's
+// registry/epoch/token (observed 2026-08-16: a mainnet run cached 138
+// validators and the testnet backend then served mainnet share contracts).
+const PREFIX = `vshare:${config.stakeSettlementChainId}:`;
 
 async function cached<T>(
   key: string,
@@ -196,6 +212,9 @@ export interface ValidatorShareEntry {
   commissionRate: string;
   selfStake: string;
   delegatedAmount: string;
+  /** buyVoucher reverts below this. Read live per validator — the real
+   * minimum differs between testnet and mainnet deployments. */
+  minAmount: string;
 }
 
 /**
@@ -222,14 +241,14 @@ export async function listValidatorShares(): Promise<ValidatorShareEntry[]> {
       allowFailure: true,
     });
 
-    const entries: ValidatorShareEntry[] = [];
+    const base: ValidatorShareEntry[] = [];
     results.forEach((res, i) => {
       if (res.status !== "success") return;
       const v = res.result as readonly unknown[];
       const signer = v[5] as string;
       const share = v[6] as string;
       if (!share || share === ZERO_ADDRESS) return;
-      entries.push({
+      base.push({
         validatorId: Number(ids[i]),
         signer,
         share,
@@ -237,9 +256,29 @@ export async function listValidatorShares(): Promise<ValidatorShareEntry[]> {
         commissionRate: String(v[8]),
         selfStake: String(v[0]),
         delegatedAmount: String(v[11]),
+        minAmount: "0",
       });
     });
-    return entries;
+
+    // Per-validator buyVoucher floor. One extra multicall; cached with the
+    // registry so this stays one batch per TTL.
+    try {
+      const minResults = await settlementClient.multicall({
+        contracts: base.map((e) => ({
+          address: e.share as Address,
+          abi: validatorShareAbi,
+          functionName: "minAmount" as const,
+        })),
+        allowFailure: true,
+      });
+      base.forEach((e, i) => {
+        const r = minResults[i];
+        if (r && r.status === "success") e.minAmount = String(r.result);
+      });
+    } catch (err) {
+      console.warn("[validator-share] minAmount batch read failed:", err);
+    }
+    return base;
   });
 }
 
