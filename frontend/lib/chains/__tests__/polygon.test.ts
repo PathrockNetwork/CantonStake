@@ -42,6 +42,11 @@ vi.mock("@/lib/chains", () => ({
   resolveValidatorShare: (v: string) =>
     v.toLowerCase() === VALIDATOR ? SHARE : undefined,
   knownValidatorShares: () => [{ validator: VALIDATOR, share: SHARE }],
+  // The live registry refresh is a no-op under test — the mocked
+  // resolveValidatorShare above already defines the known world.
+  ensureValidatorSharesLive: async () => {},
+  ensureValidatorMinimums: async () => {},
+  validatorMinAmounts: new Map<string, bigint>(),
 }));
 
 vi.mock("@/lib/validators-live", () => ({
