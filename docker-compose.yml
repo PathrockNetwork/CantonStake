@@ -85,7 +85,6 @@ services:
       - DISCORD_DEFAULT_WEBHOOK=${DISCORD_DEFAULT_WEBHOOK:-}
       - AUTO_COMPOUND_DISABLED=${AUTO_COMPOUND_DISABLED:-true}
       - AUTO_COMPOUND_KEEPER_KEY=${AUTO_COMPOUND_KEEPER_KEY:-}
-      - MOONBEAM_RPC_URL=${MOONBEAM_RPC_URL:-https://rpc.api.moonbase.moonbeam.network}
       - MONAD_RPC_URL=${MONAD_RPC_URL:-https://testnet-rpc.monad.xyz}
       - MONAD_STAKING_CONTRACT=${MONAD_STAKING_CONTRACT:-}
       - COSMOS_REST_URL=${COSMOS_REST_URL:-https://cosmoshub-testnet.api.kjnodes.com}

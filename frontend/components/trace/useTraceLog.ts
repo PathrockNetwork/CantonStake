@@ -18,6 +18,9 @@ export type TraceKind =
   | "EVM"
   | "COSMOS"
   | "SUI"
+  | "MOVE"
+  | "SUBSTRATE"
+  | "SVM"
   | "MARKER"
   | "WALLET"
   | "ORCH";

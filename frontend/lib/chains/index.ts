@@ -1,13 +1,11 @@
 import type { IChainAdapter } from "./types";
 import { cosmosAdapter } from "./cosmos";
 import { monadAdapter } from "./monad";
-import { moonbeamAdapter } from "./moonbeam";
 import { polygonAdapter } from "./polygon";
 import { suiAdapter } from "./sui";
 
 const ADAPTERS: Record<string, IChainAdapter> = {
   polygon: polygonAdapter,
-  moonbeam: moonbeamAdapter,
   monad: monadAdapter,
   cosmos: cosmosAdapter,
   sui: suiAdapter,

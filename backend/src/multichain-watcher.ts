@@ -6,10 +6,15 @@
  * - Polygon PoS: StakingInfo ShareMinted / ShareBurnedWithId events on
  *   Ethereum L1 (Sepolia for Amoy) — one ValidatorShare per validator,
  *   resolved per event. NOT the Bor chain, and not a single global contract.
- * - Moonbeam (Moonbase Alpha): ParachainStaking Delegated events
  * - Monad (Testnet): Staking Delegate events
- * - Cosmos (theta-testnet): MsgDelegate transactions
- * - Sui (testnet): request_add_stake events
+ * - Cosmos-shape (Cosmos Hub, Celestia mocha, Osmosis testnet):
+ *   MsgDelegate transactions via Tendermint tx_search + protobuf decode
+ * - Sui (testnet): request_add_stake events (needs a GraphQL-capable RPC;
+ *   public fullnodes deprecated JSON-RPC)
+ * - Aptos (testnet): 0x1::stake::AddStakeEvent via REST transactions
+ * - Polkadot (Westend): nominationPools.Bonded / staking.Bonded block events
+ * - BNB Chain (Chapel): StakeHub Delegated logs
+ * - Solana (testnet): Stake Program delegateStake instructions
  */
 
 import {
@@ -18,6 +23,7 @@ import {
   parseAbiItem,
   formatEther,
   parseUnits,
+  toHex,
   type Address,
   type Log,
 } from "viem";
@@ -56,8 +62,8 @@ interface StakingEvent {
   /**
    * The real identifier of the on-chain staking module / contract that
    * custody this stake: Polygon → the per-validator ValidatorShare
-   * (resolved from the event's validatorId); Moonbeam/Monad → the
-   * staking precompile; Sui → the system staking object; Cosmos → the
+   * (resolved from the event's validatorId); Monad → the staking
+   * precompile; Sui → the system staking object; Cosmos → the
    * validator operator address from the decoded MsgDelegate. Never a
    * fabricated placeholder.
    */
@@ -200,85 +206,35 @@ async function watchPolygon(): Promise<void> {
       }
 
       lastScannedBlock = latestBlock;
+      reportWatcherOk("polygon");
     } catch (err) {
       console.error("[polygon-watcher]", err);
+      reportWatcherError("polygon", err);
+      // Free-tier RPCs reject getLogs windows too far behind head as
+      // "archive". If the cursor has fallen more than a lookback behind,
+      // retrying that window can never succeed — drop it and re-anchor at
+      // head − lookback on the next poll (events in the gap are skipped)
+      // rather than wedging the watcher in archive territory.
+      if (lastScannedBlock !== undefined) {
+        try {
+          const head = await settlementClient.getBlockNumber();
+          if (head - lastScannedBlock > INITIAL_LOOKBACK_BLOCKS * 2n) {
+            console.warn(
+              `[polygon-watcher] cursor ${lastScannedBlock} is ` +
+                `${head - lastScannedBlock} blocks behind head ${head}; re-anchoring`
+            );
+            lastScannedBlock = undefined;
+          }
+        } catch {
+          /* head probe failed too; retry the window next poll */
+        }
+      }
     }
   };
 
   await poll();
   return new Promise(() => {
     const interval = setInterval(() => void poll(), POLL_MS);
-    return () => clearInterval(interval);
-  });
-}
-
-// === Moonbeam (Moonbase Alpha ParachainStaking) ===
-
-const moonbeamClient = createPublicClient({
-  chain: {
-    id: 1287,
-    name: "Moonbase Alpha",
-    nativeCurrency: { name: "GLMR", symbol: "GLMR", decimals: 18 },
-    rpcUrls: {
-      default: { http: [config.moonbeamRpcUrl] },
-    },
-  },
-  transport: http(config.moonbeamRpcUrl),
-});
-
-// Moonbeam ParachainStaking precompile events
-const delegatedAbi = parseAbiItem(
-  "event Delegated(address indexed delegator, address indexed candidate, uint256 amount)"
-);
-
-const PARACHAIN_STAKING_PRECOMPILE: Address = "0x0000000000000000000000000000000000000800" as Address;
-
-async function watchMoonbeam(): Promise<void> {
-  const EVENT_POLL_MS = 5_000;
-  const INITIAL_LOOKBACK_BLOCKS = 50n;
-  const MAX_BLOCK_RANGE = 50n;
-  let lastScannedBlock: bigint | undefined;
-
-  const poll = async () => {
-    try {
-      const latestBlock = await moonbeamClient.getBlockNumber();
-      const fromBlock =
-        lastScannedBlock === undefined
-          ? latestBlock > INITIAL_LOOKBACK_BLOCKS
-            ? latestBlock - INITIAL_LOOKBACK_BLOCKS
-            : 0n
-          : lastScannedBlock + 1n;
-      if (fromBlock > latestBlock) return;
-
-      const logs = await moonbeamClient.getLogs({
-        address: PARACHAIN_STAKING_PRECOMPILE,
-        event: delegatedAbi,
-        fromBlock,
-        toBlock: latestBlock,
-      });
-
-      for (const log of logs) {
-        await handleStakeEvent({
-          evmAddress: (log as unknown as { args: { delegator: Address } }).args.delegator,
-          amount: (log as unknown as { args: { amount: bigint } }).args.amount,
-          txHash: log.transactionHash,
-          blockNumber: Number(log.blockNumber),
-          chain: "moonbeam",
-          // Moonbase Alpha ParachainStaking precompile — the single
-          // contract custody all delegations on Moonbeam.
-          validatorShare: PARACHAIN_STAKING_PRECOMPILE,
-        });
-      }
-
-      lastScannedBlock = latestBlock;
-    } catch (err) {
-      console.error("[moonbeam-watcher]", err);
-    }
-  };
-
-  await poll();
-  return new Promise(() => {
-    const interval = setInterval(() => void poll(), EVENT_POLL_MS);
     return () => clearInterval(interval);
   });
 }
@@ -344,27 +300,511 @@ async function watchMonad(): Promise<void> {
       }
 
       lastScannedBlock = latestBlock;
+      reportWatcherOk("monad");
     } catch (err) {
       console.error("[monad-watcher]", err);
+      reportWatcherError("monad", err);
     }
   };
 
   await poll();
   return new Promise(() => {
-    const interval = setInterval(() => void poll(), EVENT_POLL_MS);
-    return () => clearInterval(interval);
+    let stopped = false;
+    const tick = async () => {
+      if (stopped) return;
+      await poll();
+      const failures = watcherHealth.get("monad")?.consecutiveFailures ?? 0;
+      setTimeout(() => void tick(), backoffDelayMs(failures, EVENT_POLL_MS));
+    };
+    void tick();
+    return () => {
+      stopped = true;
+    };
   });
 }
 
-// === Cosmos (theta-testnet) ===
+// === Aptos (testnet, Move) ================================================
+//
+// Aptos staking = one stake pool per validator, owned by an account; users
+// add stake to a pool via 0x1::stake::add_stake. Events land in the
+// transaction's events array (type 0x1::stake::AddStakeEvent) with the
+// pool address in the event guid. The fullnode REST API serves
+// transactions by ledger version, so the watcher walks the version range:
+// every event we accept comes from a settled, indexed transaction.
+
+interface AptosTx {
+  type?: string;
+  version: string;
+  hash: string;
+  sender?: string;
+  success?: boolean;
+  events?: Array<{
+    type?: string;
+    guid?: { account_address?: string };
+    data?: { amount?: string | number };
+  }>;
+}
+
+const APTOS_ADD_STAKE_EVENT = "0x1::stake::AddStakeEvent";
+
+async function watchAptos(): Promise<void> {
+  const POLL_MS = 12_000;
+  const PAGE = 50;
+  const base = config.aptosRestUrl.replace(/\/$/, "");
+  let lastVersion: bigint | undefined;
+
+  // Seed the cursor from the current ledger tip.
+  try {
+    const res = await fetch(`${base}/v1`);
+    if (res.ok) {
+      const info = (await res.json()) as { ledger_version?: string };
+      if (info.ledger_version) lastVersion = BigInt(info.ledger_version);
+    }
+  } catch (err) {
+    console.warn("[aptos-watcher] ledger info fetch failed:", err);
+  }
+
+  const poll = async () => {
+    if (lastVersion === undefined) return;
+    const from = lastVersion + 1n;
+    const res = await fetch(`${base}/v1/transactions?start=${from}&limit=${PAGE}`);
+    if (!res.ok) {
+      throw new Error(`transactions?start=${from} returned ${res.status}`);
+    }
+    const txs = (await res.json()) as AptosTx[];
+    if (!Array.isArray(txs)) return;
+
+    for (const tx of txs) {
+      if (tx.version) {
+        const v = BigInt(tx.version);
+        if (v > lastVersion!) lastVersion = v;
+      }
+      if (tx.success === false) continue;
+      if (!tx.sender) continue;
+
+      for (const ev of tx.events ?? []) {
+        if (ev.type !== APTOS_ADD_STAKE_EVENT) continue;
+        const amountOcta = BigInt(ev.data?.amount ?? "0");
+        if (amountOcta === 0n) continue;
+        const pool = ev.guid?.account_address;
+        if (!pool) continue;
+
+        // Octa = 10^-8 APT — scale to the shared 18-decimal stake units.
+        const amount = toStakeUnits(amountOcta, 8);
+
+        await handleStakeEvent({
+          evmAddress: tx.sender,
+          amount,
+          txHash: tx.hash,
+          blockNumber: Number(BigInt(tx.version)),
+          chain: "aptos",
+          // The staking pool address identifies the validator on Aptos.
+          validatorShare: pool,
+        });
+      }
+    }
+    reportWatcherOk("aptos");
+  };
+
+  await poll();
+  return new Promise(() => {
+    let stopped = false;
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        await poll();
+      } catch (err) {
+        console.error("[aptos-watcher]", err);
+        reportWatcherError("aptos", err);
+      }
+      const failures = watcherHealth.get("aptos")?.consecutiveFailures ?? 0;
+      setTimeout(() => void tick(), backoffDelayMs(failures, POLL_MS));
+    };
+    void tick();
+    return () => {
+      stopped = true;
+    };
+  });
+}
+
+// === Solana (testnet, account model) ======================================
+//
+// Solana has no event logs: delegation is an instruction to the Stake
+// Program (DelegateStake) that mutates a stake account. The watcher polls
+// getSignaturesForAddress on the Stake Program, then fetches each new
+// transaction in jsonParsed form and reads the parsed delegateStake
+// instructions — stake account, vote account (= the validator) and the
+// post-tx stake-account balance (= the delegated amount). Everything is
+// derived from settled transactions, same trust model as the other
+// watchers (docs/PROOF_TRUST_MODEL.md).
+
+const SOLANA_STAKE_PROGRAM = "Stake11111111111111111111111111111111111111";
+
+interface SolanaParsedInstruction {
+  programId?: string;
+  parsed?: {
+    type?: string;
+    info?: {
+      stakeAccount?: string;
+      voteAccount?: string;
+    };
+  };
+}
+
+async function solanaRpc<T>(method: string, params: unknown[]): Promise<T> {
+  const res = await fetch(config.solanaRpcUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+  });
+  if (!res.ok) {
+    throw new Error(`${method} returned ${res.status}`);
+  }
+  const body = (await res.json()) as { result?: T; error?: { message?: string } };
+  if (body.error) {
+    throw new Error(`${method}: ${body.error.message ?? "rpc error"}`);
+  }
+  return body.result as T;
+}
+
+async function watchSolana(): Promise<void> {
+  const POLL_MS = 15_000;
+  const BATCH = 20;
+  const seenSignatures = new Set<string>();
+  const seenOrder: string[] = [];
+  const SEEN_CAP = 2000;
+
+  const poll = async () => {
+    const sigs = await solanaRpc<Array<{ signature: string; err: unknown } | null>>(
+      "getSignaturesForAddress",
+      [SOLANA_STAKE_PROGRAM, { limit: BATCH }]
+    );
+    if (!Array.isArray(sigs)) return;
+
+    // getSignaturesForAddress returns newest-first; only process unseen.
+    const fresh = sigs
+      .filter((s): s is { signature: string; err: unknown } => s !== null)
+      .filter((s) => !seenSignatures.has(s.signature))
+      .reverse(); // oldest → newest so ledger order is preserved
+
+    for (const sig of fresh) {
+      seenSignatures.add(sig.signature);
+      seenOrder.push(sig.signature);
+      if (seenOrder.length > SEEN_CAP) {
+        const drop = seenOrder.shift();
+        if (drop) seenSignatures.delete(drop);
+      }
+      if (sig.err) continue; // failed tx settles nothing
+
+      const tx = await solanaRpc<{
+        transaction?: {
+          message?: {
+            instructions?: SolanaParsedInstruction[];
+            accountKeys?: Array<string | { pubkey: string }>;
+          };
+        };
+        meta?: { postBalances?: number[] };
+      } | null>("getTransaction", [
+        sig.signature,
+        { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 },
+      ]);
+      if (!tx?.transaction?.message || !tx.meta?.postBalances) continue;
+
+      const keys = (tx.transaction.message.accountKeys ?? []).map((k) =>
+        typeof k === "string" ? k : k.pubkey
+      );
+      for (const ix of tx.transaction.message.instructions ?? []) {
+        if (ix.programId !== SOLANA_STAKE_PROGRAM) continue;
+        if (ix.parsed?.type !== "delegateStake") continue;
+
+        const stakeAccount = ix.parsed.info?.stakeAccount;
+        const voteAccount = ix.parsed.info?.voteAccount;
+        if (!stakeAccount || !voteAccount) continue;
+
+        // Delegated amount = the stake account's post-tx lamports.
+        const idx = keys.indexOf(stakeAccount);
+        if (idx < 0) continue;
+        const lamports = tx.meta.postBalances[idx] ?? 0;
+        if (lamports <= 0) continue;
+
+        await handleStakeEvent({
+          evmAddress: stakeAccount, // stake account is the Solana identity here
+          amount: toStakeUnits(BigInt(lamports), 9),
+          txHash: sig.signature,
+          blockNumber: 0,
+          chain: "solana",
+          // The vote account IS the validator on Solana.
+          validatorShare: voteAccount,
+        });
+      }
+    }
+    reportWatcherOk("solana");
+  };
+
+  await poll();
+  return new Promise(() => {
+    let stopped = false;
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        await poll();
+      } catch (err) {
+        console.error("[solana-watcher]", err);
+        reportWatcherError("solana", err);
+      }
+      const failures = watcherHealth.get("solana")?.consecutiveFailures ?? 0;
+      setTimeout(() => void tick(), backoffDelayMs(failures, POLL_MS));
+    };
+    void tick();
+    return () => {
+      stopped = true;
+    };
+  });
+}
+
+// === Polkadot / Westend (Substrate) =======================================
+//
+// Polkadot delegation = nomination pools (min 1 DOT on mainnet, 0.01 WND
+// equivalents on Westend): a member bonds into a pool, the pool nominates
+// validators. Settlement is observable in the block event stream:
+//   nominationPools.Bonded { member, poolId, bonded, free }
+//   staking.Bonded        { stash, controller, amount }   (direct nominators)
+// SCALE decoding needs the runtime metadata, hence @polkadot/api. The
+// connection is HTTPS JSON-RPC (no WebSocket), polling finalized heads.
+
+async function watchPolkadot(): Promise<void> {
+  const POLL_MS = 15_000;
+  const { ApiPromise, HttpProvider } = await import("@polkadot/api");
+  const provider = new HttpProvider(config.polkadotRpcUrl);
+  const api = await ApiPromise.create({ provider, noInitWarn: true });
+  await api.isReady;
+  console.log(`[polkadot-watcher] connected to ${config.polkadotRpcUrl}`);
+
+  let lastProcessed: number | undefined;
+
+  const poll = async () => {
+    const head = await api.rpc.chain.getFinalizedHead();
+    const header = await api.rpc.chain.getHeader(head);
+    const number = header.number.toNumber();
+    if (lastProcessed === undefined) {
+      // Start from the current finalized tip — replaying history would
+      // re-settle ancient bonds into stale Canton requests.
+      lastProcessed = number;
+      return;
+    }
+    if (number <= lastProcessed) return;
+
+    for (let n = lastProcessed + 1; n <= number; n++) {
+      const hash = await api.rpc.chain.getBlockHash(n);
+      const at = await api.at(hash);
+
+      // The runtime-augmented EventRecord typing isn't available without
+      // codegen; the shape is stable across Substrate runtimes.
+      const records = (await at.query.system.events()) as unknown as Array<{
+        event: { section: string; method: string; data: { toArray(): unknown[] } };
+      }>;
+      for (const { event } of records) {
+        if (event.section === "nominationPools" && event.method === "Bonded") {
+          // [member, poolId, bonded, free]
+          const dataArr = event.data.toArray();
+          const member = dataArr[0];
+          const poolId = dataArr[1];
+          const bonded = dataArr[2];
+          const amountPlanks = BigInt(bonded?.toString() ?? "0");
+          if (amountPlanks === 0n || !member) continue;
+
+          await handleStakeEvent({
+            evmAddress: member.toString(),
+            // WND/DOT have 10 decimals (planks) — scale to 18 units.
+            amount: toStakeUnits(amountPlanks, 10),
+            txHash: hash.toHex(),
+            blockNumber: n,
+            chain: "polkadot",
+            // Nomination pools: the pool id IS the staking identifier.
+            validatorShare: `pool:${poolId?.toString() ?? "?"}`,
+          });
+        } else if (event.section === "staking" && event.method === "Bonded") {
+          // [stash, controller, amount] — direct (non-pool) nomination.
+          const dataArr = event.data.toArray();
+          const stash = dataArr[0];
+          const amountRaw = dataArr[2];
+          const amountPlanks = BigInt(amountRaw?.toString() ?? "0");
+          if (amountPlanks === 0n || !stash) continue;
+
+          await handleStakeEvent({
+            evmAddress: stash.toString(),
+            amount: toStakeUnits(amountPlanks, 10),
+            txHash: hash.toHex(),
+            blockNumber: n,
+            chain: "polkadot",
+            validatorShare: "nomination",
+          });
+        }
+      }
+    }
+    lastProcessed = number;
+    reportWatcherOk("polkadot");
+  };
+
+  await poll();
+  return new Promise(() => {
+    let stopped = false;
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        await poll();
+      } catch (err) {
+        console.error("[polkadot-watcher]", err);
+        reportWatcherError("polkadot", err);
+      }
+      const failures = watcherHealth.get("polkadot")?.consecutiveFailures ?? 0;
+      setTimeout(() => void tick(), backoffDelayMs(failures, POLL_MS));
+    };
+    void tick();
+    return () => {
+      stopped = true;
+    };
+  });
+}
+
+// === BNB Chain (Chapel testnet / BSC mainnet, EVM) ========================
+//
+// Native BNB staking settles through the StakeHub system contract
+// (0x…2002, same address on testnet and mainnet). Delegation is
+// `delegate(operatorAddress, delegateVotePower)` — payable — and emits
+// Delegated(operatorAddress indexed, delegator indexed, shares, bnbAmount).
+// Verified against a real settled mainnet delegation on 2026-08-16
+// (topic0 0x24d7bda8…, data = shares ‖ bnbAmount). BNB has 18 decimals.
+
+const BNB_STAKE_HUB = "0x0000000000000000000000000000000000002002" as Address;
+const BNB_DELEGATED_TOPIC =
+  "0x24d7bda8602b916d64417f0dbfe2e2e88ec9b1157bd9f596dfdb91ba26624e04";
+
+const bnbClient = createPublicClient({
+  chain: {
+    id: 97,
+    name: "BNB Smart Chain Chapel",
+    nativeCurrency: { name: "tBNB", symbol: "tBNB", decimals: 18 },
+    rpcUrls: { default: { http: [config.bnbRpcUrl] } },
+  },
+  transport: http(config.bnbRpcUrl),
+});
+
+async function watchBnb(): Promise<void> {
+  const POLL_MS = 12_000;
+  const LOOKBACK = 3000n;
+  let lastScanned: bigint | undefined;
+
+  const poll = async () => {
+    const latest = await bnbClient.getBlockNumber();
+    const from = lastScanned === undefined ? latest - LOOKBACK : lastScanned + 1n;
+    if (from > latest) return;
+
+    // Raw eth_getLogs (no event ABI decode — the Delegated layout is
+    // unpacked manually below, verified against a settled mainnet log).
+    const logs = (await bnbClient.request({
+      method: "eth_getLogs",
+      params: [
+        {
+          address: BNB_STAKE_HUB,
+          topics: [BNB_DELEGATED_TOPIC],
+          fromBlock: toHex(from),
+          toBlock: toHex(latest),
+        },
+      ],
+    })) as Array<{
+      topics: string[];
+      data: `0x${string}`;
+      transactionHash: `0x${string}`;
+      blockNumber: string;
+    }>;
+
+    for (const log of logs) {
+      if (log.topics.length < 3) continue;
+      const operator = `0x${log.topics[1]!.slice(26)}` as Address;
+      const delegator = `0x${log.topics[2]!.slice(26)}` as Address;
+      // data = abi.encode(shares: uint256, bnbAmount: uint256)
+      const data = log.data.slice(2);
+      if (data.length < 128) continue;
+      const bnbAmount = BigInt(`0x${data.slice(64, 128)}`);
+      const shares = BigInt(`0x${data.slice(0, 64)}`);
+      if (bnbAmount === 0n) continue;
+
+      await handleStakeEvent({
+        evmAddress: delegator,
+        amount: bnbAmount,
+        txHash: log.transactionHash,
+        blockNumber: Number(BigInt(log.blockNumber)),
+        chain: "bnb",
+        // The validator's operator address on BNB Chain.
+        validatorShare: operator,
+        shares,
+      });
+    }
+    lastScanned = latest;
+    reportWatcherOk("bnb");
+  };
+
+  await poll();
+  return new Promise(() => {
+    let stopped = false;
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        await poll();
+      } catch (err) {
+        console.error("[bnb-watcher]", err);
+        reportWatcherError("bnb", err);
+      }
+      const failures = watcherHealth.get("bnb")?.consecutiveFailures ?? 0;
+      setTimeout(() => void tick(), backoffDelayMs(failures, POLL_MS));
+    };
+    void tick();
+    return () => {
+      stopped = true;
+    };
+  });
+}
+
+// === Cosmos-shape networks (Cosmos Hub, Celestia, Osmosis) ================
+//
+// All Cosmos SDK chains share the same settlement surface: Tendermint
+// tx_search + protobuf TxRaw → MsgDelegate decode. The watcher is
+// parameterised per network below; a new Cosmos chain is a config entry,
+// not new code.
+
+interface CosmosNetwork {
+  /** CantonStake chain id — keys StakingRequest.chain + watcher health. */
+  chain: string;
+  rpcUrl: string;
+  pollMs: number;
+}
+
+const COSMOS_NETWORKS: CosmosNetwork[] = [
+  {
+    chain: "cosmos",
+    rpcUrl: config.cosmosRpcUrl,
+    pollMs: 10_000,
+  },
+  {
+    chain: "celestia",
+    rpcUrl: config.celestiaRpcUrl,
+    pollMs: 10_000,
+  },
+  {
+    chain: "osmosis",
+    rpcUrl: config.osmosisRpcUrl,
+    pollMs: 10_000,
+  },
+];
 
 // Cosmos uses Tendermint RPC to search for delegate transactions.
 // Each matching tx is decoded from protobuf (TxRaw → TxBody → MsgDelegate)
 // to extract the REAL delegator address, validator operator address and
 // amount — a fabricated hash or an undecodable tx can never produce a
 // bonded position here.
-async function watchCosmos(): Promise<void> {
-  const POLL_MS = 10_000;
+async function watchCosmosChain(net: CosmosNetwork): Promise<void> {
+  const POLL_MS = net.pollMs;
   // Height-windowed polling: each query only fetches delegate txs strictly
   // above the last processed height, so the seen-set is a dedup safety net
   // (capped), not the primary mechanism.
@@ -382,7 +822,7 @@ async function watchCosmos(): Promise<void> {
         lastCheckedHeight > 0
           ? `message.action='/cosmos.staking.v1beta1.MsgDelegate' AND height>${lastCheckedHeight}`
           : "message.action='/cosmos.staking.v1beta1.MsgDelegate'";
-      const res = await fetch(config.cosmosRpcUrl, {
+      const res = await fetch(net.rpcUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -397,7 +837,7 @@ async function watchCosmos(): Promise<void> {
         }),
       });
       if (!res.ok) {
-        console.warn("[cosmos-watcher] RPC error:", res.status);
+        console.warn(`[${net.chain}-watcher] RPC error:`, res.status);
         return;
       }
 
@@ -418,7 +858,7 @@ async function watchCosmos(): Promise<void> {
       };
       if ((body as { error?: { message?: string } }).error) {
         console.warn(
-          "[cosmos-watcher] tx_search error:",
+          `[${net.chain}-watcher] tx_search error:`,
           (body as { error: { message?: string } }).error.message
         );
         return;
@@ -459,7 +899,7 @@ async function watchCosmos(): Promise<void> {
             if (amount === 0n) continue;
 
             console.log(
-              `[cosmos-watcher] delegate ${msg.amount?.amount} ${msg.amount?.denom} ` +
+              `[${net.chain}-watcher] delegate ${msg.amount?.amount} ${msg.amount?.denom} ` +
                 `from ${msg.delegatorAddress} to ${msg.validatorAddress} at height ${height}`
             );
 
@@ -468,7 +908,7 @@ async function watchCosmos(): Promise<void> {
               amount,
               txHash: tx.hash.toUpperCase(),
               blockNumber: height,
-              chain: "cosmos",
+              chain: net.chain,
               // The validator's operator address — Cosmos's per-validator
               // staking identifier.
               validatorShare: msg.validatorAddress,
@@ -476,13 +916,15 @@ async function watchCosmos(): Promise<void> {
           }
         } catch (decodeErr) {
           console.warn(
-            `[cosmos-watcher] failed to decode tx ${tx.hash.slice(0, 10)}...:`,
+            `[${net.chain}-watcher] failed to decode tx ${tx.hash.slice(0, 10)}...:`,
             decodeErr instanceof Error ? decodeErr.message : decodeErr
           );
         }
       }
+      reportWatcherOk(net.chain);
     } catch (err) {
-      console.error("[cosmos-watcher]", err);
+      console.error(`[${net.chain}-watcher]`, err);
+      reportWatcherError(net.chain, err);
     }
   };
 
@@ -545,11 +987,12 @@ async function watchSui(): Promise<void> {
       // an error object means this watcher sees NOTHING — fail loudly
       // instead of silently reporting an empty chain.
       if (body.error) {
-        console.error(
-          `[sui-watcher] RPC rejected the call (${body.error.code}): ` +
-            `${body.error.message ?? "unknown error"} — Sui events are NOT ` +
-            `being watched. Migrate SUI_RPC_URL to a GraphQL-capable endpoint.`
-        );
+        const detail =
+          `Sui RPC rejected the call (${body.error.code}): ` +
+          `${body.error.message ?? "unknown error"} — ` +
+          `migrate SUI_RPC_URL to a GraphQL-capable endpoint.`;
+        console.error(`[sui-watcher] ${detail}`);
+        reportWatcherError("sui", new Error(detail));
         return;
       }
 
@@ -586,16 +1029,87 @@ async function watchSui(): Promise<void> {
       if (body.result?.hasNextPage) {
         lastCheckedCursor = body.result.nextCursor;
       }
+      reportWatcherOk("sui");
     } catch (err) {
       console.error("[sui-watcher]", err);
+      reportWatcherError("sui", err);
     }
   };
 
   await poll();
   return new Promise(() => {
-    const interval = setInterval(() => void poll(), POLL_MS);
-    return () => clearInterval(interval);
+    let stopped = false;
+    const tick = async () => {
+      if (stopped) return;
+      await poll();
+      const failures = watcherHealth.get("sui")?.consecutiveFailures ?? 0;
+      setTimeout(() => void tick(), backoffDelayMs(failures, POLL_MS));
+    };
+    void tick();
+    return () => {
+      stopped = true;
+    };
   });
+}
+
+// === Watcher health (surfaced to the frontend via /api/watchers) ========
+//
+// A watcher that cannot reach its chain's RPC (egress-filtered host,
+// deprecated endpoint) still settles nothing — the UI marks those chains
+// offline instead of letting users stake into a request that never
+// confirms. Health is derived from poll outcomes: `ok` after a successful
+// poll, `unreachable` after a failure, with the last error kept for the
+// tooltip.
+
+export interface WatcherHealth {
+  chain: string;
+  status: "ok" | "unreachable" | "unknown";
+  lastError: string | null;
+  lastSuccessAt: string | null;
+  consecutiveFailures: number;
+}
+
+const watcherHealth = new Map<string, WatcherHealth>();
+
+function reportWatcherOk(chain: string) {
+  const cur =
+    watcherHealth.get(chain) ??
+    ({ chain, status: "unknown", lastError: null, lastSuccessAt: null, consecutiveFailures: 0 } as WatcherHealth);
+  watcherHealth.set(chain, {
+    ...cur,
+    status: "ok",
+    lastError: null,
+    lastSuccessAt: new Date().toISOString(),
+    consecutiveFailures: 0,
+  });
+}
+
+function reportWatcherError(chain: string, err: unknown) {
+  const cur =
+    watcherHealth.get(chain) ??
+    ({ chain, status: "unknown", lastError: null, lastSuccessAt: null, consecutiveFailures: 0 } as WatcherHealth);
+  watcherHealth.set(chain, {
+    ...cur,
+    status: "unreachable",
+    lastError: err instanceof Error ? err.message : String(err),
+    consecutiveFailures: cur.consecutiveFailures + 1,
+  });
+}
+
+/** Snapshot of every watcher's reachability, for /api/watchers. */
+export function watchersHealth(): WatcherHealth[] {
+  return [...watcherHealth.values()];
+}
+
+/**
+ * Exponential backoff helper for watchers whose endpoint is unreachable:
+ * polling a dead host every 5 s just fills the log. Delay grows
+ * 5s → 10s → … capped at 5 min, resetting on the first success.
+ */
+export function backoffDelayMs(consecutiveFailures: number, base = 5_000, max = 300_000): number {
+  if (consecutiveFailures <= 0) return base;
+  const shifted = Math.min(consecutiveFailures, 6); // cap the shift, not just the result
+  return Math.min(base * 2 ** (shifted - 1), max);
 }
 
 // === Shared matching and handling logic ===
@@ -734,10 +1248,15 @@ export function startMultichainWatchers(): void {
 
   // Start each chain watcher
   activeWatchers.push(watchPolygon);
-  activeWatchers.push(watchMoonbeam);
   activeWatchers.push(watchMonad);
-  activeWatchers.push(watchCosmos);
+  for (const net of COSMOS_NETWORKS) {
+    activeWatchers.push(() => watchCosmosChain(net));
+  }
   activeWatchers.push(watchSui);
+  activeWatchers.push(watchAptos);
+  activeWatchers.push(watchPolkadot);
+  activeWatchers.push(watchBnb);
+  activeWatchers.push(watchSolana);
 
   // Fire and forget - each watcher starts its own polling loop
   for (const watcher of activeWatchers) {

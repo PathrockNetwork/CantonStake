@@ -18,7 +18,7 @@ import { polygonAmoy } from "viem/chains";
 import { config } from "./config.js";
 import { canton, cantonDelegator, TEMPLATES } from "./canton.js";
 import { startReleaseChecker, featuredRightCidForDaml } from "./orchestrator.js";
-import { startMultichainWatchers } from "./multichain-watcher.js";
+import { startMultichainWatchers, watchersHealth } from "./multichain-watcher.js";
 import { prisma } from "./db.js";
 import { startRewardScheduler, shutdownRewardSystem, redisConnection, enqueueRound } from "./reward-rounds.js";
 import { narrate } from "./services/narrator.js";
@@ -142,6 +142,32 @@ const app = Fastify({
 
 await app.register(cors, { origin: true });
 
+// --- Mainnet interlock ------------------------------------------------------
+//
+// NETWORK_MODE=mainnet points every watcher at mainnet contracts with REAL
+// capital. That must never happen by accident: require an explicit
+// MAINNET_CONFIRMED=yes acknowledgement, and force demo routes off.
+if (config.networkMode === "mainnet") {
+  if (!config.mainnetConfirmed) {
+    console.error(
+      "[network-mode] FATAL: NETWORK_MODE=mainnet without MAINNET_CONFIRMED=yes. " +
+        "Mainnet mode moves real funds — set MAINNET_CONFIRMED=yes when that is " +
+        "intentional, or unset NETWORK_MODE to stay on testnet."
+    );
+    process.exit(1);
+  }
+  if (config.demoMode) {
+    console.error(
+      "[network-mode] FATAL: DEMO_MODE cannot be enabled on mainnet."
+    );
+    process.exit(1);
+  }
+  console.warn(
+    "[network-mode] MAINNET MODE ACTIVE — all watchers follow mainnet " +
+      "networks with real capital at risk."
+  );
+}
+
 // --- Observability hooks ---
 //
 // onError fires for every uncaught exception out of a route handler.
@@ -178,8 +204,18 @@ app.get("/metrics", async (_req, reply) => {
     .send(renderMetrics());
 });
 
+// Per-chain watcher reachability. The frontend uses this to disable
+// staking on chains whose watcher cannot reach its RPC host (egress
+// filtering, deprecated endpoints) — an offline watcher means a stake
+// would create a Canton request that never settles.
+app.get("/api/watchers", async () => ({
+  networkMode: config.networkMode,
+  watchers: watchersHealth(),
+}));
+
 app.get("/api/health", async () => ({
   status: "ok",
+  networkMode: config.networkMode,
   cantonJsonApi: config.cantonJsonApiUrl,
   // Polygon staking settles on Ethereum L1. There is no single validator
   // contract to report — one ValidatorShare exists per validator — so the
@@ -315,10 +351,15 @@ app.post<{ Body: UpsertUserBody }>("/api/users", async (req, reply) => {
 
 const VALID_CHAINS = new Set([
   "polygon",
-  "moonbeam",
   "monad",
   "cosmos",
+  "celestia",
+  "osmosis",
   "sui",
+  "aptos",
+  "polkadot",
+  "bnb",
+  "solana",
 ]);
 
 interface CreateRequestBody {
@@ -342,7 +383,7 @@ app.post<{ Body: CreateRequestBody }>("/api/requests", async (req, reply) => {
   }
   // Cosmos / Sui delegator addresses aren't 0x... — we only enforce the
   // EVM regex when the staking chain is EVM-based.
-  const isEvmChain = chain === "polygon" || chain === "moonbeam" || chain === "monad";
+  const isEvmChain = chain === "polygon" || chain === "monad" || chain === "bnb";
   if (isEvmChain && !/^0x[a-fA-F0-9]{40}$/.test(evmAddress)) {
     return reply.code(400).send({ error: "invalid EVM address" });
   }

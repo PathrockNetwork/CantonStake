@@ -15,7 +15,7 @@ import { triggerAutoCompoundTick } from "../services/auto-compound.js";
 
 interface CreatePermitBody {
   userId: string;
-  chain: "polygon" | "moonbeam" | "monad" | "cosmos" | "sui";
+  chain: "polygon" | "monad" | "cosmos" | "sui";
   validator: string;
   scope?: "compound" | "claim" | "redelegate";
   signature?: string;
@@ -26,7 +26,6 @@ interface CreatePermitBody {
 
 const VALID_CHAINS = new Set([
   "polygon",
-  "moonbeam",
   "monad",
   "cosmos",
   "sui",
