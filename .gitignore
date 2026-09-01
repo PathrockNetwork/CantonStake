@@ -36,3 +36,6 @@ coverage.json
 
 # daml
 .daml/
+
+# tool caches
+.fastembed_cache/
