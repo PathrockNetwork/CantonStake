@@ -369,7 +369,11 @@ export default function StakePage() {
     let cancelled = false;
     setValidatorName(null);
     setValidatorAddr(null);
-    void chainAdapter.getValidators().then((vs) => {
+    // Watcher-only chains (hasAdapter: false) have no validator rows to
+    // load — chainAdapter is the `!`-asserted null there, so guard before
+    // the call instead of crashing the page (TypeError on getValidators).
+    if (!adapter) return;
+    void adapter.getValidators().then((vs) => {
       const top = vs[0];
       if (!cancelled && top) {
         setValidatorName(top.name);
