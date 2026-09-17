@@ -12,15 +12,27 @@
 #
 # The backend connects to LocalNet's App Provider participant on
 # host.docker.internal:3975 (JSON Ledger API).
+#
+# Two deployments share this file — one per network mode
+# (docs/NETWORK_MODES.md). Every project-scoped name/port comes from env so
+# the stacks never collide:
+#
+#   mainnet: docker compose -p cantonstake --env-file .env up -d
+#            (STACK_NAME/ports default below; NETWORK_MODE=mainnet comes
+#            from .env)
+#   testnet: docker compose -p cantonstake-testnet \
+#              --env-file .env --env-file .env.testnet up -d
+#            (the testnet file overrides mode, ports and STACK_NAME; later
+#            --env-file wins)
 
 services:
   # ── Persistence ──────────────────────────────────────────────
 
   postgres:
     image: postgres:16-alpine
-    container_name: cantonstake-postgres
+    container_name: ${STACK_NAME:-cantonstake}-postgres
     ports:
-      - "5433:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
     environment:
       POSTGRES_USER: cantonstake
       POSTGRES_PASSWORD: cantonstake
@@ -36,9 +48,9 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: cantonstake-redis
+    container_name: ${STACK_NAME:-cantonstake}-redis
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redisdata:/data
     healthcheck:
@@ -59,12 +71,14 @@ services:
       cache_to:
         - type=inline
     image: ${BACKEND_IMAGE:-cantonstake-backend:local}
-    container_name: cantonstake-backend
+    container_name: ${STACK_NAME:-cantonstake}-backend
     ports:
-      - "4001:4001"
+      - "${BACKEND_PORT:-4001}:4001"
     environment:
       - PORT=4001
       - LOG_LEVEL=info
+      - NETWORK_MODE=${NETWORK_MODE:-testnet}
+      - MAINNET_CONFIRMED=${MAINNET_CONFIRMED:-no}
       - DEMO_MODE=${DEMO_MODE:-true}
       - AMOY_RPC_URL=${AMOY_RPC_URL:-https://rpc-amoy.polygon.technology}
       - CANTON_JSON_API_URL=${CANTON_JSON_API_URL:-http://host.docker.internal:3975}
@@ -114,6 +128,7 @@ services:
       cache_to:
         - type=inline
       args:
+        NEXT_PUBLIC_NETWORK_MODE: ${NEXT_PUBLIC_NETWORK_MODE:-testnet}
         NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-http://localhost:4001}
         NEXT_PUBLIC_MOCK_VALIDATOR_SHARE: ${NEXT_PUBLIC_MOCK_VALIDATOR_SHARE:-}
         NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: ${NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID:-}
@@ -137,10 +152,11 @@ services:
         NEXT_PUBLIC_COSMOS_COIN_DECIMALS: ${NEXT_PUBLIC_COSMOS_COIN_DECIMALS:-6}
         NEXT_PUBLIC_COSMOS_COIN_TYPE: ${NEXT_PUBLIC_COSMOS_COIN_TYPE:-118}
     image: ${FRONTEND_IMAGE:-cantonstake-frontend:local}
-    container_name: cantonstake-frontend
+    container_name: ${STACK_NAME:-cantonstake}-frontend
     ports:
-      - "3001:3000"
+      - "${FRONTEND_PORT:-3001}:3000"
     environment:
+      - NEXT_PUBLIC_NETWORK_MODE=${NEXT_PUBLIC_NETWORK_MODE:-testnet}
       - NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL:-http://localhost:4001}
       - NEXT_PUBLIC_MOCK_VALIDATOR_SHARE=${NEXT_PUBLIC_MOCK_VALIDATOR_SHARE:-}
       - NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=${NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID:-}

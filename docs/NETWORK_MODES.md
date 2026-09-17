@@ -1,6 +1,6 @@
 # Network Modes — testnet / mainnet switch
 
-Status: Implemented 2026-08-16
+Status: Implemented 2026-08-16; two-stack split deployed 2026-09-17
 
 One deployment serves **one** mode. The mode is set server-side and flips
 every chain endpoint, contract address, explorer and price source at once —
@@ -8,23 +8,53 @@ there is deliberately no per-chain or per-user mix, because mixing a
 mainnet wallet with testnet settlement (or the reverse) is how funds get
 lost.
 
-## Setting the mode
+## Deployed topology (2026-09-17): two stacks on one box
+
+One parametrized `docker-compose.yml`, two compose projects:
+
+| | mainnet | testnet |
+|---|---|---|
+| Domain | `cantonstake.pathrocknetwork.org` | `testnet.cantonstake.pathrocknetwork.org` |
+| Compose project | `cantonstake` | `cantonstake-testnet` |
+| Env file | `.env` | `.env` + `.env.testnet` (later wins) |
+| Mode env | `NETWORK_MODE=mainnet`, `MAINNET_CONFIRMED=yes`, `DEMO_MODE=false` | `NETWORK_MODE=testnet`, `DEMO_MODE=true` |
+| Host ports | backend 4001, frontend 3001, pg 5433, redis 6379 | backend 4002, frontend 3002, pg 5434, redis 6380 |
+| Containers | `cantonstake-*` | `cantonstake-testnet-*` |
+| Volumes | `cantonstake_pgdata` (migrated data) | `cantonstake-testnet_pgdata` (fresh, auto-migrates on boot) |
+| Frontend image | `cantonstake-frontend:local` (mode baked at build) | `cantonstake-frontend:testnet` |
+| Backend image | `cantonstake-backend:local` (shared; env decides the mode) | same |
+
+Operate them with:
 
 ```bash
-# backend/.env
-NETWORK_MODE=mainnet          # default: testnet
-MAINNET_CONFIRMED=yes         # REQUIRED when mode=mainnet — see below
+# mainnet (bare domain)
+docker compose -p cantonstake --env-file .env build frontend
+docker compose -p cantonstake --env-file .env up -d
 
-# frontend/.env (baked at build time; must match the backend)
-NEXT_PUBLIC_NETWORK_MODE=mainnet
+# testnet (subdomain) — the testnet file must come last (it wins)
+docker compose -p cantonstake-testnet \
+  --env-file .env --env-file .env.testnet build frontend
+docker compose -p cantonstake-testnet \
+  --env-file .env --env-file .env.testnet up -d
 ```
 
-Then: `systemctl restart cantonstake-backend` and
-`cd frontend && npm run build && systemctl restart cantonstake-frontend`.
+Caddy routes by hostname (`/etc/caddy/Caddyfile`): `/api/*` and
+`/loop-proxy/*` to the stack's backend port, everything else to its
+frontend. Both share the dev Canton LocalNet on `:3975` — see the known
+gaps below.
 
-The natural production topology is **two deployments** (e.g.
-`cantonstake.…` = mainnet, `staging.cantonstake.…` = testnet) — Caddy can
-serve both from this box.
+## Setting the mode
+
+The mode is **not** a flag you flip on a running deployment — it is baked
+into which stack serves which domain:
+
+- backend: `NETWORK_MODE` + `MAINNET_CONFIRMED` arrive via the compose
+  env (`environment:` in `docker-compose.yml`, values from `.env` /
+  `.env.testnet`); recreate the backend container to change them.
+- frontend: `NEXT_PUBLIC_NETWORK_MODE` is a **build arg** — rebuild the
+  per-mode frontend image (`build frontend` above), never just restart.
+  `.env.testnet` pins `FRONTEND_IMAGE=cantonstake-frontend:testnet` so the
+  two builds don't overwrite each other.
 
 ## The interlock
 
@@ -50,8 +80,9 @@ settles, so it is the source of truth).
 | BNB | Chapel | BSC mainnet (same StakeHub `0x…2002`) |
 | Solana | testnet | mainnet-beta |
 | Monad | testnet RPC | mainnet RPC |
-| Prices | fixed reference values | CoinGecko live (labelled `coingecko`), fixed fallback |
+| Prices | fixed reference values (`services/prices.ts` table) | CoinGecko live, 5-min cache, fixed fallback on API errors; `/api/portfolio/*` responses carry `priceSource` (`coingecko` \| `fixed`) |
 | Funding hints | per-chain faucet links | suppressed — replaced by the real-funds banner |
+| Baked ValidatorShare registry | seeded from `NEXT_PUBLIC_REAL_VALIDATOR_SHARES` snapshot | **not seeded** (Sepolia contracts don't exist on chain 1) — filled only by the live backend fetch |
 | Explorers | testnet explorers | Etherscan / Mintscan / Solscan / BscScan / Polkascan / … |
 
 Explicit env overrides (`*_RPC_URL`, `POLYGON_STAKE_MANAGER_ADDRESS`, …)
