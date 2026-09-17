@@ -19,6 +19,7 @@
 import { formatEther, type Address } from "viem";
 import IORedis from "ioredis";
 import { config } from "../config.js";
+import { getUsdPrices, usdPrice } from "./prices.js";
 import {
   listActiveValidatorShares,
   settlementClient,
@@ -45,6 +46,8 @@ export interface PortfolioSnapshot {
   totalUsd: number;
   delegations: DelegationRow[];
   source: Record<PortfolioChain, "live" | "stub" | "cache">;
+  /** Which price table valued the rows (mainnet: CoinGecko live or its fixed fallback). */
+  priceSource?: "coingecko" | "fixed";
 }
 
 // --- Redis ---
@@ -177,17 +180,6 @@ export async function getChainDelegations(
   return { rows, source: rows.length > 0 ? "live" : "stub" };
 }
 
-// Rough USD prices for the visualizer. Production would use a price
-// oracle (CoinGecko, Pyth, etc.). These are intentionally hardcoded for
-// the hackathon; the UI displays them as "indicative".
-const USD_PER: Record<string, number> = {
-  POL: 0.45,
-  MON: 0.55,
-  ATOM: 4.5,
-  SUI: 1.2,
-  CC: 0.147,
-};
-
 /**
  * Build a full multi-chain portfolio snapshot for an address.
  */
@@ -214,15 +206,19 @@ export async function getPortfolio(
 
   const delegations: DelegationRow[] = [];
   const source = {} as Record<PortfolioChain, "live" | "stub" | "cache">;
-  let totalUsd = 0;
 
   for (const [chain, { rows, source: src }] of results) {
     delegations.push(...rows);
     source[chain] = src;
-    for (const r of rows) {
-      const price = USD_PER[r.symbol] ?? 0;
-      totalUsd += Number(r.amount) * price;
-    }
+  }
+
+  const { prices, source: priceSource } = await getUsdPrices(
+    [...new Set(delegations.map((r) => r.symbol))]
+  );
+
+  let totalUsd = 0;
+  for (const r of delegations) {
+    totalUsd += Number(r.amount) * (prices[r.symbol] ?? 0);
   }
 
   return {
@@ -231,11 +227,11 @@ export async function getPortfolio(
     totalUsd,
     delegations,
     source,
+    priceSource,
   };
 }
 
 /** Compute the USD value of a single delegation row. */
 export function delegationUsd(row: DelegationRow): number {
-  const price = USD_PER[row.symbol] ?? 0;
-  return Number(row.amount) * price;
+  return Number(row.amount) * usdPrice(row.symbol);
 }

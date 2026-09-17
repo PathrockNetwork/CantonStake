@@ -64,7 +64,16 @@ const validatorContract = process.env
   .NEXT_PUBLIC_MOCK_VALIDATOR_SHARE as `0x${string}` | undefined;
 
 let realValidatorShares: Record<string, `0x${string}`> = {};
-if (useRealValidatorShare) {
+// The baked NEXT_PUBLIC_REAL_VALIDATOR_SHARES snapshot is a *testnet*
+// registry (Sepolia ValidatorShares), so only testnet mode seeds from it.
+// Mainnet starts empty and fills exclusively from the live backend fetch
+// below, which resolves from the mode's own StakeManager — a Sepolia share
+// contract does not exist on chain 1, and answering with one would build
+// reverting transactions.
+if (
+  useRealValidatorShare &&
+  process.env.NEXT_PUBLIC_NETWORK_MODE !== "mainnet"
+) {
   try {
     const raw = process.env.NEXT_PUBLIC_REAL_VALIDATOR_SHARES ?? "{}";
     const parsed = JSON.parse(raw) as Record<string, `0x${string}`>;
@@ -165,23 +174,34 @@ export const POLYGON_SETTLEMENT_CHAIN_ID = Number(
 export const polygonSettlementChain: Chain =
   POLYGON_SETTLEMENT_CHAIN_ID === mainnet.id ? mainnet : sepolia;
 
+// Contract fallbacks follow the deployment mode, mirroring the backend's
+// modeDefault(): explicit env wins, else the mode's own addresses. Both
+// address pairs were verified on-chain (Sepolia 2026-08-14; mainnet
+// 2026-08-16 StakeManager.logger() and 2026-09-17 POL symbol()).
 export const stakeManagerAddress = (process.env
   .NEXT_PUBLIC_POLYGON_STAKE_MANAGER ??
-  "0x4AE8f648B1Ec892B6cc68C89cc088583964d08bE") as `0x${string}`;
+  (process.env.NEXT_PUBLIC_NETWORK_MODE === "mainnet"
+    ? "0x5e3Ef299fDDf15eAa0432E6e66473ace8c13D908" // Ethereum mainnet
+    : "0x4AE8f648B1Ec892B6cc68C89cc088583964d08bE")) as `0x${string}`; // Sepolia (Amoy)
 
 export const stakingLoggerAddress = (process.env
   .NEXT_PUBLIC_POLYGON_STAKING_LOGGER ??
-  "0x5E3111a5d928D24718c1A7897261D0B9087002ed") as `0x${string}`;
+  (process.env.NEXT_PUBLIC_NETWORK_MODE === "mainnet"
+    ? "0xa59C847Bd5aC0172Ff4FE912C5d29E5A71A7512B" // Ethereum mainnet
+    : "0x5E3111a5d928D24718c1A7897261D0B9087002ed")) as `0x${string}`; // Sepolia (Amoy)
 
 /**
  * The ERC-20 that is actually staked, i.e. `StakeManager.token()`. On the
  * Sepolia/Amoy deployment this is POL (0x44499312…), not the legacy MATIC
- * test token. The delegator approves the StakeManager — not the
- * ValidatorShare — because StakeManager.delegationDeposit does the
- * transferFrom.
+ * test token; on Ethereum mainnet it is POL
+ * (0x455e53CBB86018Ac2B8092FdCd39d8444aFFC3F6, symbol() verified on-chain).
+ * The delegator approves the StakeManager — not the ValidatorShare —
+ * because StakeManager.delegationDeposit does the transferFrom.
  */
 export const stakeTokenAddress = (process.env.NEXT_PUBLIC_POLYGON_STAKE_TOKEN ??
-  "0x44499312f493F62f2DFd3C6435Ca3603EbFCeeBa") as `0x${string}`;
+  (process.env.NEXT_PUBLIC_NETWORK_MODE === "mainnet"
+    ? "0x455e53CBB86018Ac2B8092FdCd39d8444aFFC3F6"
+    : "0x44499312f493F62f2DFd3C6435Ca3603EbFCeeBa")) as `0x${string}`;
 
 /**
  * Slippage tolerance, in basis points, applied to the exchange-rate-derived
@@ -452,6 +472,15 @@ if (isMainnet) {
   for (const c of CHAINS) {
     const e = mainnetExplorer[c.id];
     if (e) c.explorer = e;
+  }
+  // The Bor-side explorer follows the mode too: mainnet POL balances live
+  // on Polygon PoS mainnet, not Amoy.
+  const polygon = CHAINS.find((c) => c.id === "polygon");
+  if (polygon) {
+    polygon.nativeExplorer = {
+      name: "Polygonscan",
+      tx: (h) => `https://polygonscan.com/tx/${h}`,
+    };
   }
 }
 
