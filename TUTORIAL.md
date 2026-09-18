@@ -94,70 +94,29 @@ Also open these in your browser:
 
 ---
 
-## 3. Deploy MockValidatorShare to Polygon Amoy
+## 3. Understand the Polygon staking contracts
 
-This is the EVM side — a real on-chain contract on a real testnet.
+There is nothing to deploy on the EVM side. CantonStake delegates to the
+**real Polygon PoS staking contracts**:
 
-### 3a. Fund your deployer wallet
+- Polygon's StakeManager deploys **one ValidatorShare contract per
+  validator** — there is no single staking address.
+- `buyVoucher` is not payable: the delegator approves the StakeManager to
+  move POL (ERC-20), and the StakeManager pulls it.
+- Staking settles on Ethereum L1 (Sepolia in testnet mode, mainnet in
+  mainnet mode) — not on Bor.
 
-Go to https://faucets.chain.link/polygon-amoy, connect the throwaway wallet, claim 0.01 POL. Repeat a few times if needed — you want about 0.1 POL total for deploying + funding the reward pool.
+The backend discovers the live ValidatorShare registry straight off the
+settlement chain's StakeManager and serves it at
+`/api/polygon/validator-shares`. The frontend fetches that map at runtime;
+optionally pin a build-time snapshot with
+`NEXT_PUBLIC_REAL_VALIDATOR_SHARES` (JSON `{validatorSigner: shareContract}`).
 
-### 3b. Configure the deploy
-
-```bash
-cd ~/canton-work/cantonstake/evm
-cp .env.example .env
-# Edit .env — paste your deployer private key:
-# DEPLOYER_PRIVATE_KEY=0xabc123...
-# (Optional) POLYGONSCAN_API_KEY=... for verification later
-```
-
-### 3c. Install and deploy
-
-```bash
-npm install
-npm run compile
-npm run deploy:amoy
-```
-
-You should see:
-
-```
-Deploying with: 0xYourWallet
-Balance: 0.15 POL
-
-1. Deploying MockValidatorShare...
-   MockValidatorShare deployed at: 0xABCDEF1234...
-
-2. Funding reward pool (0.05 POL)...
-   Funded: 0xTransactionHash
-
-3. Done. Verify with:
-   npm run verify:amoy:deployed
-```
-
-**Copy the `MockValidatorShare deployed at:` address.** You'll need it in three places:
-
-- `backend/.env` as `MOCK_VALIDATOR_SHARE_ADDRESS`
-- `frontend/.env.local` as `NEXT_PUBLIC_MOCK_VALIDATOR_SHARE`
-- Root `.env` (for docker compose) as `MOCK_VALIDATOR_SHARE_ADDRESS`
-
-### 3d. (Optional) Verify on Polygonscan
+Sanity-check the backend's view once it runs:
 
 ```bash
-npm run verify:amoy:deployed
-# or: npm run verify:amoy -- 0xABCDEF1234...
+curl http://localhost:4001/api/polygon/validator-shares | head
 ```
-
-If the contract needs more mock reward liquidity later:
-
-```bash
-FUND_AMOUNT_POL=0.05 npm run fund:amoy
-```
-
-### 3e. Sanity-check on Amoy Polygonscan
-
-Open `https://amoy.polygonscan.com/address/0xABCDEF1234...` — you should see the contract creation transaction and the 0.05 POL balance.
 
 ---
 
@@ -322,14 +281,12 @@ PORT=4000
 LOG_LEVEL=info
 
 AMOY_RPC_URL=https://rpc-amoy.polygon.technology
-MOCK_VALIDATOR_SHARE_ADDRESS=0xABCDEF1234...         # From step 3c
 
 CANTON_JSON_API_URL=http://localhost:2975            # LocalNet App Provider
 CANTON_APP_PROVIDER_PARTY=CantonStake::1220a0db...   # From step 4e
 CANTON_AUTH_TOKEN=                                    # Empty — OAuth disabled
 
 FEATURED_APP_RIGHT_CID=00abc123...                   # From step 5c
-DEMO_MODE=true                                       # Enables manual reward round trigger
 ```
 
 Test it:
@@ -369,9 +326,8 @@ Edit `.env.local`:
 
 ```
 NEXT_PUBLIC_BACKEND_URL=http://localhost:4000
-NEXT_PUBLIC_MOCK_VALIDATOR_SHARE=0xABCDEF1234...     # From step 3c
 NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=                # Optional
-NEXT_PUBLIC_MOCK_LOOP_PARTY_ID=Alice::1220...        # Hosted delegator party for mock Loop
+NEXT_PUBLIC_REAL_VALIDATOR_SHARES={}                 # Optional baked {validator: contract} map
 ```
 
 Install and run:

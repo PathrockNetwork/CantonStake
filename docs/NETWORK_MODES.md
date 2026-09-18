@@ -17,7 +17,7 @@ One parametrized `docker-compose.yml`, two compose projects:
 | Domain | `cantonstake.pathrocknetwork.org` | `testnet.cantonstake.pathrocknetwork.org` |
 | Compose project | `cantonstake` | `cantonstake-testnet` |
 | Env file | `.env` | `.env` + `.env.testnet` (later wins) |
-| Mode env | `NETWORK_MODE=mainnet`, `MAINNET_CONFIRMED=yes`, `DEMO_MODE=false` | `NETWORK_MODE=testnet`, `DEMO_MODE=true` |
+| Mode env | `NETWORK_MODE=mainnet`, `MAINNET_CONFIRMED=yes` | `NETWORK_MODE=testnet` |
 | Host ports | backend 4001, frontend 3001, pg 5433, redis 6379 | backend 4002, frontend 3002, pg 5434, redis 6380 |
 | Containers | `cantonstake-*` | `cantonstake-testnet-*` |
 | Volumes | `cantonstake_pgdata` (migrated data) | `cantonstake-testnet_pgdata` (fresh, auto-migrates on boot) |
@@ -59,8 +59,7 @@ into which stack serves which domain:
 ## The interlock
 
 `NETWORK_MODE=mainnet` without `MAINNET_CONFIRMED=yes` makes the backend
-**refuse to start** (exit 1). `DEMO_MODE=true` is also rejected in mainnet
-mode. Mainnet means real capital in every watcher, reward sweep and gas
+**refuse to start** (exit 1). Mainnet means real capital in every watcher, reward sweep and gas
 payment; it must never happen by accident. The startup log states it
 loudly, `/api/health` and `/api/watchers` expose `networkMode`, and the
 frontend shows a red **MAINNET — REAL FUNDS** banner plus a mode chip in

@@ -14,7 +14,7 @@ Self-custodial multi-chain staking dApp built on Canton Network. Stake from your
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6?style=flat-square&logo=typescript&logoColor=white)
 ![Fastify](https://img.shields.io/badge/Fastify-5-202020?style=flat-square&logo=fastify)
 ![Prisma](https://img.shields.io/badge/Prisma-5-2d3748?style=flat-square&logo=prisma&logoColor=white)
-![Solidity](https://img.shields.io/badge/Solidity-MockValidatorShare-363636?style=flat-square&logo=solidity)
+![Solidity](https://img.shields.io/badge/Solidity-0.8-363636?style=flat-square&logo=solidity)
 ![Postgres](https://img.shields.io/badge/PostgreSQL-16-336791?style=flat-square&logo=postgresql&logoColor=white)
 ![Redis](https://img.shields.io/badge/Redis-7-dc382d?style=flat-square&logo=redis&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ed?style=flat-square&logo=docker&logoColor=white)
@@ -305,8 +305,9 @@ cd cantonstake
 
 cp backend/.env.example backend/.env
 cp frontend/.env.example frontend/.env
-# Fill in: MOCK_VALIDATOR_SHARE_ADDRESS, CANTON_APP_PROVIDER_PARTY,
-# CANTON_DELEGATOR_PARTY, NEXT_PUBLIC_BACKEND_URL, NEXT_PUBLIC_MOCK_VALIDATOR_SHARE.
+# Fill in: CANTON_APP_PROVIDER_PARTY,
+# CANTON_DELEGATOR_PARTY, NEXT_PUBLIC_BACKEND_URL (optionally
+# NEXT_PUBLIC_REAL_VALIDATOR_SHARES for the Polygon share registry).
 
 docker compose up --build
 ```
@@ -336,15 +337,12 @@ cd ../cn-quickstart/quickstart
 make start
 ```
 
-2. **Deploy the MockValidatorShare** to Polygon Amoy:
-
-```bash
-cd evm
-npm install
-npm run deploy:amoy
-# Copy the deployed address into backend/.env (MOCK_VALIDATOR_SHARE_ADDRESS)
-# and frontend/.env (NEXT_PUBLIC_MOCK_VALIDATOR_SHARE).
-```
+2. **Polygon ValidatorShare registry** — there is no single staking
+   contract: Polygon's StakeManager deploys one ValidatorShare per
+   validator. The backend discovers them live from the settlement chain's
+   StakeManager and serves the map at `/api/polygon/validator-shares`.
+   Optionally pin a build-time snapshot in the frontend
+   (`NEXT_PUBLIC_REAL_VALIDATOR_SHARES`, JSON `{validator: contract}`).
 
 3. **Backend** (separate terminal):
 
@@ -483,7 +481,6 @@ All routes return JSON. POST/PUT/DELETE expect `Content-Type: application/json`.
 |---|---|---|---|
 | POST | `/api/requests` | Create StakingRequest on Canton (chain-agnostic) | none |
 | GET | `/api/requests` | List pending StakingRequests, filter by `?address=` | none |
-| POST | `/api/requests/force-accept` | Demo-mode-gated: progress non-Polygon stake to Bonded | DEMO_MODE |
 | GET | `/api/positions` | List active StakingPositions, filter by `?address=` | none |
 
 ### Rewards
@@ -512,7 +509,7 @@ All routes return JSON. POST/PUT/DELETE expect `Content-Type: application/json`.
 |---|---|---|---|
 | GET | `/api/validators/scores` | All chains, cached snapshots | none |
 | GET | `/api/validators/scores/:chain` | Single chain | none |
-| POST | `/api/validators/scores/:chain/refresh` | Force re-fetch | DEMO_MODE / debug |
+| POST | `/api/validators/scores/:chain/refresh` | Force re-fetch | LOG_LEVEL=debug |
 
 ### Auto-Compound
 
@@ -522,7 +519,7 @@ All routes return JSON. POST/PUT/DELETE expect `Content-Type: application/json`.
 | GET | `/api/autocompound/permits` | List permits for `?userId=` | none |
 | DELETE | `/api/autocompound/permits/:id` | Soft-disable permit | none |
 | GET | `/api/autocompound/permits/:id/runs` | Run history (last 50) | none |
-| POST | `/api/autocompound/trigger` | Manual tick | DEMO_MODE / debug |
+| POST | `/api/autocompound/trigger` | Manual tick | LOG_LEVEL=debug |
 
 ### Notifications
 
@@ -531,7 +528,7 @@ All routes return JSON. POST/PUT/DELETE expect `Content-Type: application/json`.
 | POST | `/api/notifications/channels` | Upsert (kind, target, label) | none |
 | GET | `/api/notifications/channels` | List channels for `?userId=` | none |
 | DELETE | `/api/notifications/channels/:id` | Soft-disable channel | none |
-| POST | `/api/notifications/test` | Emit a test alert | DEMO_MODE / debug |
+| POST | `/api/notifications/test` | Emit a test alert | LOG_LEVEL=debug |
 
 ### Loop SDK Proxy
 
@@ -557,12 +554,10 @@ per-chain table and the known mainnet gaps.
 |---|---|---|
 | `PORT` | HTTP port | `4000` |
 | `LOG_LEVEL` | Pino log level | `info` |
-| `DEMO_MODE` | Enables demo-only routes | `false` |
 | `SCAN_API_URL` | Canton Scan API base for CIP-0104 attribution (unset = rounds mint 0 CC) | empty |
 | `SCAN_PAGE_SIZE` | Page size for the Scan /v0/events poll | `500` |
 | `SCAN_ROUND_CC_POOL` | Gross CC distributed per network round (configured — the Scan publishes no mint pool; parties + weights are real) | `100` |
 | `AMOY_RPC_URL` | Polygon Amoy JSON-RPC | `https://rpc-amoy.polygon.technology` |
-| `MOCK_VALIDATOR_SHARE_ADDRESS` | Deployed mock contract address | required |
 | `CANTON_JSON_API_URL` | Canton JSON Ledger API | `http://localhost:3975` |
 | `CANTON_APP_PROVIDER_PARTY` | App provider party id | required |
 | `CANTON_AUTH_TOKEN` | Bearer token (or empty if auth disabled) | empty |
@@ -600,9 +595,7 @@ per-chain table and the known mainnet gaps.
 | Variable | Description | Default |
 |---|---|---|
 | `NEXT_PUBLIC_BACKEND_URL` | Backend API base | `http://localhost:4001` |
-| `NEXT_PUBLIC_MOCK_VALIDATOR_SHARE` | Mock contract address | required |
-| `NEXT_PUBLIC_USE_REAL_VALIDATOR_SHARE` | Toggle real Polygon ValidatorShare path | `false` |
-| `NEXT_PUBLIC_REAL_VALIDATOR_SHARES` | JSON map `{validator: contract}` | `{}` |
+| `NEXT_PUBLIC_REAL_VALIDATOR_SHARES` | JSON map `{validator: contract}` (build-time snapshot; the live registry comes from the backend) | `{}` |
 | `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | WalletConnect Cloud project id | empty |
 | `NEXT_PUBLIC_LOOP_NETWORK` | `local` / `devnet` / `mainnet` | `devnet` |
 | `NEXT_PUBLIC_LOOP_SDK_ENABLED` | Real Loop SDK on/off | `true` |
@@ -705,9 +698,8 @@ CantonStake is self-custodial by design — keys never leave the user's wallet, 
 | Same activity record double-counted across replays | ✅ Mitigated | Prisma `@@unique([roundNumber, party, eventId])` |
 | Notification spam from re-emitted alerts | ✅ Mitigated | `dedupKey` on `AlertEvent` + `(alertId, channelId)` unique on delivery |
 | Cross-origin abuse of Loop SDK proxy | ⚠️ Partial | `@fastify/cors` reflects request origin; rate limiting + per-origin allowlist recommended for prod |
-| Backend `force-accept` route abused | ✅ Mitigated | Gated behind `DEMO_MODE=true` / `LOG_LEVEL=debug` |
 | Validator slashing affecting active stakes | ⚠️ Partial | Slashing monitor diffs scores hourly + alerts; manual user action required to redelegate |
-| MockValidatorShare deployed in production | ❌ Open | Demo-only; flip `NEXT_PUBLIC_USE_REAL_VALIDATOR_SHARE=true` + populate `NEXT_PUBLIC_REAL_VALIDATOR_SHARES` for real Polygon `ValidatorShare` |
+| Polygon mock fixture path in frontend | ✅ Resolved | Adapter ships only the real per-validator `ValidatorShare` path; registry served by `/api/polygon/validator-shares` |
 | Keeper key leak | ⚠️ Partial | `AUTO_COMPOUND_KEEPER_KEY` recommended in secrets manager (AWS / Doppler); only acts within signed permit scope so blast radius is bounded |
 
 ---
@@ -743,7 +735,7 @@ cd backend
 fly launch --no-deploy --copy-config
 fly secrets set \
   CANTON_APP_PROVIDER_PARTY=... CANTON_DELEGATOR_PARTY=... \
-  MOCK_VALIDATOR_SHARE_ADDRESS=0x... AMOY_RPC_URL=... \
+  AMOY_RPC_URL=... \
   DATABASE_URL=postgresql://... REDIS_URL=rediss://... \
   ANTHROPIC_API_KEY=... TELEGRAM_BOT_TOKEN=... RESEND_API_KEY=... \
   AUTO_COMPOUND_KEEPER_KEY=0x... SENTRY_DSN=https://... \

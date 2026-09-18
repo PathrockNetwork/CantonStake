@@ -134,7 +134,6 @@ cp .env.example .env
 Fill:
 
 ```dotenv
-MOCK_VALIDATOR_SHARE_ADDRESS=0x...
 AMOY_RPC_URL=https://rpc-amoy.polygon.technology
 CANTON_JSON_API_URL=http://host.docker.internal:3975
 CANTON_APP_PROVIDER_PARTY=CantonStake::1220...
