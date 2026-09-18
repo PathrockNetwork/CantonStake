@@ -36,7 +36,6 @@ export const config = {
 
   port: Number(optional("PORT", "4000")),
   logLevel: optional("LOG_LEVEL", "info"),
-  demoMode: optional("DEMO_MODE", "false").toLowerCase() === "true",
 
   // Bor (Polygon Amoy) RPC. Used ONLY for POL balance reads and explorer
   // links — Polygon PoS staking does not settle here. `rpc-amoy.polygon.

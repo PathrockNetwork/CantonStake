@@ -52,9 +52,9 @@ const polygonRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post("/api/polygon/refresh", async (req, reply) => {
-    if (!config.demoMode && config.logLevel !== "debug") {
+    if (config.logLevel !== "debug") {
       return reply.code(403).send({
-        error: "manual refresh disabled; set DEMO_MODE=true or LOG_LEVEL=debug",
+        error: "manual refresh disabled; set LOG_LEVEL=debug",
       });
     }
     try {

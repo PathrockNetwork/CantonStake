@@ -96,8 +96,8 @@ async function processRound(job: Job<RoundPayload>) {
       include: { user: true },
     });
 
-    // Pull CIP-0104 attribution records for this round from the Scan API
-    // (real mode) or the seeded mock generator (offline demo). Idempotent
+    // Pull CIP-0104 attribution records for this round from the Scan API.
+    // Unset Scan API = honest 0 CC (no attribution source). Idempotent
     // on (roundNumber, party, eventId) so re-runs don't double-count.
     const ingestion = await ingestRoundRecords(roundNumber);
     const activityRecords = await recordsForRound(roundNumber);

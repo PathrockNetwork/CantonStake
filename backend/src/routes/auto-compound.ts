@@ -5,7 +5,7 @@
  *   GET    /api/autocompound/permits?userId - list permits
  *   DELETE /api/autocompound/permits/:id    - disable
  *   GET    /api/autocompound/permits/:id/runs - run history
- *   POST   /api/autocompound/trigger        - run a tick now (DEMO_MODE)
+ *   POST   /api/autocompound/trigger        - run a tick now (debug)
  */
 
 import type { FastifyPluginAsync } from "fastify";
@@ -133,9 +133,9 @@ const autoCompoundRoutes: FastifyPluginAsync = async (app) => {
   );
 
   app.post("/api/autocompound/trigger", async (_req, reply) => {
-    if (!config.demoMode && config.logLevel !== "debug") {
+    if (config.logLevel !== "debug") {
       return reply.code(403).send({
-        error: "manual trigger disabled; set DEMO_MODE=true or LOG_LEVEL=debug",
+        error: "manual trigger disabled; set LOG_LEVEL=debug",
       });
     }
     try {

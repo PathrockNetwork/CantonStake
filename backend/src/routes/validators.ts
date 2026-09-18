@@ -5,7 +5,7 @@
  *   GET /api/validators/scores/:chain       → single chain, cached
  *   POST /api/validators/scores/:chain/refresh → bypass cache, refetch
  *
- * The refresh endpoint is gated behind DEMO_MODE / debug log level so a
+ * The refresh endpoint is gated behind the debug log level so a
  * casual GET in production can't trigger a fanout against the upstream
  * staking APIs.
  */
@@ -67,10 +67,9 @@ const validatorRoutes: FastifyPluginAsync = async (app) => {
   app.post<{ Params: { chain: string } }>(
     "/api/validators/scores/:chain/refresh",
     async (req, reply) => {
-      if (!config.demoMode && config.logLevel !== "debug") {
+      if (config.logLevel !== "debug") {
         return reply.code(403).send({
-          error:
-            "manual refresh disabled; set DEMO_MODE=true or LOG_LEVEL=debug",
+          error: "manual refresh disabled; set LOG_LEVEL=debug",
         });
       }
       const { chain } = req.params;

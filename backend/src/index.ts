@@ -146,19 +146,13 @@ await app.register(cors, { origin: true });
 //
 // NETWORK_MODE=mainnet points every watcher at mainnet contracts with REAL
 // capital. That must never happen by accident: require an explicit
-// MAINNET_CONFIRMED=yes acknowledgement, and force demo routes off.
+// MAINNET_CONFIRMED=yes acknowledgement.
 if (config.networkMode === "mainnet") {
   if (!config.mainnetConfirmed) {
     console.error(
       "[network-mode] FATAL: NETWORK_MODE=mainnet without MAINNET_CONFIRMED=yes. " +
         "Mainnet mode moves real funds — set MAINNET_CONFIRMED=yes when that is " +
         "intentional, or unset NETWORK_MODE to stay on testnet."
-    );
-    process.exit(1);
-  }
-  if (config.demoMode) {
-    console.error(
-      "[network-mode] FATAL: DEMO_MODE cannot be enabled on mainnet."
     );
     process.exit(1);
   }
@@ -223,7 +217,6 @@ app.get("/api/health", async () => ({
   stakeManager: config.stakeManagerAddress,
   stakeSettlementChainId: config.stakeSettlementChainId,
   featuredAppRight: config.featuredAppRightCid ? "configured" : "missing",
-  demoMode: config.demoMode,
   time: new Date().toISOString(),
 }));
 
@@ -254,8 +247,8 @@ app.get("/api/health/detail", async () => {
     config.featuredAppRightCid === "demo-stub"
       ? "FEATURED_APP_RIGHT_CID=demo-stub: scheduler runs, Daml marker exercise is disabled"
       : null,
-    !config.demoMode && config.logLevel !== "debug"
-      ? "Manual reward trigger disabled outside DEMO_MODE/debug"
+    config.logLevel !== "debug"
+      ? "Manual ops triggers (rounds/refresh/autocompound) disabled outside LOG_LEVEL=debug"
       : null,
     !config.scanApiUrl
       ? "SCAN_API_URL unset: reward rounds mint 0 CC (no real attribution source)"
@@ -282,7 +275,6 @@ app.get("/api/health/detail", async () => {
     stakingLogger: config.stakingLoggerAddress,
     stakeSettlementChainId: config.stakeSettlementChainId,
     featuredAppRight: config.featuredAppRightCid ? "configured" : "missing",
-    demoMode: config.demoMode,
     database: dbStatus,
     redis: redisStatus,
     latestRound: latestRound
@@ -608,12 +600,12 @@ app.get<{ Params: { address: string } }>(
   }
 );
 
-// --- Manual round trigger (demo aid) ---
+// --- Manual round trigger (ops aid) ---
 
 app.post("/api/admin/rounds/trigger", async (req, reply) => {
-  if (!config.demoMode && config.logLevel !== "debug") {
+  if (config.logLevel !== "debug") {
     return reply.code(403).send({
-      error: "manual round trigger disabled; set DEMO_MODE=true or LOG_LEVEL=debug",
+      error: "manual round trigger disabled; set LOG_LEVEL=debug",
     });
   }
 

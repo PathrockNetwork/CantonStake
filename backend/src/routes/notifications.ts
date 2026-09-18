@@ -4,7 +4,7 @@
  *   POST   /api/notifications/channels         - upsert a channel
  *   GET    /api/notifications/channels?userId  - list a user's channels
  *   DELETE /api/notifications/channels/:id     - disable a channel (soft delete)
- *   POST   /api/notifications/test             - emit a test alert (DEMO_MODE)
+ *   POST   /api/notifications/test             - emit a test alert (debug)
  *
  * Auth: none in v1 — pass `userId` in the body / query. Production
  * would tie this to the OAuth2 / Loop session.
@@ -93,9 +93,9 @@ const notificationsRoutes: FastifyPluginAsync = async (app) => {
   app.post<{ Body: TestBody }>(
     "/api/notifications/test",
     async (req, reply) => {
-      if (!config.demoMode && config.logLevel !== "debug") {
+      if (config.logLevel !== "debug") {
         return reply.code(403).send({
-          error: "test alert disabled; set DEMO_MODE=true or LOG_LEVEL=debug",
+          error: "test alert disabled; set LOG_LEVEL=debug",
         });
       }
       const { userId } = req.body;
