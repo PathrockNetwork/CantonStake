@@ -3,8 +3,7 @@ import { erc20Abi, validatorShareAbi } from "@/lib/abi";
 import { encodeFunctionData } from "@/lib/viem-encode-function-data";
 
 /**
- * These tests exercise the REAL Polygon ValidatorShare path
- * (NEXT_PUBLIC_USE_REAL_VALIDATOR_SHARE=true), which is what ships. The
+ * These tests exercise the production Polygon ValidatorShare path. The
  * facts they pin down were verified on Sepolia:
  *
  *   - the staking contract is per-validator, so an unregistered validator
@@ -33,7 +32,6 @@ vi.mock("@/lib/chains", () => ({
     validatorContract: undefined,
     wagmiChain: { id: 11155111 },
   }),
-  isRealValidatorShare: true,
   POLYGON_SETTLEMENT_CHAIN_ID: 11155111,
   SHARE_SLIPPAGE_BPS: 50,
   stakeManagerAddress: STAKE_MANAGER,

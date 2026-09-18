@@ -1,5 +1,5 @@
 import type { Chain } from "viem";
-import { bscTestnet, mainnet, monadTestnet, polygonAmoy, sepolia } from "wagmi/chains";
+import { bscTestnet, mainnet, monadTestnet, sepolia } from "wagmi/chains";
 
 export type ChainPhase = "live" | "planned" | "soon";
 
@@ -40,29 +40,15 @@ export type ChainConfig = {
   nativeExplorer?: { name: string; tx: (hash: string) => string };
 };
 
-// Validator contract resolution. Two modes:
-//
-//   - Real (NEXT_PUBLIC_USE_REAL_VALIDATOR_SHARE=true, the default for a
-//     real deployment): Polygon deploys ONE ValidatorShare contract per
-//     validator, created by the StakeManager when the validator registers.
-//     There is therefore no deployment-wide staking address. The adapter
-//     resolves the contract per validator from
-//     NEXT_PUBLIC_REAL_VALIDATOR_SHARES — a JSON map of
-//     "0xvalidatorSigner": "0xShareContract" — and throws if a validator has
-//     no entry rather than falling back to something wrong. The backend
-//     serves the same map dynamically at /api/polygon/validator-shares,
-//     read straight off StakeManager.validators(id).contractAddress.
-//
-//   - Local fixture (flag unset/false): NEXT_PUBLIC_MOCK_VALIDATOR_SHARE
-//     points at a single MockValidatorShare deployed on Amoy. That contract
-//     is an E2E test fixture only — payable buyVoucher, 1:1 shares, 60 s
-//     unbonding, pre-funded rewards. It is not Polygon.
-const useRealValidatorShare =
-  process.env.NEXT_PUBLIC_USE_REAL_VALIDATOR_SHARE === "true";
-
-const validatorContract = process.env
-  .NEXT_PUBLIC_MOCK_VALIDATOR_SHARE as `0x${string}` | undefined;
-
+// Validator contract resolution. Polygon deploys ONE ValidatorShare
+// contract per validator, created by the StakeManager when the validator
+// registers. There is therefore no deployment-wide staking address. The
+// adapter resolves the contract per validator from
+// NEXT_PUBLIC_REAL_VALIDATOR_SHARES — a JSON map of
+// "0xvalidatorSigner": "0xShareContract" — and throws if a validator has
+// no entry rather than falling back to something wrong. The backend
+// serves the same map dynamically at /api/polygon/validator-shares,
+// read straight off StakeManager.validators(id).contractAddress.
 let realValidatorShares: Record<string, `0x${string}`> = {};
 // The baked NEXT_PUBLIC_REAL_VALIDATOR_SHARES snapshot is a *testnet*
 // registry (Sepolia ValidatorShares), so only testnet mode seeds from it.
@@ -70,10 +56,7 @@ let realValidatorShares: Record<string, `0x${string}`> = {};
 // below, which resolves from the mode's own StakeManager — a Sepolia share
 // contract does not exist on chain 1, and answering with one would build
 // reverting transactions.
-if (
-  useRealValidatorShare &&
-  process.env.NEXT_PUBLIC_NETWORK_MODE !== "mainnet"
-) {
+if (process.env.NEXT_PUBLIC_NETWORK_MODE !== "mainnet") {
   try {
     const raw = process.env.NEXT_PUBLIC_REAL_VALIDATOR_SHARES ?? "{}";
     const parsed = JSON.parse(raw) as Record<string, `0x${string}`>;
@@ -93,10 +76,7 @@ if (
 export function resolveValidatorShare(
   validatorAddress: string,
 ): `0x${string}` | undefined {
-  if (useRealValidatorShare) {
-    return realValidatorShares[validatorAddress.toLowerCase()];
-  }
-  return validatorContract;
+  return realValidatorShares[validatorAddress.toLowerCase()];
 }
 
 // The baked NEXT_PUBLIC_REAL_VALIDATOR_SHARES map is a snapshot from build
@@ -111,7 +91,7 @@ let liveSharesPromise: Promise<void> | null = null;
 export const validatorMinAmounts = new Map<string, bigint>();
 
 export function ensureValidatorSharesLive(): Promise<void> {
-  if (!useRealValidatorShare || liveSharesPromise) return liveSharesPromise ?? Promise.resolve();
+  if (liveSharesPromise) return liveSharesPromise;
   liveSharesPromise = (async () => {
     try {
       const backend =
@@ -158,13 +138,11 @@ export function knownValidatorShares(): Array<{
   }));
 }
 
-export const isRealValidatorShare = useRealValidatorShare;
-
 // --- Polygon PoS settlement layer -----------------------------------------
 //
 // StakeManager and every ValidatorShare live on Ethereum L1 — Sepolia for
-// Amoy, mainnet for Polygon mainnet. So in real mode the user signs staking
-// transactions on chainId 11155111, NOT on Bor (80002), even though the token
+// Amoy, mainnet for Polygon mainnet. So the user signs staking
+// transactions on the settlement chain, NOT on Bor, even though the token
 // being staked is POL and the chain being secured is Polygon.
 export const POLYGON_SETTLEMENT_CHAIN_ID = Number(
   process.env.NEXT_PUBLIC_POLYGON_SETTLEMENT_CHAIN_ID ??
@@ -217,40 +195,32 @@ export const CHAINS: ChainConfig[] = [
     phase: "live",
     hasAdapter: true,
     symbol: "POL",
-    // In real mode the wallet signs on the L1 settlement chain, so say so
-    // rather than implying the transaction lands on Bor.
-    name: useRealValidatorShare ? "Polygon PoS (Sepolia settlement)" : "Polygon Amoy",
-    type: useRealValidatorShare ? "PoS staking on Ethereum L1" : "EVM testnet",
+    // The wallet signs on the L1 settlement chain, so say so rather than
+    // implying the transaction lands on Bor.
+    name: "Polygon PoS (Sepolia settlement)",
+    type: "PoS staking on Ethereum L1",
     apy: 8.0,
     apyRange: "4-8%",
     // 80 checkpoints is the on-chain StakeManager.withdrawalDelay(). The
     // wall-clock equivalent is not a constant — checkpoints land when
     // Heimdall proposes them — so the live ETA comes from
     // /api/polygon/staking-params, which measures the real cadence.
-    unbonding: useRealValidatorShare ? "80 checkpoints" : "60s (mock fixture)",
+    unbonding: "80 checkpoints",
     ledgerApp: "Ethereum",
     color: "#8247e5",
     // ValidatorShare.minAmount() is 1e18 on most validators in this
     // deployment; buyVoucher reverts below it.
-    minStake: useRealValidatorShare ? 1 : 0.01,
-    validators: useRealValidatorShare
-      ? Object.keys(realValidatorShares).length
-      : 1,
+    minStake: 1,
+    validators: Object.keys(realValidatorShares).length,
     tvl: "testnet",
     testnet: true,
-    wagmiChain: useRealValidatorShare ? polygonSettlementChain : polygonAmoy,
-    // Real mode has no single validator contract; resolveValidatorShare()
-    // is the only correct accessor. This field stays for the fixture path.
-    validatorContract: useRealValidatorShare ? undefined : validatorContract,
-    explorer: useRealValidatorShare
-      ? {
-          name: "Etherscan (Sepolia)",
-          tx: (hash) => `https://sepolia.etherscan.io/tx/${hash}`,
-        }
-      : {
-          name: "Polygonscan",
-          tx: (hash) => `https://amoy.polygonscan.com/tx/${hash}`,
-        },
+    wagmiChain: polygonSettlementChain,
+    // There is no single validator contract — one ValidatorShare exists per
+    // validator; resolveValidatorShare() is the only correct accessor.
+    explorer: {
+      name: "Etherscan (Sepolia)",
+      tx: (hash) => `https://sepolia.etherscan.io/tx/${hash}`,
+    },
     nativeExplorer: {
       name: "Polygonscan (Amoy)",
       tx: (hash) => `https://amoy.polygonscan.com/tx/${hash}`,
@@ -528,13 +498,11 @@ if (process.env.NODE_ENV !== "production") {
     ids.add(chain.id);
 
     // Any EVM live chain with a wagmi config needs an explorer entry, plus a
-    // way to name the staking contract. Polygon in real mode deliberately has
-    // no single `validatorContract` — one exists per validator — so it is
-    // checked against the resolver map instead.
+    // way to name the staking contract. Polygon deliberately has no single
+    // `validatorContract` — one ValidatorShare exists per validator and is
+    // resolved at stake time — so there is nothing load-time to check.
     const hasStakingTarget =
-      chain.id === "polygon" && useRealValidatorShare
-        ? Object.keys(realValidatorShares).length > 0
-        : Boolean(chain.validatorContract);
+      chain.id === "polygon" ? true : Boolean(chain.validatorContract);
     if (chain.wagmiChain && (!hasStakingTarget || !chain.explorer)) {
       console.warn(
         `[chains] EVM chain ${chain.id} has wagmiChain but is missing a staking contract or explorer config`,
@@ -551,7 +519,7 @@ if (process.env.NODE_ENV !== "production") {
       if (!chain.wagmiChain || !hasStakingTarget || !chain.explorer) {
         console.warn("[chains] polygon is missing EVM staking config");
       }
-      if (useRealValidatorShare && chain.wagmiChain?.id !== POLYGON_SETTLEMENT_CHAIN_ID) {
+      if (chain.wagmiChain?.id !== POLYGON_SETTLEMENT_CHAIN_ID) {
         console.warn(
           "[chains] polygon real mode must sign on the L1 settlement chain",
         );

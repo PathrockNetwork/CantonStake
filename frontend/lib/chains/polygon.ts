@@ -1,13 +1,7 @@
 import { getPublicClient, readContract, watchContractEvent } from "@wagmi/core";
 import type { Address } from "viem";
+import { erc20Abi, stakingLoggerAbi, validatorShareAbi } from "@/lib/abi";
 import {
-  erc20Abi,
-  mockValidatorShareAbi,
-  stakingLoggerAbi,
-  validatorShareAbi,
-} from "@/lib/abi";
-import {
-  isRealValidatorShare,
   knownValidatorShares,
   ensureValidatorSharesLive,
   polygonChain,
@@ -34,8 +28,8 @@ import {
  * Polygon PoS adapter.
  *
  * The staking contracts are NOT on Bor. StakeManager, the StakingInfo logger
- * and one ValidatorShare per validator are deployed on Ethereum L1 (Sepolia
- * for Amoy), so every call here targets the settlement chain. Consequences
+ * and one ValidatorShare per validator are deployed on Ethereum L1, so every
+ * call here targets the settlement chain. Consequences
  * that drive the code below:
  *
  *   - The staking contract address is per-validator. `contractAddress()`
@@ -54,9 +48,6 @@ import {
 const POLYGON_CHAIN_ID = "polygon";
 const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4001";
-
-/** Fallback only: the local MockValidatorShare fixture's 60 s period. */
-const MOCK_UNBONDING_SECONDS = 60;
 
 let cachedRows: ValidatorRow[] = [];
 
@@ -98,35 +89,27 @@ function toAdapterError(message: string, cause: unknown) {
 /**
  * The ValidatorShare contract for one validator.
  *
- * In real mode there is deliberately no fallback: delegating to the wrong
- * validator's book is worse than failing, so an unregistered validator is a
- * hard error.
+ * There is deliberately no fallback: delegating to the wrong validator's
+ * book is worse than failing, so an unregistered validator is a hard error.
  */
 function contractAddress(validator?: string): `0x${string}` {
-  if (isRealValidatorShare) {
-    if (!validator) {
-      throw new ChainAdapterError(
-        "VALIDATOR_NOT_FOUND",
-        "Polygon deploys one ValidatorShare per validator — a validator " +
-          "address is required to resolve the staking contract.",
-      );
-    }
-    const resolved = resolveValidatorShare(validator);
-    if (!resolved) {
-      throw new ChainAdapterError(
-        "VALIDATOR_NOT_FOUND",
-        `No ValidatorShare contract registered for validator ${validator}. ` +
-          `Add it to NEXT_PUBLIC_REAL_VALIDATOR_SHARES (or check ` +
-          `/api/polygon/validator-shares).`,
-      );
-    }
-    return resolved;
+  if (!validator) {
+    throw new ChainAdapterError(
+      "VALIDATOR_NOT_FOUND",
+      "Polygon deploys one ValidatorShare per validator — a validator " +
+        "address is required to resolve the staking contract.",
+    );
   }
-
-  // Local fixture path: a single MockValidatorShare on Amoy.
-  const address = polygonChain().validatorContract;
-  if (!address) throw networkError("Polygon validator contract is not configured.");
-  return address;
+  const resolved = resolveValidatorShare(validator);
+  if (!resolved) {
+    throw new ChainAdapterError(
+      "VALIDATOR_NOT_FOUND",
+      `No ValidatorShare contract registered for validator ${validator}. ` +
+        `Add it to NEXT_PUBLIC_REAL_VALIDATOR_SHARES (or check ` +
+        `/api/polygon/validator-shares).`,
+    );
+  }
+  return resolved;
 }
 
 function publicClient() {
@@ -135,7 +118,7 @@ function publicClient() {
   }
 
   const client = getPublicClient(wagmiConfig, {
-    chainId: isRealValidatorShare ? POLYGON_SETTLEMENT_CHAIN_ID : undefined,
+    chainId: POLYGON_SETTLEMENT_CHAIN_ID,
   });
   if (!client) throw networkError("Polygon public client is not configured.");
   return client;
@@ -281,10 +264,8 @@ export async function fetchStakingParams(): Promise<PolygonStakingParams | null>
 async function queryableValidators(): Promise<
   Array<{ validator: `0x${string}`; share: `0x${string}` }>
 > {
-  if (isRealValidatorShare) {
-    const known = knownValidatorShares();
-    if (known.length > 0) return known;
-  }
+  const known = knownValidatorShares();
+  if (known.length > 0) return known;
   if (cachedRows.length === 0) await loadValidators();
   return cachedRows
     .map((row) => {
@@ -381,56 +362,6 @@ async function realDelegations(delegator: Address): Promise<Position[]> {
   return positions;
 }
 
-// --- Local fixture reads (MockValidatorShare) -----------------------------
-
-async function mockLatestUnbondFor(delegator: Address) {
-  const logs = await publicClient().getContractEvents({
-    address: contractAddress(),
-    abi: mockValidatorShareAbi,
-    eventName: "ShareBurnedWithId",
-    args: { user: delegator },
-    fromBlock: 0n,
-  });
-  return logs.at(-1);
-}
-
-async function mockUnbondingPosition(delegator: Address): Promise<Position[]> {
-  const event = await mockLatestUnbondFor(delegator);
-  if (
-    !event ||
-    event.args.amount === undefined ||
-    event.blockNumber === null ||
-    event.blockNumber === undefined
-  ) {
-    return [];
-  }
-
-  const block = await publicClient().getBlock({ blockNumber: event.blockNumber });
-  return [
-    {
-      validator: defaultRow().address,
-      amount: event.args.amount,
-      status: "unbonding",
-      unbondingReadyAt: Number(block.timestamp) + MOCK_UNBONDING_SECONDS,
-    },
-  ];
-}
-
-async function mockDelegations(address: string): Promise<Position[]> {
-  const amount = await readContract(wagmiConfig, {
-    address: contractAddress(),
-    abi: mockValidatorShareAbi,
-    functionName: "balanceOf",
-    args: [address as Address],
-  });
-
-  if (amount > 0n) {
-    if (cachedRows.length === 0) await loadValidators();
-    return [{ validator: defaultRow().address, amount, status: "bonded" }];
-  }
-  return mockUnbondingPosition(address as Address);
-}
-
 // --- Adapter ---------------------------------------------------------------
 
 export const polygonAdapter: IChainAdapter = {
@@ -438,7 +369,6 @@ export const polygonAdapter: IChainAdapter = {
 
   async getValidators() {
     const rows = await loadValidators();
-    if (!isRealValidatorShare) return rows.map(toValidator);
     // A validator with no ValidatorShare cannot be delegated to, so don't
     // offer it in the picker.
     return rows
@@ -448,7 +378,6 @@ export const polygonAdapter: IChainAdapter = {
 
   async getDelegations(address) {
     try {
-      if (!isRealValidatorShare) return await mockDelegations(address);
       return await realDelegations(address as Address);
     } catch (cause) {
       throw toAdapterError(`Failed to load Polygon delegations for ${address}.`, cause);
@@ -460,11 +389,9 @@ export const polygonAdapter: IChainAdapter = {
    *
    * `StakeManager.delegationDeposit` does the transferFrom, so the spender is
    * the StakeManager, not the ValidatorShare. Returns null when the existing
-   * allowance already covers the amount, or on the mock path (which is
-   * payable and needs no approval).
+   * allowance already covers the amount.
    */
   async buildApprovalTx(args) {
-    if (!isRealValidatorShare) return null;
     try {
       const allowance = (await readContract(wagmiConfig, {
         chainId: POLYGON_SETTLEMENT_CHAIN_ID,
@@ -494,20 +421,6 @@ export const polygonAdapter: IChainAdapter = {
     try {
       assertValidatorAddress(args.validator);
 
-      if (!isRealValidatorShare) {
-        // Mock fixture: payable, 1:1 shares.
-        return evmTx(
-          encodeFunctionData({
-            abi: mockValidatorShareAbi,
-            functionName: "buyVoucher",
-            args: [args.amount, args.amount],
-          }),
-          args.amount,
-          contractAddress(args.validator),
-          500000n,
-        );
-      }
-
       const share = contractAddress(args.validator);
       const { rate, precision } = await exchangeRateFor(share);
       const expectedShares = sharesForAmount(args.amount, rate, precision);
@@ -533,18 +446,6 @@ export const polygonAdapter: IChainAdapter = {
     try {
       assertValidatorAddress(args.validator);
 
-      if (!isRealValidatorShare) {
-        return evmTx(
-          encodeFunctionData({
-            abi: mockValidatorShareAbi,
-            functionName: "sellVoucher_new",
-            args: [args.amount, args.amount],
-          }),
-          undefined,
-          contractAddress(args.validator),
-        );
-      }
-
       const share = contractAddress(args.validator);
       const { withdrawRate, precision } = await exchangeRateFor(share);
       const expectedShares = sharesForAmount(args.amount, withdrawRate, precision);
@@ -567,25 +468,6 @@ export const polygonAdapter: IChainAdapter = {
   async buildClaimTx(args) {
     try {
       assertValidatorAddress(args.validator);
-
-      if (!isRealValidatorShare) {
-        const unbond = await mockLatestUnbondFor(args.delegator as Address);
-        if (!unbond || unbond.args.nonce === undefined) {
-          throw new ChainAdapterError(
-            "UNBONDING_PERIOD",
-            `No claimable Polygon unbond found for ${args.delegator}.`,
-          );
-        }
-        return evmTx(
-          encodeFunctionData({
-            abi: mockValidatorShareAbi,
-            functionName: "unstakeClaimTokens_new",
-            args: [unbond.args.nonce],
-          }),
-          undefined,
-          contractAddress(args.validator),
-        );
-      }
 
       const share = contractAddress(args.validator);
       const nonce = (await readContract(wagmiConfig, {
@@ -691,51 +573,34 @@ export const polygonAdapter: IChainAdapter = {
 
     void emitLatest();
 
-    // Real mode: delegation events are emitted by the shared StakingInfo
-    // logger on L1, filtered by delegator. Fixture mode: by the mock itself.
-    const unsubs = isRealValidatorShare
-      ? [
-          watchContractEvent(wagmiConfig, {
-            chainId: POLYGON_SETTLEMENT_CHAIN_ID,
-            address: stakingLoggerAddress,
-            abi: stakingLoggerAbi,
-            eventName: "ShareMinted",
-            args: { user: delegator },
-            onLogs: () => void emitLatest(),
-          }),
-          watchContractEvent(wagmiConfig, {
-            chainId: POLYGON_SETTLEMENT_CHAIN_ID,
-            address: stakingLoggerAddress,
-            abi: stakingLoggerAbi,
-            eventName: "ShareBurnedWithId",
-            args: { user: delegator },
-            onLogs: () => void emitLatest(),
-          }),
-          watchContractEvent(wagmiConfig, {
-            chainId: POLYGON_SETTLEMENT_CHAIN_ID,
-            address: stakingLoggerAddress,
-            abi: stakingLoggerAbi,
-            eventName: "DelegatorUnstakeWithId",
-            args: { user: delegator },
-            onLogs: () => void emitLatest(),
-          }),
-        ]
-      : [
-          watchContractEvent(wagmiConfig, {
-            address: contractAddress(),
-            abi: mockValidatorShareAbi,
-            eventName: "ShareMinted",
-            args: { user: delegator },
-            onLogs: () => void emitLatest(),
-          }),
-          watchContractEvent(wagmiConfig, {
-            address: contractAddress(),
-            abi: mockValidatorShareAbi,
-            eventName: "ShareBurnedWithId",
-            args: { user: delegator },
-            onLogs: () => void emitLatest(),
-          }),
-        ];
+    // Delegation events are emitted by the shared StakingInfo logger on the
+    // settlement chain, filtered by delegator.
+    const unsubs = [
+      watchContractEvent(wagmiConfig, {
+        chainId: POLYGON_SETTLEMENT_CHAIN_ID,
+        address: stakingLoggerAddress,
+        abi: stakingLoggerAbi,
+        eventName: "ShareMinted",
+        args: { user: delegator },
+        onLogs: () => void emitLatest(),
+      }),
+      watchContractEvent(wagmiConfig, {
+        chainId: POLYGON_SETTLEMENT_CHAIN_ID,
+        address: stakingLoggerAddress,
+        abi: stakingLoggerAbi,
+        eventName: "ShareBurnedWithId",
+        args: { user: delegator },
+        onLogs: () => void emitLatest(),
+      }),
+      watchContractEvent(wagmiConfig, {
+        chainId: POLYGON_SETTLEMENT_CHAIN_ID,
+        address: stakingLoggerAddress,
+        abi: stakingLoggerAbi,
+        eventName: "DelegatorUnstakeWithId",
+        args: { user: delegator },
+        onLogs: () => void emitLatest(),
+      }),
+    ];
 
     return () => {
       for (const unsub of unsubs) unsub();

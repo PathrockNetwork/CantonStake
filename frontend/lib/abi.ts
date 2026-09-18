@@ -1,22 +1,14 @@
 /**
- * On-chain interfaces for the Polygon PoS staking flow.
- *
- * Two distinct things live here:
- *
- *  1. `validatorShareAbi`, `stakeManagerAbi`, `stakingLoggerAbi`, `erc20Abi`
- *     — the REAL production contracts. Polygon PoS staking settles on
- *     Ethereum L1 (Sepolia for Amoy), StakeManager deploys one
- *     ValidatorShare per validator, `buyVoucher` is NOT payable (delegation
- *     is an ERC-20 approve + transferFrom through the StakeManager), and
- *     delegation events are emitted by the shared StakingInfo logger with
- *     `validatorId` as their first indexed topic.
- *
- *  2. `mockValidatorShareAbi` — the local E2E fixture only
- *     (`evm/contracts/MockValidatorShare.sol`). It is NOT on the live path.
- *     Kept so the fast local harness still compiles.
+ * On-chain interfaces for the Polygon PoS staking flow:
+ * `validatorShareAbi`, `stakeManagerAbi`, `stakingLoggerAbi`, `erc20Abi`.
+ * Polygon PoS staking settles on Ethereum L1, StakeManager deploys one
+ * ValidatorShare per validator, `buyVoucher` is NOT payable (delegation
+ * is an ERC-20 approve + transferFrom through the StakeManager), and
+ * delegation events are emitted by the shared StakingInfo logger with
+ * `validatorId` as their first indexed topic.
  */
 
-// --- Real Polygon PoS ------------------------------------------------------
+// --- Polygon PoS -----------------------------------------------------------
 
 export const validatorShareAbi = [
   {
@@ -102,7 +94,7 @@ export const validatorShareAbi = [
     outputs: [{ type: "uint256" }, { type: "uint256" }],
   },
   {
-    // Claimable protocol yield. Replaces the mock's `pendingRewards`.
+    // Claimable protocol yield from the validator's reward pool.
     type: "function",
     name: "getLiquidRewards",
     stateMutability: "view",
@@ -271,97 +263,5 @@ export const erc20Abi = [
     stateMutability: "view",
     inputs: [],
     outputs: [{ type: "string" }],
-  },
-] as const;
-
-// --- Local E2E fixture only (NOT the live path) ---------------------------
-
-/**
- * `evm/contracts/MockValidatorShare.sol`. Diverges from production on
- * purpose: payable buyVoucher, 1:1 shares, 60 s unbonding, rewards paid from
- * a pre-funded owner balance, events emitted by the contract itself.
- * Reachable only when NEXT_PUBLIC_USE_REAL_VALIDATOR_SHARE is not "true".
- */
-export const mockValidatorShareAbi = [
-  {
-    type: "function",
-    name: "buyVoucher",
-    stateMutability: "payable",
-    inputs: [
-      { name: "_amount", type: "uint256" },
-      { name: "_minSharesToMint", type: "uint256" },
-    ],
-    outputs: [{ name: "amountStaked", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "sellVoucher_new",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "_claimAmount", type: "uint256" },
-      { name: "_maximumSharesToBurn", type: "uint256" },
-    ],
-    outputs: [{ name: "nonce", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "unstakeClaimTokens_new",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "unbondNonce", type: "uint256" }],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "withdrawRewards",
-    stateMutability: "nonpayable",
-    inputs: [],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "balanceOf",
-    stateMutability: "view",
-    inputs: [{ name: "user", type: "address" }],
-    outputs: [{ type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "pendingRewards",
-    stateMutability: "view",
-    inputs: [{ name: "user", type: "address" }],
-    outputs: [{ type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "totalStaked",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "aprBasisPoints",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ type: "uint256" }],
-  },
-  {
-    type: "event",
-    name: "ShareMinted",
-    inputs: [
-      { name: "user", type: "address", indexed: true },
-      { name: "amount", type: "uint256", indexed: false },
-      { name: "tokens", type: "uint256", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "ShareBurnedWithId",
-    inputs: [
-      { name: "user", type: "address", indexed: true },
-      { name: "amount", type: "uint256", indexed: false },
-      { name: "tokens", type: "uint256", indexed: false },
-      { name: "nonce", type: "uint256", indexed: false },
-    ],
   },
 ] as const;
