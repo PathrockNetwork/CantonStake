@@ -4,10 +4,9 @@
  * Console, Dfns, or a future @canton-network/dapp-sdk drop-in — can be
  * registered as a provider without touching consumers.
  *
- * Today there is one provider (the Loop mock). When the real
- * @canton-network/dapp-sdk lands, add a second provider file that
- * implements ICantonProvider and register it in ./index.ts. Consumers
- * keep using useCantonWallet().
+ * Today the registered provider is the Loop SDK. Add further provider
+ * files implementing ICantonProvider and register them in ./index.ts.
+ * Consumers keep using useCantonWallet().
  */
 
 export type CantonNetwork = "local" | "devnet" | "mainnet";

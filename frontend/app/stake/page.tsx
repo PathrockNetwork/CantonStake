@@ -429,7 +429,7 @@ export default function StakePage() {
       // Poll /api/positions every 2s for up to 30s for a markersEmitted
       // increment vs the pre-stake baseline. Falls back to a fixed
       // delay only if the backend doesn't surface the increment in
-      // time (so the demo doesn't deadlock visually).
+      // time (so the UI doesn't deadlock visually).
       if (!address) return;
       let cancelled = false;
       let timeoutId: number | undefined;

@@ -10,18 +10,15 @@ import { tokens } from "@/lib/tokens";
  *
  * Ported verbatim from handoff/prototype/redesign/screens.jsx
  * (`BeneficiaryPipeline`). Pixel-tuned SVG coordinates — do NOT
- * restructure without comparing to the prototype.
- *
- * The 309.6 / 103.2 CC numbers are demo placeholders. The Daml ledger is
- * the source of truth at runtime; wire actual user/treasury totals when
- * porting screens that consume this component (Step 6+).
+ * restructure without comparing to the prototype. Totals come from the
+ * backend's round data; the Daml ledger is the source of truth.
  */
 export function BeneficiaryPipeline({
-  userCc = 309.6,
-  treasuryCc = 103.2,
+  userCc,
+  treasuryCc,
 }: {
-  userCc?: number;
-  treasuryCc?: number;
+  userCc: number;
+  treasuryCc: number;
 }) {
   return (
     <div

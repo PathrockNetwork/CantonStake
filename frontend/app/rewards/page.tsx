@@ -96,7 +96,7 @@ export default function RewardsPage() {
         </div>
       ) : (
         <>
-          {/* Live round visualizer — demo climax */}
+          {/* Live round visualizer */}
           <RoundVisualizer
             userCc={userCc}
             treasuryCc={treasuryCc}

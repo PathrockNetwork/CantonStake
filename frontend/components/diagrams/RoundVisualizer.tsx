@@ -16,9 +16,8 @@ const RING_CIRC = 2 * Math.PI * RING_RADIUS;
  *
  * Estimates are derived from the user's historical per-round average,
  * scaled by round progress. They are advisory — actual mint values come
- * from the Scan API at round close. The component is the on-screen
- * "demo climax" for /rewards: it converts the abstract idea of round
- * cadence into a visible, live ticker.
+ * from the Scan API at round close. The component renders the round
+ * cadence as a visible, live ticker.
  */
 export function RoundVisualizer({
   userCc,

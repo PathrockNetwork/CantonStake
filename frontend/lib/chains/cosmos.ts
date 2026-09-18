@@ -26,8 +26,7 @@ const COSMOS_CHAIN_ID = "cosmos";
 const COSMOS_REST =
   "https://cosmoshub-testnet.api.kjnodes.com";
 const UATOM_PER_ATOM = 1_000_000n;
-// theta-testnet unbonding window is 1 day (vs 21 days on mainnet) so the
-// demo's unbond → release flow is observable in a single sitting.
+// theta-testnet unbonding window is 1 day (vs 21 days on mainnet).
 const UNBONDING_SECONDS = 24 * 60 * 60;
 
 function networkError(message: string, cause?: unknown) {

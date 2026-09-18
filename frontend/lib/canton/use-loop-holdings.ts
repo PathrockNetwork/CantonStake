@@ -8,8 +8,8 @@ import { useCantonWallet } from "./use-canton-wallet";
  * Returns the user's CC balance (when available) and the raw holdings list.
  *
  * The SDK exposes `provider.getHolding()` only after a connect handshake.
- * This hook polls every 30s while connected, and silently no-ops when the
- * mock provider is the active one (no SDK to call).
+ * This hook polls every 30s while connected and silently no-ops when the
+ * SDK has no connected provider.
  */
 
 export interface LoopHolding {

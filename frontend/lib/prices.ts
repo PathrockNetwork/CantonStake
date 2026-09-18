@@ -24,7 +24,7 @@ export interface PriceSnapshot {
 }
 
 // Testnet tokens don't have real market data — use reasonable fixed values
-// for USD estimation purposes in the demo.
+// for USD estimation.
 const TESTNET_PRICES = {
   pol: 0.42,   // Polygon Amoy POL (same as mainnet POL)
   mon: 0.50,   // Monad Testnet MON (not on CoinGecko)

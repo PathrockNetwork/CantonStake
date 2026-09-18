@@ -1,17 +1,16 @@
 /**
  * Real Loop wallet provider — wraps @fivenorth/loop-sdk.
  *
- * Exposes the same ICantonProvider shape as the mock provider so the rest
- * of the app doesn't need to change. The connect flow:
+ * Exposes the ICantonProvider shape so the rest of the app doesn't need to
+ * change. The connect flow:
  *
  *   1. loop.init({ appName, network, onAccept, onReject }) — once on first use.
  *   2. loop.connect() — opens the SDK's QR modal. The SDK shows its own UI.
  *   3. onAccept fires with a Provider whose `party_id` becomes our partyId.
  *   4. We persist (partyId, displayName) and notify backend via upsertUser.
  *
- * The SDK is browser-only; isAvailable() returns false during SSR so the
- * mock loop-provider is used in that context. On the client, it becomes
- * the highest-priority provider once the SDK initialises.
+ * The SDK is browser-only; isAvailable() returns false during SSR. On the
+ * client it becomes the highest-priority provider once the SDK initialises.
  */
 
 import { upsertUser } from "@/lib/api";

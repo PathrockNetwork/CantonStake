@@ -12,19 +12,10 @@ const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4001";
 
 interface HealthDetail {
-  demoMode?: boolean;
   featuredAppRight?: string;
   cantonJsonApi?: string;
   warnings?: string[];
   environment?: string;
-}
-
-// Detect whether the backend is running rewards in mock-seeded mode.
-// Surfaced in the warnings array as the "MOCK_REWARDS=true: ..." line.
-function isMockRewards(h: HealthDetail | undefined): boolean {
-  return (
-    h?.warnings?.some((w) => w.startsWith("MOCK_REWARDS=true")) ?? false
-  );
 }
 
 // Detect devnet from the Canton JSON API URL.
@@ -44,8 +35,6 @@ function deriveBadge(h: HealthDetail | undefined): {
 } {
   if (!h) return { label: "…", color: "warn" };
   if (isDevnet(h)) return { label: "Devnet", color: "green" };
-  if (isMockRewards(h)) return { label: "Mock · Demo", color: "warn" };
-  if (h.demoMode) return { label: "Demo", color: "warn" };
   if (h.featuredAppRight === "configured")
     return { label: "Featured · Live", color: "neon" };
   return { label: "Candidate", color: "cc" };
