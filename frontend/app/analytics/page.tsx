@@ -1,439 +1,80 @@
 "use client";
 
-import { useMemo } from "react";
+import Link from "next/link";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useAccount } from "wagmi";
-import { Card } from "@/components/primitives/Card";
-import { Chip } from "@/components/primitives/Chip";
-import { SectionLabel } from "@/components/primitives/SectionLabel";
-import { fetchAnalyticsMarkers, fetchRewardHealth } from "@/lib/api";
-import { tokens } from "@/lib/tokens";
-import { usePrices } from "@/lib/prices";
+import { PageMasthead } from "@/components/primitives/PageMasthead";
+import { AccountEmpty, AccountPagination, AccountMetric, AccountPanel, ChainBadge, MiniChart, PrivacyPanel, StatusBadge } from "@/components/account/AccountUI";
+import { fetchAnalyticsMarkers, fetchPositions, fetchProtocolSummary, fetchRecentRounds, fetchRewardHealth, fetchWatcherStatus } from "@/lib/api";
+import { accountEvents } from "@/lib/account-view";
 import { liveChains } from "@/lib/chains";
+import { usePrices } from "@/lib/prices";
+import { fmtUsd } from "@/lib/format";
 
-const BACKEND_URL =
-  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4001";
-
-const CHART_HOURS = 24;
-
-/**
- * Analytics — marker emissions chart wired to /api/analytics/markers,
- * which buckets RewardEvent rows by hour over the requested window.
- */
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4001";
 export default function AnalyticsPage() {
-  const { address, isConnected } = useAccount();
-  const csvHref =
-    isConnected && address
-      ? `${BACKEND_URL}/api/tax/csv?address=${address}&format=koinly`
-      : null;
-
-  const markersQ = useQuery({
-    queryKey: ["analytics-markers", address ?? "global", CHART_HOURS],
-    queryFn: () => fetchAnalyticsMarkers(address ?? undefined, CHART_HOURS),
-    refetchInterval: 30_000,
-  });
-  const healthQ = useQuery({
-    queryKey: ["reward-health"],
-    queryFn: () => fetchRewardHealth(),
-    refetchInterval: 60_000,
-  });
-
-  const series = useMemo(
-    () => markersQ.data?.series.map((b) => b.markers) ?? [],
-    [markersQ.data],
-  );
-  const maxMarkers = Math.max(1, ...series);
-  const pts = series.length > 1
-    ? series
-        .map(
-          (v, i) =>
-            `${(i / (series.length - 1)) * 100},${100 - (v / maxMarkers) * 90}`,
-        )
-        .join(" ")
-    : "";
-
-  const totalMarkers = series.reduce((s, v) => s + v, 0);
-  const scopeLabel = markersQ.data?.scope === "user" ? "your activity" : "global";
-
-  return (
-    <div style={{ maxWidth: 1280, margin: "0 auto", padding: "40px 22px 80px" }}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "flex-start",
-          justifyContent: "space-between",
-          gap: 24,
-        }}
-      >
-        <div>
-          <SectionLabel>§ ANALYTICS</SectionLabel>
-          <h1
-            className="display"
-            style={{ fontSize: 42, margin: "4px 0 12px", color: tokens.ink[100] }}
-          >
-            Marker activity over time.
-          </h1>
-        </div>
-        {csvHref ? (
-          <a
-            href={csvHref}
-            className="mono"
-            download
-            style={{
-              alignSelf: "center",
-              textTransform: "uppercase",
-              letterSpacing: 0.6,
-              fontSize: 11,
-              padding: "10px 14px",
-              border: `1px solid ${tokens.hairline}`,
-              borderRadius: 6,
-              color: tokens.ink[200],
-              textDecoration: "none",
-            }}
-          >
-            ↓ Tax CSV (Koinly)
-          </a>
-        ) : (
-          <span
-            className="mono"
-            style={{
-              alignSelf: "center",
-              fontSize: 10,
-              color: tokens.ink[400],
-              maxWidth: 220,
-              textAlign: "right",
-            }}
-          >
-            Connect a wallet to download tax CSV
-          </span>
-        )}
-      </div>
-      <p
-        style={{
-          fontSize: 14,
-          lineHeight: 1.6,
-          color: tokens.ink[300],
-          maxWidth: 680,
-          margin: "0 0 28px",
-        }}
-      >
-        Live view of marker emissions, reward activity, and system health
-        across recent CC rounds.
-      </p>
-
-      <Card padding={0}>
-        <div
-          style={{
-            padding: "18px 22px",
-            borderBottom: `1px solid ${tokens.hairline}`,
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-          }}
-        >
-          <div>
-            <div className="display" style={{ fontSize: 22, color: tokens.ink[100] }}>
-              Marker emissions · last {CHART_HOURS}h
-            </div>
-            <div
-              className="mono"
-              style={{ fontSize: 10.5, color: tokens.ink[400], marginTop: 2 }}
-            >
-              {totalMarkers} markers · {scopeLabel}
-            </div>
-          </div>
-          <Chip color={totalMarkers > 0 ? tokens.neon : tokens.ink[400]} dot>
-            {markersQ.isLoading ? "LOADING" : totalMarkers > 0 ? "LIVE" : "IDLE"}
-          </Chip>
-        </div>
-        <div style={{ padding: "24px 22px" }}>
-          {pts ? (
-            <svg
-              viewBox="0 0 100 100"
-              preserveAspectRatio="none"
-              style={{ width: "100%", height: 240 }}
-              aria-hidden="true"
-            >
-              <defs>
-                <linearGradient id="aG" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0" stopColor={tokens.neon} stopOpacity=".4" />
-                  <stop offset="1" stopColor={tokens.neon} stopOpacity="0" />
-                </linearGradient>
-              </defs>
-              <polyline
-                points={pts}
-                fill="none"
-                stroke={tokens.neon}
-                strokeWidth=".6"
-                vectorEffect="non-scaling-stroke"
-              />
-              <polygon points={`0,100 ${pts} 100,100`} fill="url(#aG)" />
-            </svg>
-          ) : (
-            <div
-              className="mono"
-              style={{
-                height: 240,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                color: tokens.ink[400],
-                fontSize: 11,
-              }}
-            >
-              {markersQ.isLoading
-                ? "loading…"
-                : "no marker activity in the selected window"}
-            </div>
-          )}
-        </div>
-      </Card>
-
-      {/* Market Data Section */}
-      <Card style={{ marginTop: 24 }}>
-        <SectionLabel>Network market data</SectionLabel>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-            gap: 16,
-            marginTop: 16,
-          }}
-        >
-          {liveChains().map((chain) => {
-            const pricesQ = usePrices();
-            const priceKey = `${chain.id.toLowerCase()}Usd` as keyof typeof pricesQ.data;
-            const price = pricesQ.data?.[priceKey] ?? 0;
-            const changeKey = `${chain.id.toLowerCase()}Usd24hChange` as keyof typeof pricesQ.data;
-            const change = pricesQ.data?.[changeKey] as number | null | undefined;
-
-            return (
-              <div
-                key={chain.id}
-                style={{
-                  padding: "14px 16px",
-                  border: `1px solid ${tokens.hairline}`,
-                  borderRadius: 8,
-                  background: tokens.ink[900],
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <div
-                    style={{
-                      width: 24,
-                      height: 24,
-                      borderRadius: "50%",
-                      background: chain.color || tokens.neon,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: 10,
-                      fontWeight: "bold",
-                    }}
-                  >
-                    {chain.symbol.charAt(0)}
-                  </div>
-                  <span className="mono" style={{ fontSize: 12, color: tokens.ink[100] }}>
-                    {chain.name}
-                  </span>
-                </div>
-                <div className="display tabular" style={{ fontSize: 20, color: tokens.ink[100] }}>
-                  ${price.toFixed(4)}
-                </div>
-                <div
-                  className="mono"
-                  style={{
-                    fontSize: 10,
-                    color: change && change >= 0 ? tokens.neon : change && change < 0 ? tokens.danger : tokens.ink[400],
-                    marginTop: 2,
-                  }}
-                >
-                  {change !== null && change !== undefined
-                    ? `${change >= 0 ? "+" : ""}${change.toFixed(2)}% (24h)`
-                    : "Testnet token"}
-                </div>
-                <div className="mono" style={{ fontSize: 9, color: tokens.ink[500], marginTop: 4 }}>
-                  {chain.testnet ? "TESTNET" : "MAINNET"}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </Card>
-
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: 24,
-          marginTop: 24,
-        }}
-      >
-        <Card>
-          <SectionLabel>Markers by lifecycle event</SectionLabel>
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 10,
-              marginTop: 14,
-            }}
-          >
-            {[
-              {
-                l: "Bond markers",
-                v: markersQ.data?.breakdown.bondPct ?? 0,
-                c: tokens.neon,
-              },
-              {
-                l: "Unbond markers",
-                v: markersQ.data?.breakdown.unbondPct ?? 0,
-                c: tokens.cc,
-              },
-            ].map((r) => (
-              <div key={r.l}>
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    marginBottom: 4,
-                  }}
-                >
-                  <span
-                    className="mono"
-                    style={{ fontSize: 11, color: tokens.ink[200] }}
-                  >
-                    {r.l}
-                  </span>
-                  <span
-                    className="mono tabular"
-                    style={{ fontSize: 11, color: r.c }}
-                  >
-                    {r.v.toFixed(1)}%
-                  </span>
-                </div>
-                <div style={{ height: 4, background: tokens.ink[700] }}>
-                  <div
-                    style={{ width: `${r.v}%`, height: "100%", background: r.c }}
-                  />
-                </div>
-              </div>
-            ))}
-            <div
-              className="mono"
-              style={{ fontSize: 10, color: tokens.ink[400], marginTop: 6 }}
-            >
-              {markersQ.data
-                ? `${markersQ.data.breakdown.bondCount} bonded · ${markersQ.data.breakdown.unbondCount} unbonding`
-                : "—"}
-            </div>
-          </div>
-        </Card>
-        <Card>
-          <SectionLabel>System health</SectionLabel>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr auto",
-              gap: "10px 16px",
-              marginTop: 14,
-              fontSize: 11.5,
-            }}
-          >
-            <span className="mono" style={{ color: tokens.ink[300] }}>
-              CC round automation
-            </span>
-            <span
-              className="mono"
-              style={{
-                color:
-                  healthQ.data?.status === "ok"
-                    ? tokens.neon
-                    : healthQ.data?.status === "failing"
-                      ? tokens.danger
-                      : tokens.ink[400],
-              }}
-            >
-              {healthQ.data?.status === "ok"
-                ? "● Round worker OK"
-                : healthQ.data?.status === "failing"
-                  ? "● Round worker failing"
-                  : healthQ.data?.status === "idle"
-                    ? "○ no rounds yet"
-                    : `● ${healthQ.data?.status ?? "loading"}`}
-            </span>
-            <span className="mono" style={{ color: tokens.ink[300] }}>
-              Marker success rate
-            </span>
-            <span className="mono tabular" style={{ color: tokens.neon }}>
-              {healthQ.data?.successRatePct !== null &&
-              healthQ.data?.successRatePct !== undefined
-                ? `${healthQ.data.successRatePct}% · last ${healthQ.data.totalSampled}`
-                : "—"}
-            </span>
-            <span className="mono" style={{ color: tokens.ink[300] }}>
-              Last round
-            </span>
-            <span className="mono tabular" style={{ color: tokens.ink[100] }}>
-              {healthQ.data?.lastRound
-                ? `#${healthQ.data.lastRound.roundNumber} · ${healthQ.data.lastRound.status}`
-                : "—"}
-            </span>
-          </div>
-        </Card>
-      </div>
-
-      <Card style={{ marginTop: 24 }}>
-        <SectionLabel>§ Insight</SectionLabel>
-        <div
-          className="display"
-          style={{
-            fontSize: 22,
-            color: tokens.ink[100],
-            marginTop: 6,
-            lineHeight: 1.4,
-          }}
-        >
-          {markersQ.data?.insight.deltaPct !== null &&
-          markersQ.data?.insight.deltaPct !== undefined ? (
-            <>
-              Marker emissions are{" "}
-              <span
-                style={{
-                  color:
-                    markersQ.data.insight.deltaPct >= 0
-                      ? tokens.neon
-                      : tokens.warning,
-                }}
-              >
-                {markersQ.data.insight.deltaPct >= 0 ? "+" : ""}
-                {markersQ.data.insight.deltaPct.toFixed(1)}%
-              </span>{" "}
-              versus the previous {CHART_HOURS}h. Bond events currently account
-              for {markersQ.data.breakdown.bondPct.toFixed(0)}% of activity.
-            </>
-          ) : (
-            <>Marker history is too short for a window-over-window comparison.</>
-          )}
-        </div>
-        <div
-          className="mono"
-          style={{
-            fontSize: 11,
-            color: tokens.ink[400],
-            marginTop: 10,
-            lineHeight: 1.7,
-            maxWidth: 780,
-          }}
-        >
-          {healthQ.data?.successRatePct !== null &&
-          healthQ.data?.successRatePct !== undefined
-            ? `Round automation has succeeded on ${healthQ.data.successRatePct}% of the last ${healthQ.data.totalSampled} attempts.`
-            : "Round automation health is being sampled."}{" "}
-          Polygon Amoy and Canton ledger latency are not currently
-          instrumented.
-        </div>
-      </Card>
+  const { address } = useAccount();
+  const { data: prices } = usePrices();
+  const [page, setPage] = useState(0);
+  const [filter, setFilter] = useState("all");
+  const markersQ = useQuery({ queryKey: ["analytics-markers", address ?? "global", 24], queryFn: () => fetchAnalyticsMarkers(address, 24), refetchInterval: 30_000 });
+  const healthQ = useQuery({ queryKey: ["reward-health"], queryFn: fetchRewardHealth, refetchInterval: 30_000 });
+  const watchersQ = useQuery({ queryKey: ["watcher-status"], queryFn: fetchWatcherStatus, refetchInterval: 30_000 });
+  const protocolQ = useQuery({ queryKey: ["protocol-summary"], queryFn: fetchProtocolSummary, refetchInterval: 30_000 });
+  const roundsQ = useQuery({ queryKey: ["activity-rounds", address ?? "global"], queryFn: () => fetchRecentRounds(address, 30), refetchInterval: 30_000 });
+  const positionsQ = useQuery({ queryKey: ["positions", address], queryFn: () => fetchPositions(address!), enabled: !!address, refetchInterval: 10_000 });
+  const markers = markersQ.isError ? undefined : markersQ.data;
+  const health = healthQ.isError ? undefined : healthQ.data;
+  const positions = positionsQ.isError ? [] : positionsQ.data ?? [];
+  const events = accountEvents(positions, roundsQ.isError ? [] : roundsQ.data?.rounds ?? [], !!address);
+  const filtered = events.filter(event => filter === "all" || event.kind === filter);
+  const pending = positionsQ.data && !positionsQ.isError ? positions.filter(p => p.argument.status === "Pending").length : null;
+  const status = protocolQ.data?.source === "recorded" || protocolQ.isError ? "Unavailable" : protocolQ.data?.source === "ledger" ? "Live" : "Loading";
+  const loadError = markersQ.isError || roundsQ.isError || (address && positionsQ.isError);
+  const delta = markers?.insight.deltaPct;
+  return <div className="page-shell account-page">
+    <PageMasthead index="05" section="Activity" title="Activity." accent="Full audit trail. Real transparency." description="Real-time and recorded events across your positions and the Canton Network. Follow native staking activity and reward attribution." />
+    {loadError && <div className="account-notice account-notice--error" role="status">Some activity data is unavailable.<button className="account-button" onClick={() => { void markersQ.refetch(); void roundsQ.refetch(); if (address) void positionsQ.refetch(); }}>Retry</button></div>}
+    <div className="account-metrics">
+      <AccountMetric label="Markers · last 24h" value={markers ? markers.insight.totalMarkers.toLocaleString() : "—"} detail={address ? "Your recorded activity" : "Global recorded activity"} icon="cube" series={markers?.series.map(bucket => bucket.markers)} />
+      <AccountMetric label="Pending positions" value={pending ?? "—"} detail={address ? "Awaiting a recorded bond" : "Connect to view your positions"} icon="clock" color="#b95cff" />
+      <AccountMetric label="Successful reward rounds" value={health?.completed ?? "—"} detail={health ? `${health.totalSampled} recent attempts sampled` : "Round health unavailable"} icon="coin" color="#f3c442" />
+      <AccountMetric label="Latest reward round" value={health?.lastRound ? `#${health.lastRound.roundNumber.toLocaleString()}` : "—"} detail={health?.lastRound?.status ?? "Awaiting round data"} icon="stack" color="#3fc8fa" />
     </div>
-  );
+    <div className="account-two-col">
+      <AccountPanel title="Activity feed" icon="activity" description={address ? "Recorded lifecycle events and reward rounds for your wallet." : "Global reward rounds. Connect your wallet for position activity."}>
+        <div className="account-activity-toolbar"><div className="account-tabs" aria-label="Activity filters">{[["all", "All"], ["positions", "Positions"], ["rewards", "Rewards"]].map(([id, label]) => <button key={id} aria-pressed={filter === id} onClick={() => { setFilter(id); setPage(0); }}>{label}</button>)}</div>
+          {address && <a className="account-button" href={`${BACKEND_URL}/api/tax/csv?address=${encodeURIComponent(address)}&format=koinly`} download>↓ Tax CSV</a>}
+        </div>
+        <div className="account-table-wrap"><table className="account-table"><thead><tr><th>Time</th><th>Event</th><th>Source</th><th>Status</th><th>Details</th></tr></thead><tbody>{filtered.slice(page * 8, (page + 1) * 8).map(event => <tr key={event.id}>
+          <td><time dateTime={event.time}>{new Date(event.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}<small>{new Date(event.time).toLocaleDateString()}</small></time></td><td>{event.title}</td><td>{event.kind === "rewards" ? "Canton" : "Staking position"}</td><td><StatusBadge status={event.status} /></td><td><Link className="account-text-link" href={event.positionId ? `/positions?position=${encodeURIComponent(event.positionId)}` : "/rewards"}>{event.detail}</Link></td>
+        </tr>)}</tbody></table></div>
+        {!filtered.length && <AccountEmpty>{roundsQ.isLoading ? "Loading recorded activity…" : loadError ? "Activity could not be loaded." : filter === "positions" && !address ? "Connect your wallet to view your position activity." : "No recorded events in this view."}</AccountEmpty>}
+        <AccountPagination page={page} count={filtered.length} onChange={setPage} />
+        <div className="account-results"><span>{filtered.length} recorded events</span><span>{address ? "Wallet scope" : "Network scope"}</span></div>
+      </AccountPanel>
+      <div className="account-stack">
+        <AccountPanel title="System & watcher health" icon="activity" description="Current watcher reachability and Canton services.">
+          <div className="account-health-list">{liveChains().map(chain => { const watcher = watchersQ.isError ? undefined : watchersQ.data?.find(item => item.chain === chain.id || item.chain.startsWith(`${chain.id}-`)); return <div key={chain.id}><ChainBadge symbol={chain.symbol} label={chain.id === "polygon" ? "Polygon PoS" : chain.name} /><div><StatusBadge status={watcher?.status === "ok" ? "Healthy" : watcher?.status === "unreachable" ? "Unreachable" : "Unknown"} /><small>{watcher?.lastSuccessAt ? `Last successful check ${new Date(watcher.lastSuccessAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "No successful check reported"}</small></div></div>; })}
+            <div><strong>Canton ledger</strong><StatusBadge status={status} /></div>
+            <div><strong>Reward worker</strong><StatusBadge status={health?.status === "ok" ? "Healthy" : health?.status ?? "Unknown"} /></div>
+          </div>
+          <p className="account-muted">{health?.successRatePct == null ? "Reward success rate is not available." : `${health.successRatePct.toFixed(1)}% success across the last ${health.totalSampled} reward attempts.`}</p>
+        </AccountPanel>
+        <PrivacyPanel />
+      </div>
+    </div>
+    <div className="account-analytics-bottom">
+      <AccountPanel title="Marker activity · last 24 hours" icon="activity" description={markers ? `${markers.insight.totalMarkers} markers · ${markers.scope} scope` : "Waiting for recorded marker data."}>
+        {markers ? <MiniChart values={markers.series.map(bucket => bucket.markers)} label="Recorded marker count per hour over the last 24 hours" /> : <div className="account-chart-empty">{markersQ.isError ? "Marker history is unavailable." : "Loading marker history…"}</div>}
+        <div className="account-chart-caption"><span>24 hours ago</span><span>Now</span></div>
+        <p className="account-muted">{typeof delta === "number" ? `${delta >= 0 ? "+" : ""}${delta.toFixed(1)}% compared with the previous 24-hour window.` : "Not enough recorded history for a window-over-window comparison."}</p>
+      </AccountPanel>
+      <AccountPanel title="Network market data" icon="coin">
+        {liveChains().map(chain => <div key={chain.id} className="account-market-row"><ChainBadge symbol={chain.symbol} label={chain.id === "polygon" ? "Polygon PoS" : chain.name} /><div><strong>{prices && chain.id === "polygon" ? fmtUsd(prices.polUsd, 4) : "—"}</strong><small>{prices?.source.pol === "coingecko" ? "Market price" : "Indicative reference price"}</small></div></div>)}
+        <dl className="account-definition"><div><dt>Bond markers</dt><dd>{markers?.breakdown.bondCount ?? "—"}</dd></div><div><dt>Unbond markers</dt><dd>{markers?.breakdown.unbondCount ?? "—"}</dd></div></dl>
+      </AccountPanel>
+    </div>
+  </div>;
 }

@@ -32,7 +32,8 @@ function toRow(
   return {
     address: v.address,
     name: v.name || `Validator ${index + 1}`,
-    apr: Math.max(0, 100 - v.commissionPct) / 12,
+    // Scoring reports commission and uptime, not measured staking APR.
+    apr: 0,
     uptime: v.uptimePct,
     commission: v.commissionPct,
     totalStaked: v.totalStaked > 0 ? `${(v.totalStaked / 1e6).toFixed(1)}M` : undefined,
@@ -58,10 +59,10 @@ export async function fetchScoredValidators(
       .filter((row): row is ValidatorRow => row !== null);
 
     if (rows.length === 0) {
-      return { rows: staticValidatorsForChain(chain), source: "fallback" };
+      return { rows: chain === "polygon" ? [] : staticValidatorsForChain(chain), source: "fallback" };
     }
     return { rows, source: snap.source };
   } catch {
-    return { rows: staticValidatorsForChain(chain), source: "fallback" };
+    return { rows: chain === "polygon" ? [] : staticValidatorsForChain(chain), source: "fallback" };
   }
 }

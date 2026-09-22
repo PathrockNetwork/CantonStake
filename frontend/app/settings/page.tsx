@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAccount } from "wagmi";
 import { Btn } from "@/components/primitives/Btn";
@@ -8,11 +8,13 @@ import { Card } from "@/components/primitives/Card";
 import { Chip } from "@/components/primitives/Chip";
 import { EmptyState } from "@/components/primitives/EmptyState";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
+import { PageMasthead } from "@/components/primitives/PageMasthead";
 import {
   createAutoCompoundPermit,
   disableAutoCompoundPermit,
   disableNotificationChannel,
   fetchUserByEvm,
+  upsertUser,
   listAutoCompoundPermits,
   listNotificationChannels,
   sendTestNotification,
@@ -20,13 +22,31 @@ import {
 } from "@/lib/api";
 import { CHAINS } from "@/lib/chains";
 import { tokens } from "@/lib/tokens";
+import { useCantonWallet } from "@/lib/canton";
+import { useWalletPicker } from "@/components/WalletPickerProvider";
+import { shortId } from "@/lib/account-view";
+import { AccountEmpty, AccountIcon, AccountLink, AccountPanel, PrivacyPanel, StatusBadge, WalletNotice } from "@/components/account/AccountUI";
 
 const CHAIN_NAME: Record<string, string> = Object.fromEntries(
   CHAINS.map((c) => [c.id, c.name]),
 );
 
-const COMPOUND_CHAINS = [
-  "polygon",
+type CompoundChain =
+  | "polygon"
+  | "monad"
+  | "cosmos"
+  | "celestia"
+  | "osmosis"
+  | "sui"
+  | "aptos"
+  | "polkadot"
+  | "bnb"
+  | "solana";
+
+const COMPOUND_CHAINS: readonly CompoundChain[] = ["polygon"];
+/* Additional keeper adapters remain in the codebase but are deliberately
+   not exposed until they complete production validation on both modes. */
+const DEFERRED_COMPOUND_CHAINS = [
   "monad",
   "cosmos",
   "celestia",
@@ -37,7 +57,7 @@ const COMPOUND_CHAINS = [
   "bnb",
   "solana",
 ] as const;
-type CompoundChain = (typeof COMPOUND_CHAINS)[number];
+void DEFERRED_COMPOUND_CHAINS;
 
 const NOTIFY_KINDS = [
   { id: "telegram", label: "Telegram", placeholder: "@your_chat_id or numeric" },
@@ -45,85 +65,91 @@ const NOTIFY_KINDS = [
   { id: "discord", label: "Discord", placeholder: "https://discord.com/api/webhooks/..." },
 ] as const;
 
+const SETTINGS_SECTIONS = [
+  { id: "profile", title: "Profile", detail: "Identity & profile settings", icon: "user" },
+  { id: "wallets", title: "Wallets", detail: "Connected wallets & permissions", icon: "wallet" },
+  { id: "notifications", title: "Notifications", detail: "Alerts & updates", icon: "bell" },
+  { id: "privacy", title: "Privacy & security", detail: "Permissions & reward controls", icon: "shield" },
+  { id: "preferences", title: "Preferences", detail: "Display & experience", icon: "settings" },
+  { id: "integrations", title: "Integrations", detail: "Connected networks & services", icon: "link" },
+] as const;
+
 export default function SettingsPage() {
   const { address, isConnected } = useAccount();
+  const { partyId, isConnected: loopConnected } = useCantonWallet();
+  const { openPicker } = useWalletPicker();
   const qc = useQueryClient();
-
-  const userQ = useQuery({
-    queryKey: ["user-by-evm", address],
-    queryFn: () => (address ? fetchUserByEvm(address) : null),
-    enabled: !!address,
-    retry: false,
-  });
-  const userId = userQ.data?.id ?? null;
-
-  if (!isConnected) {
-    return (
-      <div style={{ maxWidth: 1280, margin: "0 auto", padding: "40px 22px 80px" }}>
-        <SectionLabel>§ SETTINGS</SectionLabel>
-        <h1
-          className="display"
-          style={{ fontSize: 42, margin: "4px 0 24px", color: tokens.ink[100] }}
-        >
-          Settings.
-        </h1>
-        <EmptyState
-          tone="warn"
-          title="Connect your wallet"
-          subtitle="Settings are scoped to your registered identity. Connect EVM + Loop to manage auto-compound permits and alert channels."
-        />
-      </div>
-    );
+  const [section, setSection] = useState<string>("profile");
+  const [displayName, setDisplayName] = useState("");
+  const [density, setDensity] = useState("comfortable");
+  const userQ = useQuery({ queryKey: ["user-by-evm", address], queryFn: () => fetchUserByEvm(address!), enabled: !!address, retry: false });
+  const user = userQ.data;
+  const unregistered = userQ.error?.message === "user not registered yet";
+  useEffect(() => { setDisplayName(user?.displayName ?? ""); }, [user?.id, user?.displayName, address]);
+  useEffect(() => {
+    const hash = window.location.hash.slice(1);
+    if (SETTINGS_SECTIONS.some(item => item.id === hash)) setSection(hash);
+    try { setDensity(localStorage.getItem("cantonstake:account-density") === "compact" ? "compact" : "comfortable"); } catch { /* Browser storage is optional. */ }
+  }, []);
+  const canEdit = isConnected && loopConnected && !!partyId && !!user && user.cantonPartyId === partyId;
+  const profileMutation = useMutation({ mutationFn: () => {
+    if (!canEdit || !user) throw new Error("Connect the wallets linked to this profile before saving.");
+    return upsertUser({ cantonPartyId: user.cantonPartyId, evmAddress: address, displayName: displayName.trim() });
+  }, onSuccess: () => { void qc.invalidateQueries({ queryKey: ["user-by-evm", address] }); } });
+  const selected = SETTINGS_SECTIONS.find(item => item.id === section) ?? SETTINGS_SECTIONS[0];
+  const requiresUser = <AccountEmpty>{!isConnected ? "Connect your wallets to manage account settings." : userQ.isLoading ? "Loading your Canton identity…" : unregistered ? "Connect your Loop wallet or create your first position to register your identity." : "Your identity could not be loaded."}<button className="account-button" onClick={openPicker}>Manage wallets</button></AccountEmpty>;
+  function selectSection(id: string) { setSection(id); window.history.replaceState(null, "", `#${id}`); }
+  function setDisplayDensity(value: string) {
+    setDensity(value); document.documentElement.dataset.accountDensity = value;
+    try { localStorage.setItem("cantonstake:account-density", value); } catch { /* Preference still applies for this visit. */ }
   }
-
-  if (userQ.isError || !userId) {
-    return (
-      <div style={{ maxWidth: 1280, margin: "0 auto", padding: "40px 22px 80px" }}>
-        <SectionLabel>§ SETTINGS</SectionLabel>
-        <h1
-          className="display"
-          style={{ fontSize: 42, margin: "4px 0 24px", color: tokens.ink[100] }}
-        >
-          Settings.
-        </h1>
-        <EmptyState
-          tone="warn"
-          title="Identity not registered yet"
-          subtitle="Stake at least once or connect your Loop wallet so the backend creates your User record. Then come back here to configure auto-compound and alerts."
-        />
-      </div>
-    );
+  function exportProfile() {
+    if (!user) return;
+    const blob = new Blob([JSON.stringify({ displayName: user.displayName, evmAddress: user.evmAddress, cantonPartyId: user.cantonPartyId, createdAt: user.createdAt }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob), link = document.createElement("a");
+    link.href = url; link.download = "cantonstake-profile.json"; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
+  const wallets = <AccountPanel title="Your connected wallets" icon="wallet" description="Manage the native wallet and Canton identity used for staking." action={<button className="account-button" onClick={openPicker}>+ Connect wallet</button>}>
+    <div className="account-wallet-list">
+      <div><span className="account-wallet-logo account-wallet-logo--loop" aria-hidden="true">∞</span><div><strong>Loop Wallet (Party ID)</strong><small title={partyId ?? ""}>{partyId ? shortId(partyId, 18) : "No Canton wallet connected"}</small><small>Native Canton identity · CC rewards</small></div><StatusBadge status={loopConnected ? "Connected" : "Disconnected"} /></div>
+      <div><span className="account-wallet-logo" aria-hidden="true"><AccountIcon name="wallet" /></span><div><strong>EVM Wallet</strong><small title={address}>{address ? shortId(address, 12) : "No EVM wallet connected"}</small><small>Native staking · transaction signing</small></div><StatusBadge status={isConnected ? "Connected" : "Disconnected"} /></div>
+    </div><button className="account-button" onClick={openPicker}>Manage connections</button>
+  </AccountPanel>;
 
-  return (
-    <div style={{ maxWidth: 1280, margin: "0 auto", padding: "40px 22px 80px" }}>
-      <SectionLabel>§ SETTINGS</SectionLabel>
-      <h1
-        className="display"
-        style={{ fontSize: 42, margin: "4px 0 8px", color: tokens.ink[100] }}
-      >
-        Settings.
-      </h1>
-      <p
-        className="mono"
-        style={{
-          fontSize: 11,
-          color: tokens.ink[400],
-          marginBottom: 28,
-          maxWidth: 720,
-          lineHeight: 1.6,
-        }}
-      >
-        Auto-compound permits scope what the keeper can do on your behalf;
-        signatures are bound to a single (chain, validator) pair and expire on
-        their own. Alert channels deliver slashing + reward events.
-      </p>
-
-      <AutoCompoundCard userId={userId} qc={qc} />
-      <div style={{ height: 24 }} />
-      <NotificationsCard userId={userId} qc={qc} />
+  return <div className="page-shell account-page">
+    <PageMasthead index="06" section="Settings" title="Settings." accent="Manage your identity, wallets, and security." description="Your preferences keep you in control. Manage your profile, connected wallets, reward permissions, and alerts." />
+    <WalletNotice connected={isConnected} error={userQ.isError && !unregistered} loading={isConnected && userQ.isLoading} onRetry={() => { void userQ.refetch(); }} />
+    <div className="account-settings-layout">
+      <aside className="account-stack"><nav className="account-settings-nav" aria-label="Settings sections">{SETTINGS_SECTIONS.map(item => <button key={item.id} aria-pressed={section === item.id} onClick={() => selectSection(item.id)}><AccountIcon name={item.icon} /><span><strong>{item.title}</strong><small>{item.detail}</small></span><span aria-hidden="true">›</span></button>)}</nav>
+        <AccountPanel title="One identity. Many possibilities." icon="cube"><p className="account-muted">Your Canton party links your staking activity and recorded reward allocations.</p><AccountLink href="/dashboard">Open dashboard</AccountLink></AccountPanel>
+      </aside>
+      <div className="account-stack">
+        <header className="account-settings-title"><div><h2>{selected.title}</h2><p>{selected.detail} for your CantonStake account.</p></div>{section === "profile" && <button className="account-button account-button--primary" type="submit" form="account-profile-form" disabled={!canEdit || profileMutation.isPending || displayName.trim() === (user?.displayName ?? "")}>{profileMutation.isPending ? "Saving…" : "Save changes"}</button>}</header>
+        {section === "profile" && <>
+          <div className="account-settings-columns">
+            <AccountPanel title="Identity & profile" icon="user">
+              <div className="account-profile-identity"><span className="account-profile-avatar" aria-hidden="true"><AccountIcon name="cube" size={46} /></span><div><h3>{user?.displayName || "Your Canton identity"}</h3><p>{user ? shortId(user.cantonPartyId, 14) : "Connect your registered wallets"}</p></div>{user && <StatusBadge status="Registered" />}</div>
+              <form id="account-profile-form" onSubmit={event => { event.preventDefault(); profileMutation.mutate(); }}>
+                <label><span className="account-field-label">Display name</span><input className="account-field" value={displayName} onChange={event => { setDisplayName(event.target.value); profileMutation.reset(); }} maxLength={80} autoComplete="nickname" disabled={!canEdit || profileMutation.isPending} placeholder="Your display name" /></label>
+                <label><span className="account-field-label">Linked EVM address</span><input className="account-field mono" value={user?.evmAddress ?? address ?? ""} readOnly placeholder="Connect an EVM wallet" /></label>
+                <p className="account-muted">{canEdit ? "Your display name is saved to your registered CantonStake profile." : "Connect the EVM and Loop wallets linked to this profile to edit it."}</p>
+                {profileMutation.isSuccess && <p role="status" className="account-save-success">Profile saved.</p>}{profileMutation.isError && <p role="alert" className="account-save-error">{profileMutation.error.message}</p>}
+              </form>
+            </AccountPanel>
+            {wallets}
+            <AccountPanel title="Canton identity" icon="cube" description="Your staking activity, linked through one party."><p className="account-identity-heading">One identity. Native staking. Canton rewards.</p><p className="account-muted">Your Canton party records staking lifecycle events and beneficiary allocations. Your native tokens remain controlled by your wallet.</p><dl className="account-definition"><div><dt>Party ID</dt><dd title={user?.cantonPartyId ?? ""}>{shortId(user?.cantonPartyId, 20)}</dd></div><div><dt>Registered</dt><dd>{user ? new Date(user.createdAt).toLocaleDateString() : "—"}</dd></div></dl></AccountPanel>
+            <PrivacyPanel />
+          </div>
+          <div className="account-settings-columns"><AccountPanel title="Account status" icon="shield"><p className="account-muted">{user ? `Registered since ${new Date(user.createdAt).toLocaleDateString()}.` : unregistered ? "Your identity has not been registered yet." : "Connect your registered wallets to view account status."}</p><StatusBadge status={user ? "Registered" : "Not connected"} /></AccountPanel><AccountPanel title="Quick actions" icon="activity"><div className="account-quick-actions"><button className="account-button" onClick={exportProfile} disabled={!user}>↓ Export profile data</button><AccountLink href="/analytics">View activity</AccountLink></div></AccountPanel></div>
+        </>}
+        {section === "wallets" && <>{wallets}<PrivacyPanel /></>}
+        {section === "notifications" && <div className="account-existing-settings">{user ? <NotificationsCard userId={user.id} qc={qc} /> : requiresUser}</div>}
+        {section === "privacy" && <><PrivacyPanel /><div className="account-existing-settings">{user ? <AutoCompoundCard userId={user.id} qc={qc} /> : requiresUser}</div></>}
+        {section === "preferences" && <AccountPanel title="Display preferences" icon="settings" description="Saved in this browser for the account pages."><fieldset className="account-preference"><legend>Information density</legend><div className="account-tabs">{["comfortable", "compact"].map(value => <button key={value} type="button" aria-pressed={density === value} onClick={() => setDisplayDensity(value)}>{value === "comfortable" ? "Comfortable" : "Compact"}</button>)}</div></fieldset><dl className="account-definition"><div><dt>Color theme</dt><dd>Canton dark</dd></div><div><dt>Animation</dt><dd>Respects system reduced-motion preference</dd></div></dl><p className="account-muted">The homepage globe also has its own play and pause control.</p></AccountPanel>}
+        {section === "integrations" && <><AccountPanel title="Connected services" icon="link"><dl className="account-definition"><div><dt>Loop Wallet</dt><dd><StatusBadge status={loopConnected ? "Connected" : "Disconnected"} /></dd></div><div><dt>EVM wallet</dt><dd><StatusBadge status={isConnected ? "Connected" : "Disconnected"} /></dd></div><div><dt>Supported staking chain</dt><dd>Polygon PoS</dd></div></dl><button className="account-button" onClick={openPicker}>Manage wallets</button></AccountPanel><AccountPanel title="Reward automation" icon="activity"><p className="account-muted">Manage scoped auto-compound permissions under Privacy & security, and delivery channels under Notifications.</p><div className="account-quick-actions"><button className="account-button" onClick={() => selectSection("privacy")}>Reward permissions</button><button className="account-button" onClick={() => selectSection("notifications")}>Alert channels</button></div></AccountPanel></>}
+      </div>
     </div>
-  );
+  </div>;
 }
 
 function AutoCompoundCard({

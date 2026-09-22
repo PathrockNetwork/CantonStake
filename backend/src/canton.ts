@@ -158,8 +158,9 @@ class CantonClient {
     return normalizeSubmitResult(await res.json());
   }
 
-  private async ledgerEndOffset(): Promise<string> {
+  private async ledgerEndOffset(signal?: AbortSignal): Promise<string> {
     const res = await fetch(`${this.baseUrl}/v2/state/ledger-end`, {
+      signal,
       method: "GET",
       headers: this.headers(),
     });
@@ -186,8 +187,8 @@ class CantonClient {
   /**
    * Query active contracts for a given template.
    */
-  async activeContracts(templateId: string): Promise<ActiveContract[]> {
-    const activeAtOffset = await this.ledgerEndOffset();
+  async activeContracts(templateId: string, signal?: AbortSignal): Promise<ActiveContract[]> {
+    const activeAtOffset = await this.ledgerEndOffset(signal);
     const body = {
       filter: {
         filtersByParty: {
@@ -209,6 +210,7 @@ class CantonClient {
     };
 
     const res = await fetch(`${this.baseUrl}/v2/state/active-contracts`, {
+      signal,
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify(body),

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   useAccount,
+  useReadContract,
   useChainId,
   useSendTransaction,
   useSwitchChain,
@@ -13,7 +14,7 @@ import {
   sendTransaction as sendTransactionCore,
   waitForTransactionReceipt,
 } from "@wagmi/core";
-import { formatUnits, parseEther } from "viem";
+import { erc20Abi, formatUnits, parseEther } from "viem";
 import { polygonAmoy } from "wagmi/chains";
 import { IconArrowRight } from "@/components/icons";
 import { Banner } from "@/components/primitives/Banner";
@@ -22,6 +23,7 @@ import { Card } from "@/components/primitives/Card";
 import { Chip } from "@/components/primitives/Chip";
 import { MarkerSpark } from "@/components/primitives/MarkerSpark";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
+import { PageMasthead } from "@/components/primitives/PageMasthead";
 import { emitTrace } from "@/components/trace/useTraceLog";
 import {
   createStakingRequest,
@@ -32,11 +34,16 @@ import {
 import {
   liveChains,
   polygonChain,
+  stakeTokenAddress,
   validatorMinAmounts,
   type ChainConfig,
 } from "@/lib/chains";
 import { wagmiConfig } from "@/lib/wagmi";
-import { adapterFor } from "@/lib/chains/index";
+import { adapterFor, type Validator } from "@/lib/chains/index";
+import { stakeAmountWei } from "@/lib/stake-input";
+import { shortId } from "@/lib/account-view";
+import { useWalletPicker } from "@/components/WalletPickerProvider";
+import { AccountEmpty, AccountIcon, AccountPanel, ChainBadge, SplitPanel, StatusBadge } from "@/components/account/AccountUI";
 import { fetchStakingParams } from "@/lib/chains/polygon";
 import { fmt, fmtUsd } from "@/lib/format";
 import { useCantonWallet } from "@/lib/canton";
@@ -249,6 +256,7 @@ export default function StakePage() {
   const chainId = useChainId();
   const { switchChainAsync, isPending: switchPending } = useSwitchChain();
   const { partyId, isConnected: loopConnected } = useCantonWallet();
+  const { openPicker } = useWalletPicker();
 
   const cosmos = useCosmosWallet();
   const sui = useSuiWallet();
@@ -269,7 +277,7 @@ export default function StakePage() {
   const isCosmosChain = selectedChain.id === "cosmos";
   const isSuiChain = selectedChain.id === "sui";
   const isWalletReadyForChain =
-    (stakingUiReady && !!selectedChain.wagmiChain) ||
+    (stakingUiReady && !!selectedChain.wagmiChain && isConnected) ||
     (isCosmosChain && cosmos.isConnected) ||
     (isSuiChain && sui.isConnected);
   const polygon = polygonChain();
@@ -277,7 +285,18 @@ export default function StakePage() {
   const wrongNetwork =
     isEvmStakingReady && isConnected && chainId !== selectedChain.wagmiChain!.id;
 
-  const [amount, setAmount] = useState("0.50");
+  const [amount, setAmount] = useState("1");
+  const [validators, setValidators] = useState<Validator[]>([]);
+  const [validatorLoadError, setValidatorLoadError] = useState<string | null>(null);
+  const [validatorSort, setValidatorSort] = useState("rank");
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [preparing, setPreparing] = useState(false);
+  const reviewRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = reviewRef.current;
+    if (reviewOpen && dialog && !dialog.open) dialog.showModal();
+    else dialog?.close();
+  }, [reviewOpen]);
   const [step, setStep] = useState<0 | 1 | 2 | 3 | 4 | 5>(0);
   // True while the ERC-20 allowance tx is in flight. It sits between stages
   // 01 and 02 and needs its own wallet signature, so the CTA has to say so.
@@ -360,26 +379,25 @@ export default function StakePage() {
 
   const stats = chainStats?.chains.find((c) => c.chain === selectedChain.id);
   const nativeApy = stats?.apyPctEstimate ?? null;
-  // CC bonus is the marginal yield from CC rewards on top of native staking.
-  // Without per-validator history we estimate it as a fixed-ratio of the
-  // chain's base yield until /api/rewards/health exposes a per-staker average.
-  const ccBonusApy = stats ? stats.apyPctEstimate * 0.35 : null;
 
   useEffect(() => {
     let cancelled = false;
     setValidatorName(null);
     setValidatorAddr(null);
+    setValidators([]);
+    setValidatorLoadError(null);
     // Watcher-only chains (hasAdapter: false) have no validator rows to
     // load — chainAdapter is the `!`-asserted null there, so guard before
     // the call instead of crashing the page (TypeError on getValidators).
     if (!adapter) return;
     void adapter.getValidators().then((vs) => {
+      if (!cancelled) { setValidators(vs); if (!vs.length) setValidatorLoadError("No eligible validators are currently available."); }
       const top = vs[0];
       if (!cancelled && top) {
         setValidatorName(top.name);
         setValidatorAddr(top.address);
       }
-    });
+    }).catch(() => { if (!cancelled) setValidatorLoadError("Validators could not be loaded. Refresh to try again."); });
     return () => {
       cancelled = true;
     };
@@ -426,19 +444,12 @@ export default function StakePage() {
       // stage-5 poller below waits for that to land.
 
       // Stage 5 — wait for the orchestrator to emit a real marker.
-      // Poll /api/positions every 2s for up to 30s for a markersEmitted
-      // increment vs the pre-stake baseline. Falls back to a fixed
-      // delay only if the backend doesn't surface the increment in
-      // time (so the UI doesn't deadlock visually).
+      // Only recorded marker activity completes this stage. A delayed
+      // watcher must never turn a confirmed native transaction into a
+      // claimed Canton confirmation merely because a timer elapsed.
       if (!address) return;
       let cancelled = false;
       let timeoutId: number | undefined;
-      const fallbackId = window.setTimeout(() => {
-        if (cancelled || currentStepRef.current >= 5) return;
-        advance(5);
-        setShowSpark(true);
-        window.setTimeout(() => setShowSpark(false), 900);
-      }, 30_000);
 
       const tick = async () => {
         if (cancelled || currentStepRef.current >= 5) return;
@@ -451,7 +462,6 @@ export default function StakePage() {
           const baseline = markerBaseline ?? 0;
           if (total > baseline) {
             cancelled = true;
-            window.clearTimeout(fallbackId);
             advance(5);
             setShowSpark(true);
             window.setTimeout(() => setShowSpark(false), 900);
@@ -466,7 +476,6 @@ export default function StakePage() {
 
       return () => {
         cancelled = true;
-        window.clearTimeout(fallbackId);
         if (timeoutId !== undefined) window.clearTimeout(timeoutId);
       };
     }
@@ -555,6 +564,8 @@ export default function StakePage() {
       return;
     }
 
+    if (stakeAmountWei(amount) === null) { setError("Enter a positive amount with no more than 18 decimal places."); return; }
+
     // buyVoucher reverts below the validator's on-chain minAmount. Failing
     // fast here gives a readable message instead of a reverted wallet tx.
     if (validatorMinWei !== null && parseEther(amount || "0") < validatorMinWei) {
@@ -587,11 +598,9 @@ export default function StakePage() {
     }
 
     try {
-      // Resolve the validator first so the backend Daml request can record
-      // which chain + validator the stake was for. The validator-scoring
-      // service returns the top-scored entry; for this MVP we always pick
-      // the first one and let the user override via the picker UI later.
-      const [validator] = await chainAdapter.getValidators();
+      // Revalidate the reviewed selection before creating a request.
+      const eligible = await chainAdapter.getValidators();
+      const validator = eligible.find(item => item.address.toLowerCase() === validatorAddr?.toLowerCase());
       if (!validator) {
         throw new Error(
           `No ${selectedChain.name} validator is available for staking.`,
@@ -856,39 +865,21 @@ export default function StakePage() {
       : ctaLabels[step] ?? ctaLabels[0]!;
   const amountNum = parseFloat(amount || "0");
   const usdValue = amountNum * chainPriceUsd;
-  // Expected CC for a single bond is best derived from the most recent
-  // round's per-staked-pol attribution. Without that we estimate it as
-  // the user's stake × (ccBonusApy / 365) × 1 day worth of CC at current
-  // CC/USD price — useful as an order-of-magnitude hint.
-  const expectedCC = (() => {
-    if (!ccBonusApy || !prices?.ccUsd || prices.ccUsd <= 0) return null;
-    const annualCcUsd = (ccBonusApy / 100) * usdValue;
-    return (annualCcUsd / 365 / prices.ccUsd).toFixed(2);
-  })();
+  const selectedValidator = validators.find(validator => validator.address === validatorAddr);
+  const sortedValidators = [...validators].sort((a, b) => validatorSort === "apr" ? b.apr - a.apr : validatorSort === "fee" ? a.commission - b.commission : 0);
+  const balance = useReadContract({ address: stakeTokenAddress, abi: erc20Abi, functionName: "balanceOf", args: address ? [address] : undefined,
+    chainId: selectedChain.wagmiChain?.id, query: { enabled: !!address && selectedChain.id === "polygon", refetchInterval: 30_000 } });
+  const amountWei = stakeAmountWei(amount);
+  const amountIssue = amountWei === null ? "Enter a positive amount (up to 18 decimal places)."
+    : validatorMinWei !== null && amountWei < validatorMinWei ? `Minimum stake: ${formatUnits(validatorMinWei, 18)} ${selectedChain.symbol}.`
+    : balance.data !== undefined && amountWei > balance.data ? "Amount exceeds your token balance." : null;
+  const busy = preparing || (step > 0 && step < 5);
+  const walletsReady = loopConnected && !!partyId && isWalletReadyForChain;
+  const formStage = !validatorAddr ? 2 : amountIssue ? 3 : 4;
 
   return (
-    <div style={{ maxWidth: 1280, margin: "0 auto", padding: "40px 22px 80px" }}>
-      <SectionLabel>§ STAKE</SectionLabel>
-      <h1
-        className="display"
-        style={{ fontSize: 42, margin: "4px 0 14px", color: tokens.ink[100] }}
-      >
-        Delegate {selectedChain.symbol}.
-      </h1>
-      <p
-        className="mono"
-        style={{
-          fontSize: 11.5,
-          color: tokens.ink[400],
-          letterSpacing: ".04em",
-          marginBottom: 18,
-          maxWidth: 680,
-        }}
-      >
-        Sign the staking transaction from your own wallet. CantonStake records
-        the lifecycle and emits a Canton activity marker after bonding. Custody
-        never leaves your wallet.
-      </p>
+    <div className="page-shell account-page">
+      <PageMasthead index="02" section="Stake on Canton" title="Stake." accent="Create a self-custodial staking position." description={`Delegate ${selectedChain.symbol} from your own wallet, earn native rewards and Canton Coin rewards, with the lifecycle recorded on Canton.`} />
 
       {isMainnet && (
         <Banner
@@ -961,404 +952,54 @@ export default function StakePage() {
         />
       )}
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1.2fr",
-          gap: 24,
-        }}
-      >
-        {/* Form */}
-        <Card padding={0}>
-          <div
-            style={{
-              padding: "18px 22px",
-              borderBottom: `1px solid ${tokens.hairline}`,
-            }}
-          >
-            <SectionLabel>Staking form</SectionLabel>
-          </div>
-          <div
-            style={{
-              padding: 22,
-              display: "flex",
-              flexDirection: "column",
-              gap: 18,
-            }}
-          >
-            <div>
-              <SectionLabel style={{ marginBottom: 8 }}>Network</SectionLabel>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: `repeat(${chains.length}, 1fr)`,
-                  gap: 6,
-                }}
-              >
-                {chains.map((c) => {
-                  const active = c.id === selectedChainId;
-                  const ready = !!c.wagmiChain;
-                  const watcher = watcherByChain.get(c.id);
-                  const offline = watcher?.status === "unreachable";
-                  return (
-                    <button
-                      key={c.id}
-                      type="button"
-                      onClick={() => setSelectedChainId(c.id)}
-                      disabled={(step > 0 && step < 5) || offline}
-                      title={
-                        offline
-                          ? `Watcher offline — the backend cannot reach this chain's RPC (${watcher?.lastError ?? "unreachable"}). Staking is disabled until it's back.`
-                          : undefined
-                      }
-                      style={{
-                        padding: "10px 8px",
-                        background: active ? tokens.ink[800] : "transparent",
-                        border: `1px solid ${active ? c.color : tokens.hairline}`,
-                        cursor:
-                          (step > 0 && step < 5) || offline
-                            ? "not-allowed"
-                            : "pointer",
-                        font: "inherit",
-                        color: offline ? tokens.ink[400] : tokens.ink[100],
-                        textAlign: "left",
-                        opacity: offline ? 0.55 : 1,
-                      }}
-                    >
-                      <div
-                        className="mono"
-                        style={{
-                          fontSize: 11,
-                          color: active ? c.color : tokens.ink[200],
-                          fontWeight: 600,
-                        }}
-                      >
-                        {c.symbol}
-                      </div>
-                      <div
-                        className="mono"
-                        style={{
-                          fontSize: 9,
-                          color: offline ? tokens.ink[400] : tokens.ink[400],
-                          marginTop: 2,
-                        }}
-                      >
-                        {offline
-                          ? "offline"
-                          : c.hasAdapter === false
-                            ? "watcher"
-                            : ready
-                              ? "live"
-                              : "adapter"}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-              <div
-                style={{
-                  marginTop: 8,
-                  padding: "12px 14px",
-                  border: `1px solid ${tokens.hairline}`,
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                }}
-              >
-                <div>
-                  <div
-                    className="mono"
-                    style={{ fontSize: 13, color: tokens.ink[100] }}
-                  >
-                    {selectedChain.name}
-                  </div>
-                  <div
-                    className="mono"
-                    style={{ fontSize: 10, color: tokens.ink[400] }}
-                  >
-                    {selectedChain.type} · {selectedChain.symbol} ·{" "}
-                    {unbondingLabel} unbonding
-                  </div>
-                </div>
-                <Chip color={isEvmStakingReady ? tokens.neon : tokens.amberBright}>
-                  {isEvmStakingReady ? "WAGMI READY" : "ADAPTER ONLY"}
-                </Chip>
-              </div>
-            </div>
-
-            {/* Coming soon wall for Cosmos and Sui */}
-            {(isCosmosChain || isSuiChain) ? (
-              <div
-                style={{
-                  padding: "40px 22px",
-                  textAlign: "center",
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  gap: 16,
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: 48,
-                    marginBottom: 8,
-                  }}
-                >
-                  🔜
-                </div>
-                <SectionLabel style={{ fontSize: 24, marginBottom: 8 }}>
-                  Coming Soon
-                </SectionLabel>
-                <div
-                  style={{
-                    fontSize: 14,
-                    color: tokens.ink[400],
-                    maxWidth: 300,
-                    lineHeight: 1.5,
-                  }}
-                >
-                  {selectedChain.name} staking is currently under development. We're finalizing the integration to bring you the best staking experience.
-                </div>
-                <div
-                  style={{
-                    fontSize: 12,
-                    color: tokens.ink[500],
-                    marginTop: 8,
-                  }}
-                  className="mono"
-                >
-                  Follow us for updates on the launch
-                </div>
-              </div>
-            ) : (
-              <>
-            <div>
-              <SectionLabel style={{ marginBottom: 8 }}>Validator</SectionLabel>
-              <div
-                style={{
-                  padding: "12px 14px",
-                  border: `1px solid ${tokens.hairline}`,
-                }}
-              >
-                <div
-                  className="mono"
-                  style={{ fontSize: 13, color: tokens.ink[100] }}
-                >
-                  {validatorName ?? "Resolving validator…"}
-                </div>
-                <div
-                  className="mono"
-                  style={{ fontSize: 10, color: tokens.ink[400] }}
-                >
-                  {validatorAddr
-                    ? `${validatorAddr.slice(0, 10)}...${validatorAddr.slice(-6)}`
-                    : "—"}
-                  {` · top-scored ${selectedChain.name} validator (live from validator-scoring)`}
-                </div>
-              </div>
-            </div>
-
-            <div>
-              <SectionLabel style={{ marginBottom: 8 }}>Amount</SectionLabel>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "baseline",
-                  padding: "12px 14px",
-                  border: `1px solid ${tokens.hairline}`,
-                  gap: 8,
-                }}
-              >
-                <input
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))}
-                  className="display tabular"
-                  style={{
-                    background: "transparent",
-                    border: "none",
-                    outline: "none",
-                    color: tokens.ink[100],
-                    fontSize: 36,
-                    width: "100%",
-                  }}
-                  inputMode="decimal"
-                  disabled={step > 0 && step < 5}
-                />
-                <span className="mono" style={{ fontSize: 13, color: tokens.ink[400] }}>
-                  {selectedChain.symbol}
-                </span>
-              </div>
-              <div
-                className="mono"
-                style={{ fontSize: 10, color: tokens.ink[400], marginTop: 6 }}
-              >
-                Estimated value: {fmtUsd(usdValue)}
-                {validatorMinWei !== null &&
-                  ` · validator minimum ${String(Number(formatUnits(validatorMinWei, 18)))} ${selectedChain.symbol}`}
-              </div>
-
-              {/* Testnet funding pointer — the #1 dead end for a new
-                  visitor is an empty wallet. What's needed differs per
-                  chain (Polygon settles on Sepolia, not Bor). Mainnet
-                  mode shows a real-funds warning instead: there are no
-                  faucents on mainnet. */}
-              {!isMainnet && (
-                <div
-                  className="mono"
-                  style={{
-                    fontSize: 10,
-                    color: tokens.ink[500],
-                    marginTop: 8,
-                    lineHeight: 1.6,
-                  }}
-                >
-                  {FUNDING_HINTS[selectedChain.id] && (
-                    <>
-                      <span style={{ color: tokens.ink[400] }}>Need testnet funds? </span>
-                      {FUNDING_HINTS[selectedChain.id]}
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
-
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: 12,
-                paddingTop: 6,
-              }}
-            >
-              <div>
-                <SectionLabel>Native APY</SectionLabel>
-                <div
-                  className="display tabular"
-                  style={{ fontSize: 24, color: tokens.ink[100] }}
-                >
-                  {nativeApy !== null ? `${nativeApy.toFixed(1)}%` : "—"}
-                </div>
-              </div>
-              <div>
-                <SectionLabel>CC bonus</SectionLabel>
-                <div
-                  className="display tabular"
-                  style={{ fontSize: 24, color: tokens.cc }}
-                >
-                  {ccBonusApy !== null ? `${ccBonusApy.toFixed(1)}%` : "—"}
-                </div>
-              </div>
-            </div>
-
-            <div
-              style={{
-                padding: "12px 14px",
-                border: `1px solid ${tokens.hairline}`,
-                background: "rgba(255,255,255,.015)",
-              }}
-            >
-              <SectionLabel style={{ marginBottom: 8 }}>
-                Transaction summary
-              </SectionLabel>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr auto",
-                  gap: "6px 16px",
-                  fontSize: 11,
-                }}
-              >
-                <span className="mono" style={{ color: tokens.ink[300] }}>
-                  You stake
-                </span>
-                <span className="mono tabular" style={{ color: tokens.ink[100] }}>
-                  {amount} {selectedChain.symbol}
-                </span>
-                <span className="mono" style={{ color: tokens.ink[300] }}>
-                  Network
-                </span>
-                <span className="mono" style={{ color: tokens.ink[100] }}>
-                  {selectedChain.name}
-                </span>
-                <span className="mono" style={{ color: tokens.ink[300] }}>
-                  Validator
-                </span>
-                <span className="mono" style={{ color: tokens.ink[100] }}>
-                  {validatorName ?? "—"}
-                </span>
-                <span className="mono" style={{ color: tokens.ink[300] }}>
-                  Custody
-                </span>
-                <span className="mono" style={{ color: tokens.ink[100] }}>
-                  Your wallet
-                </span>
-                <span className="mono" style={{ color: tokens.ink[300] }}>
-                  Canton action
-                </span>
-                <span className="mono" style={{ color: tokens.neon }}>
-                  Bond marker emitted
-                </span>
-                <span className="mono" style={{ color: tokens.ink[300] }}>
-                  CC split
-                </span>
-                <span className="mono" style={{ color: tokens.ink[200] }}>
-                  75% user · 25% treasury
-                </span>
-                <span className="mono" style={{ color: tokens.ink[300] }}>
-                  Expected CC · next round
-                </span>
-                <span className="mono tabular" style={{ color: tokens.cc }}>
-                  {expectedCC ? `~${expectedCC} CC / day` : "—"}
-                </span>
-              </div>
-            </div>
-
-            <Btn
-              onClick={handleStake}
-              full
-              size="lg"
-              iconRight={
-                step === 0 || step === 5 ? <IconArrowRight /> : undefined
-              }
-              disabled={
-                (step > 0 && step < 5) ||
-                selectedChainOffline ||
-                !stakingUiReady ||
-                !loopConnected ||
-                !partyId ||
-                !isWalletReadyForChain
-              }
-            >
-              {selectedChainOffline
-                ? `${selectedChain.name} watcher offline`
-                : !stakingUiReady
-                  ? `${selectedChain.name} · staking UI next`
-                  : !loopConnected || !partyId
-                ? "Connect Loop wallet to stake"
-                : !isWalletReadyForChain
-                  ? isCosmosChain
-                    ? "Connect Keplr to stake on Cosmos"
-                    : isSuiChain
-                      ? "Connect Sui Wallet to stake on Sui"
-                      : "Connect EVM wallet to stake"
-                  : ctaLabel}
-            </Btn>
-            <div
-              className="mono"
-              style={{
-                fontSize: 10,
-                color: tokens.ink[500],
-                textAlign: "center",
-                letterSpacing: ".04em",
-              }}
-            >
-              Your wallet signs · CantonStake observes · The ledger remembers
-            </div>
-            </>
-          )}
-          </div>
-        </Card>
-
+      <nav className="stake-stepper account-stake-stepper" aria-label="Staking workflow">
+        {[["01", "Select chain", "stake-chain"], ["02", "Choose token", "stake-token"], ["03", "Pick validator", "stake-validator"], ["04", "Enter amount", "stake-amount"], ["05", "Review & sign", "stake-review"]].map(([number, label, target], index) => <a href={`#${target}`} key={number} className={`stake-stepper__item${index <= formStage ? " stake-stepper__item--active" : ""}`} aria-current={index === formStage ? "step" : undefined}><span>{number}</span><div><strong>{label}</strong><small>{index < formStage ? "Ready" : index === formStage ? "Current step" : "Up next"}</small></div></a>)}
+      </nav>
+      <div className="account-stake-workspace">
+        <AccountPanel title="01 · Select chain" icon="link" description="Choose a supported chain." id="stake-chain">
+          <div className="account-chain-options">{chains.map(chain => <button key={chain.id} className="account-chain-option" aria-pressed={selectedChain.id === chain.id} disabled={busy || watcherByChain.get(chain.id)?.status === "unreachable" || chain.hasAdapter === false} onClick={() => { setSelectedChainId(chain.id); setStep(0); setReviewOpen(false); }}><ChainBadge symbol={chain.symbol} label={chain.id === "polygon" ? "Polygon PoS" : chain.name} /><StatusBadge status={watcherByChain.get(chain.id)?.status === "unreachable" ? "Offline" : "Supported"} /></button>)}</div>
+          <p className="account-muted">{selectedChain.type}</p><p className="account-muted">More chains coming soon.</p>
+          <dl className="account-definition"><div><dt>Settlement</dt><dd>{selectedChain.wagmiChain?.name ?? selectedChain.name}</dd></div><div><dt>Unbond period</dt><dd>{unbondingLabel}</dd></div></dl>
+        </AccountPanel>
+        <AccountPanel title="02 · Choose token" icon="coin" description="Native token for this staking flow." id="stake-token">
+          <div className="account-token-selected"><ChainBadge symbol={selectedChain.symbol} label={selectedChain.symbol} /><StatusBadge status="Selected" /></div>
+          <p className="account-muted">Stake {selectedChain.symbol} from your wallet to earn native validator yield and Canton Coin rewards.</p>
+          <dl className="account-definition"><div><dt>Token standard</dt><dd>{selectedChain.id === "polygon" ? "ERC-20" : selectedChain.symbol}</dd></div><div><dt>Current price</dt><dd>{fmtUsd(chainPriceUsd, 4)}</dd></div><div><dt>Price source</dt><dd>{prices?.source.pol === "coingecko" ? "Market price" : "Reference price"}</dd></div><div><dt>Staking network</dt><dd>{selectedChain.wagmiChain?.name ?? selectedChain.name}</dd></div></dl>
+          {selectedChain.id === "polygon" && <a className="account-button" href={`${isMainnet ? "https://etherscan.io" : "https://sepolia.etherscan.io"}/token/${stakeTokenAddress}`} target="_blank" rel="noreferrer">View token ↗</a>}
+        </AccountPanel>
+        <AccountPanel title="03 · Pick validator" icon="shield" description="Select a validator to delegate to." id="stake-validator">
+          <label><span className="sr-only">Sort validators</span><select className="account-field" aria-label="Sort validators" value={validatorSort} onChange={event => setValidatorSort(event.target.value)} disabled={busy}><option value="rank">Recommended order</option><option value="fee">Lowest commission</option></select></label>
+          <div className="account-validator-options" role="group" aria-label="Available validators">{sortedValidators.map((validator, i) => <button key={validator.address} className="account-validator-option" aria-pressed={validatorAddr === validator.address} disabled={busy} onClick={() => { setValidatorAddr(validator.address); setValidatorName(validator.name); }}>
+            <span className="account-validator-avatar" aria-hidden="true">{validator.name.slice(0, 1)}</span><span><strong>{validator.name}</strong><small>{shortId(validator.address)}</small><small>{Number.isFinite(validator.uptime) ? `${validator.uptime.toFixed(1)}% uptime` : "Validator"}</small></span><span><b>{validator.apr > 0 ? `${validator.apr.toFixed(1)}%` : "—"}</b><small>Est. APR</small><small>{validator.commission}% fee</small></span><span className="account-validator-check" aria-hidden="true">{validatorAddr === validator.address ? "✓" : "○"}</span>
+          </button>)}</div>
+          {!validators.length && <AccountEmpty>{validatorLoadError || "Loading available validators…"}</AccountEmpty>}
+          <p className="account-muted">Commission is set by each validator. A dash means measured validator APR is unavailable.</p>
+        </AccountPanel>
+        <div className="account-stack">
+          <AccountPanel title="04 · Enter amount" icon="wallet" description={`Set the amount of ${selectedChain.symbol} to stake.`} id="stake-amount">
+            <div className="account-amount-balance"><span>{address ? balance.data !== undefined ? `Balance: ${fmt(Number(formatUnits(balance.data, 18)), 4)} POL` : balance.isError ? "Balance unavailable" : "Loading balance…" : "Connect wallet for balance"}</span><button className="account-button" disabled={busy || balance.data === undefined || selectedChain.id !== "polygon"} onClick={() => setAmount(formatUnits(balance.data!, 18))}>Max</button></div>
+            <label className="account-stake-amount"><span className="sr-only">Stake amount</span><input aria-label="Stake amount" inputMode="decimal" value={amount} onChange={event => setAmount(event.target.value)} disabled={busy} /><span>{selectedChain.symbol}</span></label>
+            <p className="account-muted">≈ {Number.isFinite(usdValue) ? fmtUsd(usdValue, 2) : "—"} USD · estimated</p>
+            {amountIssue && <p role="status" className="account-amount-warning">{amountIssue}</p>}
+            {!isMainnet && <details className="account-funding"><summary>Need testnet funds?</summary><p>{FUNDING_HINTS[selectedChain.id]}</p></details>}
+          </AccountPanel>
+          <AccountPanel title="05 · Review rewards" icon="activity" description="Native yield and Canton allocations." id="stake-review">
+            <div className="account-dual-rewards"><div className="account-yield-card"><span aria-hidden="true"><AccountIcon name="stack" /></span><div><small>NATIVE VALIDATOR YIELD</small><strong>{selectedValidator?.apr ? `${selectedValidator.apr.toFixed(1)}%` : nativeApy !== null ? `${nativeApy.toFixed(1)}%` : "—"}</strong><small>Estimated APR</small></div></div><div className="account-yield-card account-yield-card--cc"><span aria-hidden="true"><AccountIcon name="coin" /></span><div><small>CANTON COIN REWARDS</small><strong>Per round</strong><small>Based on actual attribution</small></div></div></div>
+          </AccountPanel>
+          <SplitPanel compact />
+        </div>
+      </div>
+      <div className="account-stake-bottom">
+        <AccountPanel title="Transaction flow preview" icon="activity" description="You sign in your wallet. Native confirmation is recorded on Canton.">
+          <div className="account-transaction-flow"><div><AccountIcon name="wallet" /><strong>1. Approve & sign</strong><p>Approve the staking token if needed, then sign the delegation.</p></div><div><AccountIcon name="clock" /><strong>2. Wait for confirmation</strong><p>The native-chain watcher observes the confirmed staking event.</p></div><div><AccountIcon name="cube" /><strong>3. Record on Canton</strong><p>Your position and lifecycle activity are recorded on-ledger.</p></div></div>
+        </AccountPanel>
+        <div className="account-stake-submit">
+          <button className="account-button account-button--primary" disabled={busy || selectedChainOffline || !stakingUiReady || (walletsReady && (!!amountIssue || !validatorAddr))} onClick={() => { if (!walletsReady) openPicker(); else setReviewOpen(true); }}>{busy ? ctaLabel : selectedChainOffline ? "Staking watcher unavailable" : !walletsReady ? "Connect wallets to stake" : step === 5 ? "Review another stake →" : "Review & stake →"}</button>
+          <p className="account-muted">Your wallet signs. You retain custody.</p>
+          {hash && selectedChain.explorer && <a className="account-text-link" href={selectedChain.explorer.tx(hash)} target="_blank" rel="noreferrer">View transaction ↗</a>}
+        </div>
+      </div>
+      <details className="account-stake-trace" open={step > 0 || !!error}><summary>Transaction activity {step > 0 ? `· ${ctaLabel}` : ""}</summary>
         {/* Live trace terminal */}
         <Card padding={0} style={{ position: "relative", overflow: "hidden" }}>
           <div
@@ -1532,7 +1173,14 @@ export default function StakePage() {
             )}
           </div>
         </Card>
-      </div>
+      </details>
+      <dialog ref={reviewRef} className="account-stake-review" onCancel={() => setReviewOpen(false)} onClose={() => setReviewOpen(false)} aria-labelledby="stake-review-heading">
+        <header><h2 id="stake-review-heading">Review your stake</h2><button className="account-button" aria-label="Close stake review" onClick={() => setReviewOpen(false)}>×</button></header>
+        <dl className="account-definition"><div><dt>Amount</dt><dd>{amount} {selectedChain.symbol}</dd></div><div><dt>Estimated value</dt><dd>{fmtUsd(usdValue, 2)}</dd></div><div><dt>Settlement network</dt><dd>{selectedChain.wagmiChain?.name ?? selectedChain.name}</dd></div><div><dt>Validator</dt><dd>{validatorName}<small className="mono">{validatorAddr}</small></dd></div><div><dt>Unbond period</dt><dd>{unbondingLabel}</dd></div><div><dt>CC beneficiary split</dt><dd>75% delegator / 25% treasury</dd></div></dl>
+        <p className="account-muted">Your wallet will ask you to approve POL if needed, then sign the staking transaction. Network fees are shown by your wallet.</p>
+        {isMainnet && <p className="account-amount-warning">Mainnet transaction · real funds</p>}
+        <footer><button className="account-button" onClick={() => setReviewOpen(false)}>Back</button><button className="account-button account-button--primary" disabled={!walletsReady || !!amountIssue || !validatorAddr || busy || selectedChainOffline} onClick={() => { setReviewOpen(false); setPreparing(true); void handleStake().finally(() => setPreparing(false)); }}>Confirm & open wallet →</button></footer>
+      </dialog>
     </div>
   );
 }

@@ -18,6 +18,7 @@ One parametrized `docker-compose.yml`, two compose projects:
 | Compose project | `cantonstake` | `cantonstake-testnet` |
 | Env file | `.env` | `.env` + `.env.testnet` (later wins) |
 | Mode env | `NETWORK_MODE=mainnet`, `MAINNET_CONFIRMED=yes` | `NETWORK_MODE=testnet` |
+| Loop network | `mainnet` (`https://cantonloop.com`) | `devnet` (`https://devnet.cantonloop.com`) |
 | Host ports | backend 4001, frontend 3001, pg 5433, redis 6379 | backend 4002, frontend 3002, pg 5434, redis 6380 |
 | Containers | `cantonstake-*` | `cantonstake-testnet-*` |
 | Volumes | `cantonstake_pgdata` (migrated data) | `cantonstake-testnet_pgdata` (fresh, auto-migrates on boot) |
@@ -27,6 +28,10 @@ One parametrized `docker-compose.yml`, two compose projects:
 Operate them with:
 
 ```bash
+# Fast path after frontend changes: validate once and build both images in
+# parallel with independent persistent Next.js caches.
+./scripts/build-frontends.sh
+
 # mainnet (bare domain)
 docker compose -p cantonstake --env-file .env build frontend
 docker compose -p cantonstake --env-file .env up -d
@@ -37,6 +42,10 @@ docker compose -p cantonstake-testnet \
 docker compose -p cantonstake-testnet \
   --env-file .env --env-file .env.testnet up -d
 ```
+
+The paired script keeps one-off builds safe: `SKIP_FRONTEND_BUILD_CHECKS`
+defaults to `false`, so direct Compose builds still run Next.js validation.
+Only the paired workflow sets it after `npm run typecheck` succeeds.
 
 Caddy routes by hostname (`/etc/caddy/Caddyfile`): `/api/*` and
 `/loop-proxy/*` to the stack's backend port, everything else to its
@@ -55,6 +64,9 @@ into which stack serves which domain:
   per-mode frontend image (`build frontend` above), never just restart.
   `.env.testnet` pins `FRONTEND_IMAGE=cantonstake-frontend:testnet` so the
   two builds don't overwrite each other.
+- Loop: `.env` pins `NEXT_PUBLIC_LOOP_NETWORK=mainnet`; `.env.testnet`
+  overrides it with `devnet`. The two Loop environments have separate
+  accounts, credentials, party IDs and private keys.
 
 ## The interlock
 

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAccount, useSendTransaction, useWaitForTransactionReceipt, useSwitchChain } from "wagmi";
 import { parseEther } from "viem";
@@ -9,8 +10,10 @@ import { Card } from "@/components/primitives/Card";
 import { Chip } from "@/components/primitives/Chip";
 import { EmptyState } from "@/components/primitives/EmptyState";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
+import { PageMasthead } from "@/components/primitives/PageMasthead";
 import {
   fetchPositions,
+  fetchRewards,
   sweepNativeRewards,
   type PositionRow,
 } from "@/lib/api";
@@ -18,7 +21,10 @@ import { liveChains, chainById } from "@/lib/chains";
 import { adapterFor } from "@/lib/chains/index";
 import { fetchStakingParams } from "@/lib/chains/polygon";
 import { chainFromAddress } from "@/lib/chains";
-import { fmt } from "@/lib/format";
+import { fmt, fmtUsd } from "@/lib/format";
+import { usePrices } from "@/lib/prices";
+import { accountChain, positionUsd, shortId, totalPositionUsd, validatorLabel } from "@/lib/account-view";
+import { AccountEmpty, AccountLink, AccountMetric, AccountPanel, ChainBadge, LifecycleRail, StatusBadge, WalletNotice } from "@/components/account/AccountUI";
 import { lookupPositionMeta, lookupPositionChain } from "@/lib/position-chain-map";
 import { useCosmosWallet } from "@/lib/cosmos/use-cosmos-wallet";
 import { useSuiWallet } from "@/lib/sui/use-sui-wallet";
@@ -75,11 +81,7 @@ function shortContract(id: string): string {
 }
 
 function positionChain(p: PositionRow) {
-  const hint = lookupPositionChain(
-    p.argument.evmAddress,
-    p.argument.amountPol,
-  );
-  return chainFromAddress(p.argument.evmAddress, hint);
+  return accountChain(p);
 }
 
 export default function PositionsPage() {
@@ -87,146 +89,71 @@ export default function PositionsPage() {
   const cosmos = useCosmosWallet();
   const sui = useSuiWallet();
   const { switchChainAsync } = useSwitchChain();
-
-  const { data: positions = [], isLoading } = useQuery({
-    queryKey: ["positions", address],
-    queryFn: () => (address ? fetchPositions(address) : Promise.resolve([])),
-    enabled: !!address,
-    refetchInterval: 5000,
-  });
-
-  const counts = positions.reduce(
-    (acc, p) => {
-      const l = STATUS_TO_LIFECYCLE[p.argument.status];
-      if (l === "bonded") acc.bonded += 1;
-      else if (l === "unbonding") acc.unbonding += 1;
-      else if (l === "released") acc.released += 1;
-      else if (l === "cancelled") acc.cancelled += 1;
-      return acc;
-    },
-    { bonded: 0, unbonding: 0, released: 0, cancelled: 0 },
-  );
-
-  const focused =
-    positions.find((p) => p.argument.status === "Unbonding") ?? positions[0];
-
-  return (
-    <div style={{ maxWidth: 1280, margin: "0 auto", padding: "40px 22px 80px" }}>
-      <SectionLabel>§ POSITIONS · LIVE</SectionLabel>
-      <h1
-        className="display"
-        style={{ fontSize: 42, margin: "4px 0 12px", color: tokens.ink[100] }}
-      >
-        State machine, on-ledger.
-      </h1>
-      <p
-        style={{
-          fontSize: 14,
-          lineHeight: 1.6,
-          color: tokens.ink[300],
-          maxWidth: 680,
-          margin: "0 0 24px",
-        }}
-      >
-        Each position moves through a Canton-recorded lifecycle: requested,
-        bonded, unbonding, released, or cancelled.
-      </p>
-
-      {!isConnected ? (
-        <EmptyState
-          tone="warn"
-          title="Connect your wallet"
-          subtitle="Positions are scoped to your EVM address. Connect both Loop and EVM to see your live staking lifecycle."
-        />
-      ) : (
-        <>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(4,1fr)",
-              gap: 1,
-              background: tokens.hairline,
-              marginBottom: 24,
-            }}
-          >
-            {[
-              { l: "Bonded", s: "Currently earning", v: counts.bonded, a: tokens.neon },
-              { l: "Unbonding", s: "Exit in progress", v: counts.unbonding, a: tokens.warning },
-              { l: "Released", s: "Lifecycle complete", v: counts.released, a: tokens.ink[300] },
-              { l: "Cancelled", s: "Request closed", v: counts.cancelled, a: tokens.ink[500] },
-            ].map((s) => (
-              <div
-                key={s.l}
-                style={{ background: tokens.ink[900], padding: "18px 22px" }}
-              >
-                <SectionLabel>{s.l}</SectionLabel>
-                <div
-                  className="display tabular"
-                  style={{ fontSize: 36, color: s.a, marginTop: 6 }}
-                >
-                  {s.v}
-                </div>
-                <div
-                  className="mono"
-                  style={{ fontSize: 10, color: tokens.ink[400], marginTop: 6 }}
-                >
-                  {s.s}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <Card padding={0} style={{ marginBottom: 24 }}>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1.4fr 1fr 1fr 1fr 0.8fr 140px",
-                padding: "10px 22px",
-                borderBottom: `1px solid ${tokens.hairline}`,
-                gap: 12,
-              }}
-            >
-              {["Contract id", "Staked", "Lifecycle", "Bonded since", "Markers", "Actions"].map(
-                (h) => (
-                  <SectionLabel key={h}>{h}</SectionLabel>
-                ),
-              )}
-            </div>
-            {isLoading ? (
-              <div
-                className="mono"
-                style={{ padding: "40px 22px", color: tokens.ink[400], textAlign: "center" }}
-              >
-                loading positions…
-              </div>
-            ) : positions.length === 0 ? (
-              <div style={{ padding: 22 }}>
-                <EmptyState
-                  title="No positions yet"
-                  subtitle="Open the staking console to bond your first position on any supported chain."
-                />
-              </div>
-            ) : (
-              positions.map((p) => (
-                <Row
-                  key={p.contractId}
-                  p={p}
-                  cosmos={cosmos}
-                  sui={sui}
-                  switchChainAsync={switchChainAsync}
-                />
-              ))
-            )}
-          </Card>
-
-          {focused && <Timeline p={focused} />}
-        </>
-      )}
+  const { data: prices } = usePrices();
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState("all");
+  const [chainFilter, setChainFilter] = useState("all");
+  const [order, setOrder] = useState("newest");
+  const [selectedId, setSelectedId] = useState<string | null | undefined>(undefined);
+  const positionsQ = useQuery({ queryKey: ["positions", address], queryFn: () => fetchPositions(address!), enabled: !!address, refetchInterval: 5000 });
+  const rewardsQ = useQuery({ queryKey: ["rewards", address], queryFn: () => fetchRewards(address!), enabled: !!address, refetchInterval: 10_000 });
+  const positions = positionsQ.data ?? [];
+  useEffect(() => { setSelectedId(undefined); }, [address]);
+  useEffect(() => {
+    if (selectedId !== undefined || !positions.length) return;
+    const requested = new URLSearchParams(window.location.search).get("position");
+    setSelectedId(positions.find(p => p.contractId === requested)?.contractId ?? positions[0].contractId);
+  }, [positions, selectedId]);
+  const focused = positions.find(position => position.contractId === selectedId);
+  const bonded = positions.filter(p => p.argument.status === "Bonded");
+  const unbonding = positions.filter(p => p.argument.status === "Unbonding");
+  const haveData = isConnected && !!positionsQ.data && !positionsQ.isError;
+  const activeValue = haveData ? totalPositionUsd(bonded, prices) : null;
+  const exitingValue = haveData ? totalPositionUsd(unbonding, prices) : null;
+  const visible = positions.filter(p => (status === "all" || p.argument.status === status) && (chainFilter === "all" || accountChain(p).id === chainFilter)
+    && [p.contractId, p.chainMeta?.validatorAddress, p.chainMeta?.validatorShare, accountChain(p).name, accountChain(p).symbol].some(value => value?.toLowerCase().includes(search.toLowerCase())));
+  visible.sort((a, b) => order === "amount" ? Number(b.argument.amountPol) - Number(a.argument.amountPol) : (order === "oldest" ? 1 : -1) * ((Date.parse(a.argument.bondedAt ?? "") || 0) - (Date.parse(b.argument.bondedAt ?? "") || 0)));
+  const refresh = () => { void positionsQ.refetch(); void rewardsQ.refetch(); };
+  return <div className="page-shell account-page">
+    <PageMasthead index="03" section="Positions" title="Positions." accent="Your stake, your control." description="Monitor and manage your staking positions. View bonded, unbonding, and released positions and follow their lifecycle on Canton." />
+    <WalletNotice connected={isConnected} error={positionsQ.isError || rewardsQ.isError} loading={isConnected && positionsQ.isLoading} onRetry={refresh} />
+    <div className="account-metrics">
+      <AccountMetric label="Total active stake" value={activeValue === null ? "—" : fmtUsd(activeValue, 2)} detail="Estimated value of bonded positions" icon="stack" />
+      <AccountMetric label="Total unbonding" value={exitingValue === null ? "—" : fmtUsd(exitingValue, 2)} detail="Estimated value awaiting release" icon="clock" color="#bb6aff" />
+      <AccountMetric label="Bonded positions" value={haveData ? bonded.length : "—"} detail="Positions eligible for native yield" icon="cube" color="#34c6f6" />
+      <AccountMetric label="Total CC earned" value={rewardsQ.data && !rewardsQ.isError ? `${fmt(rewardsQ.data.totalUserShare, 2)} CC` : "—"} detail="Your recorded beneficiary share" icon="coin" color="#f3c442" />
     </div>
-  );
+    <div className={`account-two-col account-positions-layout${focused ? "" : " account-positions-layout--empty"}`}>
+      <AccountPanel title="Your staking positions" description="Search your positions and select one to view its details." icon="stack" action={<Link href="/stake" className="account-button">+ New stake</Link>}>
+        <div className="account-filters">
+          <label className="account-search"><span className="sr-only">Search positions</span><input className="account-field" aria-label="Search positions" placeholder="Search validator, chain, or position…" value={search} onChange={e => setSearch(e.target.value)} /></label>
+          <label><span className="sr-only">Position chain</span><select className="account-field" aria-label="Position chain" value={chainFilter} onChange={e => setChainFilter(e.target.value)}><option value="all">All chains</option>{[...new Map([...liveChains(), ...positions.map(accountChain)].map(chain => [chain.id, chain])).values()].map(chain => <option key={chain.id} value={chain.id}>{chain.id === "polygon" ? "Polygon PoS" : chain.name}</option>)}</select></label>
+          <label><span className="sr-only">Position status</span><select className="account-field" aria-label="Position status" value={status} onChange={e => setStatus(e.target.value)}><option value="all">All states</option>{["Pending", "Bonded", "Unbonding", "Released", "Cancelled"].map(state => <option key={state}>{state}</option>)}</select></label>
+          <label><span className="sr-only">Position sort order</span><select className="account-field" aria-label="Position sort order" value={order} onChange={e => setOrder(e.target.value)}><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="amount">Largest amount</option></select></label>
+        </div>
+        <div className="account-table-wrap"><table className="account-table"><thead><tr><th>Chain · validator</th><th>Amount</th><th>Est. USD</th><th>Status</th><th>Details</th></tr></thead><tbody>
+          {visible.map(position => <tr key={position.contractId} data-selected={position.contractId === selectedId}><td><ChainBadge symbol={accountChain(position).symbol} label={accountChain(position).id === "polygon" ? "Polygon PoS" : accountChain(position).name} /><small>{validatorLabel(position)}</small></td><td className="mono">{fmt(Number(position.argument.amountPol), 2)} {accountChain(position).symbol}</td><td>{positionUsd(position, prices) === null ? "—" : fmtUsd(positionUsd(position, prices)!, 2)}</td><td><StatusBadge status={position.argument.status} /></td><td><button className="account-button" aria-pressed={position.contractId === selectedId} aria-label={`View position ${shortId(position.contractId)}`} onClick={() => setSelectedId(position.contractId)}>View →</button></td></tr>)}
+        </tbody></table></div>
+        {!visible.length && <AccountEmpty>{!isConnected ? "Connect your wallet to view and manage your positions." : positionsQ.isLoading ? "Loading positions…" : positionsQ.isError ? "Positions are temporarily unavailable." : positions.length ? "No positions match your filters." : <>No positions yet.<AccountLink href="/stake">Create your first position</AccountLink></>}</AccountEmpty>}
+        <div className="account-results"><span>Showing {visible.length} of {positions.length} positions</span><small>USD values are indicative.</small></div>
+      </AccountPanel>
+      <div className="account-stack account-position-details">
+        <AccountPanel title="Position details" icon="cube" action={focused && <button className="account-button" aria-label="Close position details" onClick={() => setSelectedId(null)}>×</button>}>
+          {focused ? <>
+            <div className="account-position-heading"><ChainBadge symbol={accountChain(focused).symbol} label={accountChain(focused).id === "polygon" ? "Polygon PoS" : accountChain(focused).name} /><StatusBadge status={focused.argument.status} /></div>
+            <div className="account-position-amount"><strong>{fmt(Number(focused.argument.amountPol), 2)} {accountChain(focused).symbol}</strong><span className="account-muted">{positionUsd(focused, prices) === null ? "—" : `${fmtUsd(positionUsd(focused, prices)!, 2)} estimated value`}</span></div>
+            <div className="account-position-lifecycle"><h3>Staking lifecycle</h3><LifecycleRail status={focused.argument.status} /></div>
+            <dl className="account-definition"><div><dt>Position ID</dt><dd className="mono" title={focused.contractId}>{shortId(focused.contractId, 14)}</dd></div><div><dt>Validator</dt><dd title={focused.chainMeta?.validatorAddress ?? ""}>{validatorLabel(focused)}</dd></div><div><dt>Bonded</dt><dd>{focused.argument.bondedAt ? new Date(focused.argument.bondedAt).toLocaleString() : "Awaiting bond"}</dd></div><div><dt>Activity markers</dt><dd>{focused.argument.markersEmitted}</dd></div><div><dt>CC beneficiary split</dt><dd>75% delegator / 25% treasury</dd></div></dl>
+            <div className="account-position-actions"><PositionActions key={focused.contractId} p={focused} cosmos={cosmos} sui={sui} switchChainAsync={switchChainAsync} /><AccountLink href="/rewards">View rewards</AccountLink></div>
+            <details className="account-position-proof"><summary>View recorded lifecycle</summary><Timeline p={focused} /></details>
+          </> : <><AccountEmpty>{positions.length ? "Select a position to inspect its lifecycle and available actions." : "Your selected position and its actions will appear here."}</AccountEmpty><LifecycleRail /></>}
+        </AccountPanel>
+      </div>
+    </div>
+  </div>;
 }
 
-function Row({
+function PositionActions({
   p,
   cosmos,
   sui,
@@ -253,8 +180,8 @@ function Row({
 
   // Get position metadata (chain + validator)
   const meta = lookupPositionMeta(p.argument.evmAddress, p.argument.amountPol);
-  const chainId = meta?.chainId ?? chain.id;
-  const validator = meta?.validator;
+  const chainId = chain.id;
+  const validator = p.chainMeta?.validatorAddress ?? meta?.validator;
 
   // Determine available actions
   const canSweep = lifecycle === "bonded";
@@ -485,31 +412,6 @@ function Row({
   const isPending = sweepMut.isPending;
 
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "1.4fr 1fr 1fr 1fr 0.8fr 140px",
-        padding: "14px 22px",
-        borderBottom: `1px solid ${tokens.hairline}`,
-        alignItems: "center",
-        gap: 12,
-      }}
-    >
-      <div className="mono tabular" style={{ fontSize: 11.5, color: tokens.ink[100] }}>
-        {shortContract(p.contractId)}
-      </div>
-      <div className="mono tabular" style={{ fontSize: 13, color: tokens.ink[100] }}>
-        {fmt(parseFloat(p.argument.amountPol), 2)} {chain.symbol}
-      </div>
-      <Chip color={color} dot={lifecycle === "bonded" || lifecycle === "unbonding"}>
-        {lifecycle}
-      </Chip>
-      <div className="mono" style={{ fontSize: 11, color: tokens.ink[300] }}>
-        {relativeTime(p.argument.bondedAt)}
-      </div>
-      <div className="mono tabular" style={{ fontSize: 11, color: tokens.cc }}>
-        {p.argument.markersEmitted}
-      </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         {hasActions ? (
           <div style={{ display: "flex", gap: 4 }}>
@@ -580,7 +482,6 @@ function Row({
           </span>
         ) : null}
       </div>
-    </div>
   );
 }
 

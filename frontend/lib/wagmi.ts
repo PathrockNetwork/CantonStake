@@ -45,7 +45,7 @@ export const wagmiConfig = createConfig({
   transports: {
     [polygonSettlementChain.id]: http(
       process.env.NEXT_PUBLIC_SETTLEMENT_RPC_URL ||
-        "https://ethereum-sepolia-rpc.publicnode.com",
+        polygonSettlementChain.rpcUrls.default.http[0],
     ),
     [polygonAmoy.id]: http(
       process.env.NEXT_PUBLIC_AMOY_RPC_URL ||

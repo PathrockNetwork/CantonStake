@@ -30,9 +30,48 @@ function modeDefault<T>(envKey: string, testnet: T, mainnet: T): T {
   return isMainnet ? mainnet : testnet;
 }
 
+// --- Chain wall -------------------------------------------------------------
+//
+// ENABLED_CHAINS is the staking whitelist for this deployment. A chain
+// outside the wall is rejected at POST /api/requests, excluded from
+// /api/chains/stats and validator scoring, and its watcher never starts.
+// Default is polygon only: it is the one chain with a verified end-to-end
+// path in BOTH modes (docs/STAKING_INTEGRATION_ROADMAP.md); the rest are
+// research-verified but stay behind the wall until their adapters are
+// production-grade. Unknown ids in the env are ignored rather than
+// fatal so a typo cannot brick startup.
+
+const KNOWN_CHAINS = [
+  "polygon",
+  "monad",
+  "cosmos",
+  "celestia",
+  "osmosis",
+  "sui",
+  "aptos",
+  "polkadot",
+  "bnb",
+  "solana",
+] as const;
+
+const parsedEnabledChains = optional("ENABLED_CHAINS", "polygon")
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter((s): s is (typeof KNOWN_CHAINS)[number] =>
+    (KNOWN_CHAINS as readonly string[]).includes(s)
+  );
+
+if (parsedEnabledChains.length === 0) {
+  throw new Error(
+    "ENABLED_CHAINS matched no known chain — refusing to start with an empty wall"
+  );
+}
+
 export const config = {
   networkMode: (isMainnet ? "mainnet" : "testnet") as "testnet" | "mainnet",
   mainnetConfirmed: optional("MAINNET_CONFIRMED", "no").toLowerCase() === "yes",
+
+  enabledChains: new Set<string>(parsedEnabledChains),
 
   port: Number(optional("PORT", "4000")),
   logLevel: optional("LOG_LEVEL", "info"),

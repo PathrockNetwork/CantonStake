@@ -1,473 +1,82 @@
 "use client";
 
+import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { useAccount } from "wagmi";
-import { Btn } from "@/components/primitives/Btn";
-import { Card } from "@/components/primitives/Card";
-import { Chip } from "@/components/primitives/Chip";
-import { EmptyState } from "@/components/primitives/EmptyState";
-import { SectionLabel } from "@/components/primitives/SectionLabel";
-import { StatusDot } from "@/components/primitives/StatusDot";
-import { IconExternal } from "@/components/icons";
-import {
-  fetchPositions,
-  fetchRecentRounds,
-  fetchRewards,
-  type PositionRow,
-} from "@/lib/api";
+import { PageMasthead } from "@/components/primitives/PageMasthead";
+import { AccountEmpty, AccountIcon, AccountLink, AccountMetric, AccountPanel, ChainBadge, LifecycleRail, PrivacyPanel, SplitPanel, StatusBadge, WalletNotice } from "@/components/account/AccountUI";
+import { fetchPositions, fetchRecentRounds, fetchRewards, type PositionRow } from "@/lib/api";
+import { accountChain, accountEvents, shortId, totalPositionUsd, validatorLabel } from "@/lib/account-view";
 import { fmt, fmtUsd } from "@/lib/format";
-import { useCantonWallet, useLoopHoldings } from "@/lib/canton";
-import { chainFromAddress } from "@/lib/chains";
 import { usePrices } from "@/lib/prices";
-import { lookupPositionChain } from "@/lib/position-chain-map";
-import { tokens } from "@/lib/tokens";
-
-/**
- * Dashboard — ported from handoff/prototype/redesign/screens.jsx (`Dashboard`).
- *
- * Stat row + last-CC-round + positions table, wired to real
- * `fetchPositions` + `fetchRewards`. The "ourMarkers" / "ourShare" /
- * "mintedCC" numbers in the Last Round card are derived from totals
- * since no per-round endpoint exists yet (PORT_GUIDE §Step 7).
- */
-
-function shortContract(id: string): string {
-  if (id.length <= 18) return id;
-  return `${id.slice(0, 12)}...${id.slice(-4)}`;
-}
-
-function shortAddr(addr: string): string {
-  return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
-}
-
-function relativeTime(iso?: string): string {
-  if (!iso) return "—";
-  const ms = Date.now() - new Date(iso).getTime();
-  if (ms < 60_000) return `${Math.floor(ms / 1000)}s`;
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h`;
-  return `${Math.floor(ms / 86_400_000)}d`;
-}
-
-function chainOf(p: PositionRow) {
-  const hint = lookupPositionChain(
-    p.argument.evmAddress,
-    p.argument.amountPol,
-  );
-  return chainFromAddress(p.argument.evmAddress, hint);
-}
+import { liveChains } from "@/lib/chains";
+import { useRoundCountdown } from "@/lib/use-round-countdown";
 
 export default function DashboardPage() {
   const { address, isConnected } = useAccount();
-  const { partyId } = useCantonWallet();
-  const { ccBalance } = useLoopHoldings();
   const { data: prices } = usePrices();
-  const polPriceUsd = prices?.polUsd ?? 0;
-  const ccPriceUsd = prices?.ccUsd ?? 0;
+  const { mm, ss } = useRoundCountdown();
+  const positionsQ = useQuery({ queryKey: ["dashboard-positions", address], queryFn: () => fetchPositions(address!), enabled: !!address, refetchInterval: 10_000 });
+  const rewardsQ = useQuery({ queryKey: ["dashboard-rewards", address], queryFn: () => fetchRewards(address!), enabled: !!address, refetchInterval: 10_000 });
+  const roundsQ = useQuery({ queryKey: ["dashboard-rounds", address], queryFn: () => fetchRecentRounds(address, 8), enabled: !!address, refetchInterval: 10_000 });
+  const positions = positionsQ.data ?? [];
+  const active = positions.filter(p => !["Released", "Cancelled"].includes(p.argument.status));
+  const rewards = rewardsQ.isError ? undefined : rewardsQ.data;
+  const hasPositions = isConnected && !!positionsQ.data && !positionsQ.isError;
+  const staked = hasPositions ? totalPositionUsd(active, prices) : null;
+  const events = accountEvents(positions, roundsQ.data?.rounds ?? []);
+  const latest = roundsQ.data?.rounds[0];
+  const refresh = () => { void positionsQ.refetch(); void rewardsQ.refetch(); void roundsQ.refetch(); };
+  const priceNote = prices?.source.pol === "coingecko" ? "Estimated USD value" : "Indicative USD value";
 
-  const positionsQ = useQuery({
-    queryKey: ["dashboard-positions", address],
-    queryFn: () => (address ? fetchPositions(address) : Promise.resolve([])),
-    enabled: !!address,
-    refetchInterval: 10_000,
-  });
-  const rewardsQ = useQuery({
-    queryKey: ["dashboard-rewards", address],
-    queryFn: () => (address ? fetchRewards(address) : null),
-    enabled: !!address,
-    refetchInterval: 10_000,
-  });
-  const roundsQ = useQuery({
-    queryKey: ["dashboard-rounds", address],
-    queryFn: () => fetchRecentRounds(address ?? undefined, 1),
-    enabled: !!address,
-    refetchInterval: 10_000,
-  });
-
-  if (!isConnected) {
-    return (
-      <div style={{ maxWidth: 1280, margin: "0 auto", padding: "40px 22px 80px" }}>
-        <SectionLabel>§ DASHBOARD</SectionLabel>
-        <h1
-          className="display"
-          style={{ fontSize: 42, margin: "4px 0 24px", color: tokens.ink[100] }}
-        >
-          Live staking dashboard.
-        </h1>
-        <EmptyState
-          tone="warn"
-          title="Connect your wallet"
-          subtitle="Dashboard data is scoped to your EVM + Loop identities. Connect both to see your live staking activity."
-        />
-      </div>
-    );
-  }
-
-  const positions = (positionsQ.data ?? []).filter(
-    (p) => p.argument.status !== "Released" && p.argument.status !== "Cancelled",
-  );
-  const rewards = rewardsQ.data;
-  const totalBondedPol = rewards?.totalBondedPol ?? 0;
-  const totalCc = rewards?.totalUserShare ?? 0;
-  const rewardEvents = Math.max(1, rewards?.rewardEventCount ?? 0);
-  const ccPerDay = ((rewards?.totalUserShare ?? 0) / rewardEvents) * 144;
-  const ccPerDayUsd = ccPerDay * ccPriceUsd;
-  const nativePerDay =
-    ((rewards?.totalUserPayoutPol ?? 0) /
-      Math.max(1, rewards?.rewardSweepCount ?? 0)) *
-    144;
-  const nativePerDayUsd = nativePerDay * polPriceUsd;
-
-  // Blended APY = native staking yield + CC bonus, computed from this user's
-  // observed flows. Falls back to "—" until enough data has accrued (one full
-  // sweep + reward event).
-  const stakedUsd = totalBondedPol * polPriceUsd;
-  const nativeApy = stakedUsd > 0 ? (nativePerDayUsd * 365) / stakedUsd : 0;
-  const ccApy = stakedUsd > 0 ? (ccPerDayUsd * 365) / stakedUsd : 0;
-  const blendedApy = nativeApy + ccApy;
-  const hasYield = stakedUsd > 0 && (rewards?.rewardSweepCount ?? 0) > 0;
-
-  // Group positions by chain so the stat sub honestly reflects multi-chain
-  // staking instead of summing values across chains as if they were all POL.
-  const positionsByChainSymbol = positions.reduce<Record<string, number>>(
-    (acc, p) => {
-      const sym = chainOf(p).symbol;
-      acc[sym] = (acc[sym] ?? 0) + parseFloat(p.argument.amountPol);
-      return acc;
-    },
-    {},
-  );
-  const positionsBreakdown = Object.entries(positionsByChainSymbol)
-    .map(([sym, total]) => `${fmt(total, 2)} ${sym}`)
-    .join(" · ");
-
-  const stats = [
-    {
-      label: "Total Staked",
-      value: fmtUsd(stakedUsd, 2),
-      sub: `${positions.length} position${positions.length === 1 ? "" : "s"}${positionsBreakdown ? ` · ${positionsBreakdown}` : ""}`,
-      accent: tokens.ink[100],
-    },
-    {
-      label: ccBalance !== null ? "CC balance · Loop" : "CC earned",
-      value: ccBalance !== null ? fmt(ccBalance, 1) : fmt(totalCc, 1),
-      unit: "CC",
-      sub:
-        ccBalance !== null
-          ? `wallet · ≈ ${fmtUsd(ccBalance * ccPriceUsd)} · CC/USD $${ccPriceUsd.toFixed(2)}`
-          : `≈ ${fmtUsd(totalCc * ccPriceUsd)} · CC/USD $${ccPriceUsd.toFixed(2)}`,
-      accent: tokens.cc,
-    },
-    {
-      label: "24h rewards",
-      value: fmtUsd(ccPerDayUsd + nativePerDayUsd, 2),
-      sub: `● ${fmt(ccPerDay, 2)} CC  ● ${fmtUsd(nativePerDayUsd, 2)} native`,
-      accent: tokens.ink[100],
-    },
-    {
-      label: "Blended APY",
-      value: hasYield ? `${(blendedApy * 100).toFixed(1)}%` : "—",
-      sub: hasYield
-        ? `${(nativeApy * 100).toFixed(1)}% native + ${(ccApy * 100).toFixed(1)}% CC bonus`
-        : "needs ≥1 sweep + reward event",
-      accent: tokens.neon,
-    },
-  ];
-
-  // "Last CC round" summary — pulled from /api/rewards/rounds
-  const latestRound = roundsQ.data?.rounds[0];
-  const ourShare = latestRound?.userTrafficSharePct ?? null;
-  const lastRound = latestRound
-    ? {
-        id: latestRound.roundNumber,
-        minted: Number(latestRound.totalCcMinted),
-        ourMarkers: positions.reduce((s, p) => s + p.argument.markersEmitted, 0),
-        ourShare: ourShare ?? 0,
-        yourCc: Number(latestRound.userCcAttributed ?? "0") * 0.75,
-      }
-    : null;
-
-  return (
-    <div style={{ maxWidth: 1280, margin: "0 auto", padding: "40px 22px 80px" }}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "flex-end",
-          justifyContent: "space-between",
-          marginBottom: 32,
-        }}
-      >
-        <div>
-          <div
-            className="mono"
-            style={{
-              fontSize: 10.5,
-              letterSpacing: ".18em",
-              color: tokens.ink[400],
-              textTransform: "uppercase",
-              marginBottom: 6,
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-            }}
-          >
-            <StatusDot /> FEATURED APP · NETWORK SHARE{" "}
-            {ourShare !== null ? `${ourShare.toFixed(2)}%` : "—"}
-          </div>
-          <h1
-            className="display"
-            style={{ fontSize: 48, margin: "0 0 6px", color: tokens.ink[100] }}
-          >
-            Live staking dashboard.
-          </h1>
-          <div className="mono" style={{ fontSize: 11, color: tokens.ink[400] }}>
-            Loop party {partyId ? `${partyId.slice(0, 16)}...` : "—"} · EVM wallet{" "}
-            {address ? shortAddr(address) : "—"} · Self-custody · keys never
-            leave your wallet
-          </div>
-        </div>
-      </div>
-
-      {/* Stat row */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(4,1fr)",
-          gap: 1,
-          background: tokens.hairline,
-          marginBottom: 24,
-        }}
-      >
-        {stats.map((s) => (
-          <div
-            key={s.label}
-            style={{ background: tokens.ink[900], padding: "22px 22px 24px" }}
-          >
-            <SectionLabel>{s.label}</SectionLabel>
-            <div
-              className="display tabular"
-              style={{
-                fontSize: 38,
-                color: s.accent,
-                marginTop: 8,
-                lineHeight: 1,
-              }}
-            >
-              {s.value}
-              {s.unit && (
-                <span
-                  className="mono"
-                  style={{ fontSize: 13, color: tokens.ink[400], marginLeft: 8 }}
-                >
-                  {s.unit}
-                </span>
-              )}
-            </div>
-            <div
-              className="mono"
-              style={{ fontSize: 10.5, color: tokens.ink[400], marginTop: 10 }}
-            >
-              {s.sub}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Last CC round summary */}
-      {lastRound ? (
-        <Card
-          padding={0}
-          style={{ marginBottom: 24, position: "relative", overflow: "hidden" }}
-        >
-          <div
-            style={{
-              padding: "18px 22px",
-              borderBottom: `1px solid ${tokens.hairline}`,
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-            }}
-          >
-            <div>
-              <SectionLabel>
-                § Last CC round · #{lastRound.id.toLocaleString()}
-              </SectionLabel>
-              <div
-                className="display"
-                style={{ fontSize: 22, color: tokens.ink[100], marginTop: 2 }}
-              >
-                {latestRound?.relativeTime ?? "Round closed recently."}
-              </div>
-            </div>
-            <Chip color={tokens.cc} dot>
-              {latestRound?.status === "completed" ? "MINTED" : (latestRound?.status ?? "—").toUpperCase()}
-            </Chip>
-          </div>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(4,1fr)",
-              gap: 1,
-              background: tokens.hairline,
-            }}
-          >
-            {[
-              {
-                l: "CC minted (round)",
-                v: `${fmt(lastRound.minted, 1)} CC`,
-                a: tokens.cc,
-              },
-              { l: "Our markers", v: lastRound.ourMarkers, a: tokens.neon },
-              {
-                l: "Our share",
-                v:
-                  ourShare !== null
-                    ? `${ourShare.toFixed(2)}%`
-                    : "—",
-                a: tokens.ink[100],
-              },
-              {
-                l: "Your CC (75%)",
-                v: `+ ${fmt(lastRound.yourCc, 2)}`,
-                a: tokens.cc,
-              },
-            ].map((s) => (
-              <div
-                key={s.l}
-                style={{ padding: "16px 22px", background: tokens.ink[900] }}
-              >
-                <SectionLabel>{s.l}</SectionLabel>
-                <div
-                  className="display tabular"
-                  style={{ fontSize: 22, color: s.a, marginTop: 4 }}
-                >
-                  {s.v}
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
-      ) : null}
-
-      {/* Positions table */}
-      <Card padding={0}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            padding: "16px 22px",
-            borderBottom: `1px solid ${tokens.hairline}`,
-          }}
-        >
-          <div>
-            <div className="display" style={{ fontSize: 22, color: tokens.ink[100] }}>
-              Active positions
-            </div>
-            <div
-              className="mono"
-              style={{ fontSize: 10.5, color: tokens.ink[400], marginTop: 2 }}
-            >
-              {positions.length} live position{positions.length === 1 ? "" : "s"} ·
-              Polygon Amoy
-            </div>
-          </div>
-          <Btn href="/stake" icon={<span style={{ fontSize: 14 }}>+</span>}>
-            Stake new
-          </Btn>
-        </div>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1.4fr 1fr .8fr 1fr 1fr 1fr",
-            gap: 12,
-            padding: "10px 22px",
-            borderBottom: `1px solid ${tokens.hairline}`,
-          }}
-        >
-          {[
-            "Contract id · validator",
-            "Staked",
-            "Lifecycle",
-            "Markers",
-            "Bonded",
-            "Status",
-          ].map((h) => (
-            <SectionLabel key={h}>{h}</SectionLabel>
-          ))}
-        </div>
-        {positionsQ.isLoading ? (
-          <div
-            className="mono"
-            style={{
-              padding: "40px 22px",
-              color: tokens.ink[400],
-              textAlign: "center",
-            }}
-          >
-            loading positions…
-          </div>
-        ) : positions.length === 0 ? (
-          <div style={{ padding: 22 }}>
-            <EmptyState
-              title="No active positions"
-              subtitle="Open the staking console to bond your first position on any supported chain."
-            />
-          </div>
-        ) : (
-          positions.map((p) => <DashRow key={p.contractId} p={p} />)
-        )}
-      </Card>
+  return <div className="page-shell account-page">
+    <PageMasthead index="01" section="Dashboard" title="Main dashboard." accent="Everything in one place." description="Self-custodial staking on the Canton Network. Follow your positions, native validator yield, and Canton Coin rewards in one place." />
+    <WalletNotice connected={isConnected} error={positionsQ.isError || rewardsQ.isError || roundsQ.isError} loading={isConnected && positionsQ.isLoading} onRetry={refresh} />
+    <div className="account-metrics">
+      <AccountMetric label="Total staked value" value={staked === null ? "—" : fmtUsd(staked, 2)} detail={priceNote} icon="stack" />
+      <AccountMetric label="Native yield paid" value={rewards ? `${fmt(rewards.totalUserPayoutPol, 2)} POL` : "—"} detail="Recorded net native payouts" icon="stack" color="#b05cff" />
+      <AccountMetric label="Canton Coin rewards" value={rewards ? `${fmt(rewards.totalUserShare, 2)} CC` : "—"} detail="Your recorded beneficiary share" icon="coin" color="#f3c442" />
+      <AccountMetric label="Active positions" value={hasPositions ? active.length : "—"} detail="Across your supported chains" icon="cube" color="#38ccf6" />
     </div>
-  );
+    <div className="account-two-col">
+      <AccountPanel title="Staking positions" description="Your active and historical staking positions." icon="stack" action={<Link className="account-button" href="/stake">+ New stake</Link>}>
+        <div className="account-table-wrap"><table className="account-table"><thead><tr><th>Chain · validator</th><th>Amount staked</th><th>Status</th><th>Markers</th><th><span className="sr-only">Details</span></th></tr></thead>
+          <tbody>{positions.slice(0, 5).map(p => <DashboardRow key={p.contractId} position={p} />)}</tbody></table></div>
+        {!positions.length && <AccountEmpty>{!isConnected ? "Connect your wallet to view your staking positions." : positionsQ.isError ? "Positions could not be loaded." : positionsQ.isLoading ? "Loading positions…" : <>Your first position starts here.<AccountLink href="/stake">Start staking</AccountLink></>}</AccountEmpty>}
+        {positions.length > 0 && <div className="account-results"><span>Showing {Math.min(positions.length, 5)} of {positions.length} positions</span><AccountLink href="/positions">View all positions</AccountLink></div>}
+      </AccountPanel>
+      <div className="account-stack">
+        <AccountPanel title="Dual-yield rewards" icon="activity" description={`Next scheduled round in ${mm}m ${ss}s`}>
+          <div className="account-dual-rewards">
+            <div className="account-yield-card"><span aria-hidden="true"><AccountIcon name="stack" /></span><div><small>NATIVE VALIDATOR YIELD</small><strong>{rewards ? `${fmt(rewards.totalUserPayoutPol, 2)} POL` : "—"}</strong><small>Net native rewards recorded for your positions.</small></div></div>
+            <div className="account-yield-card account-yield-card--cc"><span aria-hidden="true"><AccountIcon name="coin" /></span><div><small>CANTON COIN REWARDS</small><strong>{rewards ? `${fmt(rewards.totalUserShare, 2)} CC` : "—"}</strong><small>CC attributed through Canton reward rounds.</small></div></div>
+          </div><AccountLink href="/rewards">View rewards</AccountLink>
+        </AccountPanel>
+        <SplitPanel compact />
+      </div>
+    </div>
+    <div className="account-dashboard-bottom">
+      <AccountPanel title="Supported chains" icon="link">
+        {liveChains().map(chain => <Link className="account-network-card" href="/stake" key={chain.id}><ChainBadge symbol={chain.symbol} label={chain.id === "polygon" ? "Polygon PoS" : chain.name} /><StatusBadge status="Live" /></Link>)}
+        <p className="account-muted">More chains coming soon.<br />One staking lifecycle on Canton.</p>
+      </AccountPanel>
+      <div className="account-stack">
+        <AccountPanel title="Staking lifecycle" description="From your request to release." icon="cube"><LifecycleRail /></AccountPanel>
+        <PrivacyPanel compact />
+      </div>
+      <AccountPanel title="Recent activity" icon="activity" action={<AccountLink href="/analytics">View all</AccountLink>}>
+        {events.length ? <ol className="account-activity-list">{events.slice(0, 4).map(event => <li key={event.id}><time dateTime={event.time}>{new Date(event.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time><div><strong>{event.title}</strong><p>{event.detail}</p></div></li>)}</ol> : <AccountEmpty>{isConnected ? "No recorded activity for this account yet." : "Your recorded activity appears here after connecting."}</AccountEmpty>}
+      </AccountPanel>
+    </div>
+    {latest && <AccountPanel title={`Latest reward round · #${latest.roundNumber.toLocaleString()}`} icon="coin" className="account-latest-round" action={<StatusBadge status={latest.status} />}>
+      <dl className="account-definition"><div><dt>Completed</dt><dd>{latest.relativeTime}</dd></div><div><dt>CC minted across the round</dt><dd>{fmt(Number(latest.totalCcMinted), 2)} CC</dd></div><div><dt>Your CC attributed before split</dt><dd>{latest.userCcAttributed === null ? "—" : `${fmt(Number(latest.userCcAttributed), 2)} CC`}</dd></div></dl>
+    </AccountPanel>}
+  </div>;
 }
 
-function DashRow({ p }: { p: PositionRow }) {
-  const isBonded = p.argument.status === "Bonded";
-  const lifecycleColor = isBonded ? tokens.neon : tokens.warning;
-  return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "1.4fr 1fr .8fr 1fr 1fr 1fr",
-        gap: 12,
-        padding: "16px 22px",
-        borderBottom: `1px solid ${tokens.hairline}`,
-        alignItems: "center",
-      }}
-    >
-      <div>
-        <div className="mono tabular" style={{ fontSize: 12, color: tokens.ink[100] }}>
-          {shortContract(p.contractId)}
-        </div>
-        <div
-          className="mono"
-          style={{ fontSize: 10.5, color: tokens.ink[400], marginTop: 2 }}
-        >
-          {chainOf(p).name} · {relativeTime(p.argument.bondedAt)}
-        </div>
-      </div>
-      <div className="mono tabular" style={{ fontSize: 14, color: tokens.ink[100] }}>
-        {fmt(parseFloat(p.argument.amountPol), 2)}{" "}
-        <span style={{ color: tokens.ink[400], fontSize: 10 }}>
-          {chainOf(p).symbol}
-        </span>
-      </div>
-      <Chip color={lifecycleColor} dot>
-        {p.argument.status.toLowerCase()}
-      </Chip>
-      <div className="mono tabular" style={{ fontSize: 12, color: tokens.cc }}>
-        {p.argument.markersEmitted}
-      </div>
-      <div className="mono" style={{ fontSize: 11, color: tokens.ink[300] }}>
-        {relativeTime(p.argument.bondedAt)} ago
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <span className="mono" style={{ fontSize: 10.5, color: tokens.ink[300] }}>
-          on-ledger
-        </span>
-        <IconExternal size={11} color={tokens.ink[400]} />
-      </div>
-    </div>
-  );
+function DashboardRow({ position: p }: { position: PositionRow }) {
+  const chain = accountChain(p);
+  return <tr><td><ChainBadge symbol={chain.symbol} label={chain.id === "polygon" ? "Polygon PoS" : chain.name} /><small title={p.contractId}>{validatorLabel(p) !== "—" ? validatorLabel(p) : shortId(p.contractId)}</small></td>
+    <td className="mono">{fmt(Number(p.argument.amountPol), 2)} {chain.symbol}</td><td><StatusBadge status={p.argument.status} /></td><td className="mono">{p.argument.markersEmitted}</td>
+    <td><Link href={`/positions?position=${encodeURIComponent(p.contractId)}`} className="account-text-link" aria-label={`View position ${shortId(p.contractId)}`}>Details →</Link></td></tr>;
 }

@@ -41,3 +41,9 @@ coverage.json
 
 # tool caches
 .fastembed_cache/
+
+# local design references and generated media
+/ChatGPT Image*.png
+/ref/
+/generated_video.mp4
+/848abccd-1962-41d7-9e75-1b5d41acf762.png

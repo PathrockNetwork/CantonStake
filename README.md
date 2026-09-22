@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="frontend/public/brand-mark.png" alt="CantonStake" width="144" />
+
 # CantonStake
 
 **Stake any chain. Earn on Canton.**
@@ -103,7 +105,9 @@ The `/rewards` page surfaces an Anthropic-powered live commentary on the current
 `/portfolio` aggregates delegations across every adapter into one table, with bonded/unbonding counts, USD totals, and per-row source tags. A `stub` tag means that adapter's live fetch returned nothing — it is shown, not hidden, so an inactive chain never masquerades as an empty portfolio. Refreshes every 30 seconds.
 
 ### Loop wallet integration
-Browser flow via `@fivenorth/loop-sdk` for Canton party identity. Bypasses Loop devnet's CORS allowlist via a Fastify reverse proxy at `/loop-proxy/*` so dev origins work without fivenorth-side allowlisting.
+Browser flow via `@fivenorth/loop-sdk` for Canton party identity. Deployed origins connect directly to Loop so ticket metadata retains the originating dApp. A Fastify reverse proxy remains available at `/loop-proxy/*` for local origins that Loop's CORS policy does not allow.
+
+The two deployments use separate Loop environments: CantonStake mainnet connects to `https://cantonloop.com`, while CantonStake testnet connects to `https://devnet.cantonloop.com`. Their accounts, party IDs and private keys are independent.
 
 ### Multi-wallet picker
 A single modal connects Loop, MetaMask/Rabby/Brave/Frame (injected), Coinbase Wallet, Safe, WalletConnect, Keplr, and any Sui wallet via dapp-kit. Top-nav chips trigger the picker globally via React context.
@@ -266,22 +270,18 @@ sequenceDiagram
 sequenceDiagram
     actor User
     participant FE as Frontend
-    participant Proxy as Backend /loop-proxy
     participant LoopApi as devnet.cantonloop.com
     participant LMobile as Loop Mobile Wallet
     participant BE as Backend API
 
     User->>FE: Click Connect Loop
-    FE->>Proxy: POST /api/v1/.connect/pair/tickets (origin stripped)
-    Proxy->>LoopApi: same request, server-to-server
-    LoopApi-->>Proxy: { ticket_id }
-    Proxy-->>FE: { ticket_id }
-    FE->>FE: Open WS wss://.../loop-proxy/api/v1/.connect/pair/ws/{tid}
+    FE->>LoopApi: POST /api/v1/.connect/pair/tickets
+    LoopApi-->>FE: { ticket_id, auth_token }
+    FE->>LoopApi: Open authenticated ticket WebSocket
     FE->>User: Show QR code
     User->>LMobile: Scan QR
     LMobile->>LoopApi: handshake_accept
-    LoopApi->>Proxy: WS message
-    Proxy-->>FE: WS message
+    LoopApi-->>FE: WS handshake_accept
     FE->>FE: localStorage persists partyId
     FE->>BE: POST /api/users (cantonPartyId, evmAddress)
 ```
@@ -599,7 +599,7 @@ per-chain table and the known mainnet gaps.
 | `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | WalletConnect Cloud project id | empty |
 | `NEXT_PUBLIC_LOOP_NETWORK` | `local` / `devnet` / `mainnet` | `devnet` |
 | `NEXT_PUBLIC_LOOP_SDK_ENABLED` | Real Loop SDK on/off | `true` |
-| `NEXT_PUBLIC_LOOP_USE_BACKEND_PROXY` | Route Loop API via `/loop-proxy` | `true` |
+| `NEXT_PUBLIC_LOOP_USE_BACKEND_PROXY` | Route Loop API via `/loop-proxy` for unallowlisted dev origins | `false` |
 | `NEXT_PUBLIC_LOOP_API_URL` | Override the SDK's apiUrl | empty |
 | `NEXT_PUBLIC_LOOP_WALLET_URL` | Override the SDK's walletUrl | empty |
 | `NEXT_PUBLIC_CC_USD` | CC price fallback | `0.16` |
@@ -667,7 +667,7 @@ per-chain table and the known mainnet gaps.
 | Loop identity | Passkey/biometric handshake via `@fivenorth/loop-sdk` |
 | EVM auth | Wallet signature (`personal_sign` / EIP-712 for permits) |
 | Cosmos auth | `MsgGrant` Authz with bounded scope + expiry |
-| CORS bypass | `/loop-proxy` Fastify reverse proxy with stripped Origin/Referer |
+| Optional CORS fallback | `/loop-proxy` Fastify reverse proxy for unallowlisted local origins |
 | Secrets | `.env` files; recommended `fly secrets` / Doppler in prod |
 
 ---

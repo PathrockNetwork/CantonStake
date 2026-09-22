@@ -241,7 +241,7 @@ export async function fetchChainStats(): Promise<{ chains: ChainStat[] }> {
 }
 
 export async function fetchRewardHealth(): Promise<RewardHealth> {
-  const res = await fetch(`${BACKEND_URL}/api/rewards/health`);
+  const res = await fetch(`${BACKEND_URL}/api/rewards/health`, { signal: AbortSignal.timeout(8_000) });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -255,6 +255,7 @@ export async function fetchAnalyticsMarkers(
   if (address) params.set("address", address);
   const res = await fetch(
     `${BACKEND_URL}/api/analytics/markers?${params.toString()}`,
+    { signal: AbortSignal.timeout(8_000) },
   );
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -495,4 +496,30 @@ export async function fetchValidatorScores(
   const res = await fetch(`${BACKEND_URL}/api/validators/scores/${chain}`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+export async function fetchProtocolSummary(): Promise<import("./protocol-summary").ProtocolSummary> {
+  const response = await fetch(`${BACKEND_URL}/api/protocol/summary`, { signal: AbortSignal.timeout(10_000) });
+  if (!response.ok) throw new Error("Position totals unavailable");
+  return response.json();
+}
+
+export interface RewardHistoryEvent {
+  id: string;
+  kind: "native" | "cc";
+  time: string;
+  amount: string;
+  symbol: string;
+  positionId: string;
+  chain: string;
+  roundNumber: number | null;
+  transactionId: string | null;
+  status: string;
+}
+export interface RewardHistory { events: RewardHistoryEvent[]; since: string; hasMore: boolean }
+export async function fetchRewardHistory(address: string, days = 30): Promise<RewardHistory> {
+  const params = new URLSearchParams({ address, days: String(days), limit: "250" });
+  const response = await fetch(`${BACKEND_URL}/api/rewards/history?${params}`, { signal: AbortSignal.timeout(10_000) });
+  if (!response.ok) throw new Error("Reward history unavailable");
+  return response.json();
 }

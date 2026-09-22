@@ -49,18 +49,7 @@ export function SystemStatus() {
   for (const c of data?.chains ?? []) byChain.set(c.chain, c);
 
   // Layout: one row per supported chain + a Canton row at the top
-  const chains = [
-    "polygon",
-    "monad",
-    "cosmos",
-    "celestia",
-    "osmosis",
-    "sui",
-    "aptos",
-    "polkadot",
-    "bnb",
-    "solana",
-  ] as const;
+  const chains = ["polygon"] as const;
 
   return (
     <div

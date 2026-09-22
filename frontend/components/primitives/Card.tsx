@@ -18,7 +18,7 @@ export function Card({
 }) {
   return (
     <div
-      className={className}
+      className={`reference-panel ${className ?? ""}`.trim()}
       style={{
         background: tokens.ink[900],
         border: `1px solid ${tokens.hairline}`,

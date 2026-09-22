@@ -76,13 +76,17 @@ async function fetchPrices(): Promise<PriceSnapshot> {
       + (MAINNET_MONAD_ID ? ",monad" : "");
     const res = await fetch(
       `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true`,
+      { signal: AbortSignal.timeout(8_000) },
     );
     if (!res.ok) throw new Error(`coingecko ${res.status}`);
     const d = (await res.json()) as Record<
       string,
       { usd?: number; usd_24h_change?: number }
     >;
-    const g = (id: string) => d[id]?.usd;
+    const g = (id: string) => {
+      const value = d[id]?.usd;
+      return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+    };
     return {
       polUsd: g("polygon-ecosystem-token") ?? TESTNET_PRICES.pol,
       monUsd: g("monad") ?? TESTNET_PRICES.mon,
@@ -97,7 +101,7 @@ async function fetchPrices(): Promise<PriceSnapshot> {
       polUsd24hChange:
         d["polygon-ecosystem-token"]?.usd_24h_change ?? null,
       ccUsd: CC_FROM_ENV ?? CC_FALLBACK,
-      source: { pol: "coingecko", cc: CC_FROM_ENV !== null ? "env" : "fallback" },
+      source: { pol: g("polygon-ecosystem-token") !== undefined ? "coingecko" : "fallback", cc: CC_FROM_ENV !== null ? "env" : "fallback" },
     };
   } catch {
     return fallbackSnapshot();

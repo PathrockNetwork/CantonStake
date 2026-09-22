@@ -478,6 +478,21 @@ export async function refreshChain(
   chain: SupportedChain
 ): Promise<ChainScoreSnapshot> {
   const warnings: string[] = [];
+
+  // The wall (ENABLED_CHAINS): a walled chain is never fetched — no RPC
+  // calls, no cache writes, no slashing alerts. Callers get an honest
+  // empty snapshot so the /api/validators shape stays uniform.
+  if (!config.enabledChains.has(chain)) {
+    return {
+      chain,
+      fetchedAt: new Date().toISOString(),
+      source: "stub",
+      validators: [],
+      warnings: [
+        `chain is behind the staking wall (enabled: ${[...config.enabledChains].join(", ")})`,
+      ],
+    };
+  }
   let validators: ScoredValidator[] = [];
   try {
     validators = await FETCHERS[chain]();
@@ -560,7 +575,15 @@ const worker = new Worker<RefreshPayload>(
       target === "all"
         ? ["polygon", "monad", "cosmos", "celestia", "osmosis", "sui", "aptos", "polkadot", "bnb", "solana"]
         : [target];
-    for (const c of chains) {
+    // Walled chains are not scheduled or refreshed; one skip line beats
+    // an hourly stub write to the cache.
+    const open = chains.filter((c) => config.enabledChains.has(c));
+    if (open.length < chains.length) {
+      console.log(
+        `[validator-scoring] skipping walled chain(s): ${chains.filter((c) => !config.enabledChains.has(c)).join(", ")}`
+      );
+    }
+    for (const c of open) {
       const snap = await refreshChain(c);
       console.log(
         `[validator-scoring] refreshed ${c}: ${snap.validators.length} validators (${snap.source})`

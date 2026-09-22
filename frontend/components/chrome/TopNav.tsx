@@ -2,155 +2,42 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
 import { useAccount } from "wagmi";
 import { CCRoundTicker } from "@/components/chrome/CCRoundTicker";
 import { PriceTape } from "@/components/chrome/PriceTape";
+import { Disclosure } from "./Disclosure";
 import { useWalletPicker } from "@/components/WalletPickerProvider";
-
-const BACKEND_URL =
-  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4001";
-
-interface HealthDetail {
-  featuredAppRight?: string;
-  cantonJsonApi?: string;
-  warnings?: string[];
-  environment?: string;
-}
-
-// Detect devnet from the Canton JSON API URL.
-function isDevnet(h: HealthDetail | undefined): boolean {
-  return h?.cantonJsonApi?.includes("devnet.cantonloop.com") ?? false;
-}
-
-async function fetchHealthDetail(): Promise<HealthDetail> {
-  const res = await fetch(`${BACKEND_URL}/api/health/detail`);
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-function deriveBadge(h: HealthDetail | undefined): {
-  label: string;
-  color: "neon" | "cc" | "warn" | "green";
-} {
-  if (!h) return { label: "…", color: "warn" };
-  if (isDevnet(h)) return { label: "Devnet", color: "green" };
-  if (h.featuredAppRight === "configured")
-    return { label: "Featured · Live", color: "neon" };
-  return { label: "Candidate", color: "cc" };
-}
-import {
-  IconArrowRight,
-  IconBolt,
-  IconChart,
-  IconCoin,
-  IconHome,
-  IconShield,
-} from "@/components/icons";
+import { I, IconChart, IconGear, IconHome } from "@/components/icons";
 import { Logo } from "@/components/primitives/Logo";
-import { StatusDot } from "@/components/primitives/StatusDot";
-import { tokens } from "@/lib/tokens";
 import { useCantonWallet } from "@/lib/canton";
+import { isMainnet, networkMode } from "@/lib/network";
 
-/**
- * Top navigation chrome — ported from
- * handoff/prototype/redesign/screens.jsx (`TopNav`).
- *
- * Six-route IA per the prototype: Home / Dashboard / Stake / Positions
- * / Rewards / Analytics. (Validators is folded into /stake; Settings
- * is out of scope per PORT_GUIDE §5.)
- *
- * Wallet integration deviates from the static prototype values
- * (`cs::1220ab9f...loop`, `0x7c3a...e91d`) — we wire real
- * `useCantonWallet()` and `useAccount()` so the chrome is honest the
- * moment it mounts. Empty states ("Connect Loop", "Connect EVM")
- * stay terse and are clickable links to /stake (PORT_GUIDE §8 ties
- * connect flow to the Stake page).
- *
- * NOT YET MOUNTED in app/layout.tsx — that swap happens in Step 6
- * to avoid breaking the still-old shipped pages.
- */
+const IconStake = () => <I><path d="m3 6 5-3 5 3-5 3-5-3Z" /><path d="m3 9 5 3 5-3M3 12l5 3 5-3" /></I>;
+const IconPositions = () => <I><path d="M2.5 13.5V8.5h2v5h-2ZM7 13.5V3.5h2v10H7ZM11.5 13.5V6h2v7.5h-2Z" /></I>;
+const IconRewards = () => <I><path d="M4.5 3h7v2.2a3.5 3.5 0 0 1-7 0V3Z" /><path d="M4.5 4H2.7v1.2c0 1.5 1 2.5 2.4 2.7M11.5 4h1.8v1.2c0 1.5-1 2.5-2.4 2.7M8 8.7V12M5.5 13h5" /></I>;
+const IconDashboard = () => <I><rect x="2.5" y="2.5" width="4" height="4" /><rect x="9.5" y="2.5" width="4" height="4" /><rect x="2.5" y="9.5" width="4" height="4" /><rect x="9.5" y="9.5" width="4" height="4" /></I>;
+const IconPortfolio = () => <I><path d="M8 2.5v5.4h5.5A5.5 5.5 0 1 1 8 2.5Z" /><path d="M10 2.8a4.7 4.7 0 0 1 3.2 3.1H10V2.8Z" /></I>;
+const IconAbout = () => <I><circle cx="8" cy="8" r="5.5" /><path d="M8 7v4M8 4.7h.01" /></I>;
+const IconWallet = () => <I><path d="M2.5 4.5h9.7a1.3 1.3 0 0 1 1.3 1.3v6.3H3.8a1.3 1.3 0 0 1-1.3-1.3V4.5Z" /><path d="M3.5 4.5V3.3h8M10.5 8h3v2h-3a1 1 0 1 1 0-2Z" /></I>;
 
-type Route = {
-  href: string;
-  label: string;
-  icon: React.ReactNode;
-};
-
-const NAV: Route[] = [
+const NAV = [
   { href: "/", label: "Home", icon: <IconHome /> },
-  { href: "/dashboard", label: "Dashboard", icon: <IconBolt /> },
-  { href: "/stake", label: "Stake", icon: <IconArrowRight /> },
-  { href: "/positions", label: "Positions", icon: <IconShield /> },
-  { href: "/portfolio", label: "Portfolio", icon: <IconChart /> },
-  { href: "/rewards", label: "Rewards", icon: <IconCoin size={11} /> },
+  { href: "/stake", label: "Stake", icon: <IconStake /> },
+  { href: "/positions", label: "Positions", icon: <IconPositions /> },
+  { href: "/rewards", label: "Rewards", icon: <IconRewards /> },
   { href: "/analytics", label: "Analytics", icon: <IconChart /> },
-  { href: "/settings", label: "Settings", icon: <IconShield /> },
+];
+const MORE = [
+  { href: "/dashboard", label: "Dashboard", icon: <IconDashboard /> },
+  { href: "/portfolio", label: "Portfolio", icon: <IconPortfolio /> },
+  { href: "/settings", label: "Settings", icon: <IconGear /> },
+  { href: "/#how-it-works", label: "About", icon: <IconAbout /> },
 ];
 
-function isActive(pathname: string, href: string): boolean {
+function routeActive(pathname: string | null, href: string) {
   if (href === "/") return pathname === "/";
-  return pathname === href || pathname.startsWith(`${href}/`);
-}
-
-function truncateParty(partyId: string): string {
-  const parts = partyId.split("::");
-  if (parts.length >= 2) {
-    const head = parts[0]!.length > 14 ? `${parts[0]!.slice(0, 14)}…` : parts[0];
-    return `${head}::${parts[1]!.slice(0, 4)}…`;
-  }
-  return `${partyId.slice(0, 10)}…`;
-}
-
-function truncateAddr(addr: string): string {
-  return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
-}
-
-function IdentityChip({
-  label,
-  value,
-  showDot,
-  onClick,
-  active,
-}: {
-  label: string;
-  value: string;
-  showDot?: boolean;
-  onClick?: () => void;
-  active?: boolean;
-}) {
-  const Tag = onClick ? "button" : "div";
-  return (
-    <Tag
-      type={onClick ? "button" : undefined}
-      onClick={onClick}
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        padding: "5px 8px",
-        border: `1px solid ${active ? tokens.neon : tokens.hairline}`,
-        borderRadius: 0,
-        background: "transparent",
-        color: tokens.ink[100],
-        cursor: onClick ? "pointer" : "default",
-        font: "inherit",
-        transition: "border-color 120ms ease",
-        whiteSpace: "nowrap",
-      }}
-    >
-      <span className="mono" style={{ fontSize: 9.5, color: tokens.ink[400] }}>
-        {label}
-      </span>
-      <span
-        className="mono tabular"
-        style={{ fontSize: 10.5, color: tokens.ink[100] }}
-      >
-        {value}
-      </span>
-      {showDot ? <StatusDot /> : null}
-    </Tag>
-  );
+  if (href.includes("#")) return false;
+  return pathname?.startsWith(href) ?? false;
 }
 
 export function TopNav() {
@@ -158,153 +45,42 @@ export function TopNav() {
   const { address, isConnected } = useAccount();
   const { partyId, isConnected: loopConnected } = useCantonWallet();
   const { openPicker } = useWalletPicker();
-  const { data: health } = useQuery({
-    queryKey: ["health-detail-topnav"],
-    queryFn: fetchHealthDetail,
-    refetchInterval: 60_000,
-  });
-  const badge = deriveBadge(health);
-  const badgeColor =
-    badge.color === "neon"
-      ? tokens.neon
-      : badge.color === "cc"
-        ? tokens.cc
-        : badge.color === "green"
-          ? "#22c55e"
-          : tokens.amberBright;
+  const connected = isConnected && loopConnected;
+  const moreActive = MORE.some((item) => routeActive(pathname, item.href));
 
   return (
-    <header
-      style={{
-        borderBottom: `1px solid ${tokens.hairline}`,
-        background: "rgba(10,10,11,0.85)",
-        backdropFilter: "blur(12px)",
-        WebkitBackdropFilter: "blur(12px)",
-        position: "sticky",
-        top: 0,
-        zIndex: 50,
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 18,
-          height: 54,
-          padding: "0 16px",
-          maxWidth: 1440,
-          margin: "0 auto",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 16, flexShrink: 0 }}>
-          {/* Brand cluster */}
-          <Link
-            href="/"
-            style={{ display: "flex", alignItems: "center", gap: 8 }}
-          >
-            <Logo size={24} />
-            <span
-              className="display"
-              style={{
-                fontSize: 19,
-                fontStyle: "italic",
-                color: tokens.ink[100],
-              }}
-            >
-              CantonStake
-            </span>
-            <span
-              className="mono"
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 5,
-                padding: "2px 6px",
-                fontSize: 9,
-                fontWeight: 500,
-                textTransform: "uppercase",
-                letterSpacing: ".08em",
-                border: `1px solid ${badgeColor}`,
-                color: badgeColor,
-                whiteSpace: "nowrap",
-              }}
-            >
-              <span
-                style={{
-                  display: "inline-block",
-                  width: 5,
-                  height: 5,
-                  borderRadius: "50%",
-                  background: badgeColor,
-                  animation: "pulse-dot 2s infinite",
-                }}
-              />
-              {badge.label}
-            </span>
-          </Link>
-
-          {/* Nav */}
-          <nav style={{ display: "flex", gap: 1 }}>
-            {NAV.map((it) => {
-              const active = isActive(pathname ?? "/", it.href);
-              return (
-                <Link
-                  key={it.href}
-                  href={it.href}
-                  className="mono"
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 5,
-                    padding: "6px 8px",
-                    background: active ? tokens.ink[800] : "transparent",
-                    color: active ? tokens.ink[100] : tokens.ink[400],
-                    fontSize: 10.5,
-                    fontWeight: 500,
-                    letterSpacing: ".03em",
-                    textTransform: "uppercase",
-                    transition: "color 120ms ease, background 120ms ease",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {it.icon}
-                  {it.label}
-                </Link>
-              );
+    <header className={`site-header site-header--${networkMode}`}>
+      <div className="site-header__bar">
+        <Link href="/" className="site-brand" aria-label="CantonStake home">
+          <Logo size={34} animated={false} />
+          <span className="display">CantonStake</span>
+        </Link>
+        <nav className="site-nav" aria-label="Primary navigation">
+          {NAV.map((item) => {
+            const active = routeActive(pathname, item.href);
+            return <Link key={item.href} href={item.href} aria-current={active ? "page" : undefined} className={`mono site-nav__link${active ? " site-nav__link--active" : ""}`}>{item.icon}{item.label}</Link>;
+          })}
+          <span className="site-nav__extended" aria-label="Account navigation">
+            {MORE.map((item) => {
+              const active = routeActive(pathname, item.href);
+              return <Link key={item.href} href={item.href} aria-current={active ? "page" : undefined} className={`mono site-nav__link${active ? " site-nav__link--active" : ""}`}>{item.icon}{item.label}</Link>;
             })}
-          </nav>
-        </div>
-
-        {/* Right cluster */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            flexShrink: 0,
-            flexWrap: "nowrap",
-          }}
-        >
-          <CCRoundTicker />
-          <IdentityChip
-            label="LOOP"
-            value={
-              loopConnected && partyId ? truncateParty(partyId) : "not connected"
-            }
-            showDot={loopConnected}
-            onClick={openPicker}
-            active={!loopConnected}
-          />
-          <IdentityChip
-            label="EVM"
-            value={isConnected && address ? truncateAddr(address) : "not connected"}
-            onClick={openPicker}
-            active={!isConnected}
-          />
+          </span>
+          <Disclosure className="site-nav__more" key={pathname} label="More" active={moreActive}>
+            {MORE.map((item) => <Link key={item.href} href={item.href} aria-current={pathname === item.href ? "page" : undefined}>{item.label}</Link>)}
+          </Disclosure>
+        </nav>
+        <div className="site-header__wallets">
+          <div className="site-header__round"><CCRoundTicker compact /></div>
+          <Disclosure className="network-switch site-header__network" label={<><span className="network-switch__dot" aria-hidden="true" />{networkMode}<span className="network-switch__funds">{isMainnet ? "REAL FUNDS" : "SANDBOX"}</span></>}>
+            <a href="https://cantonstake.pathrocknetwork.org/" aria-current={isMainnet ? "page" : undefined}>Mainnet <small>Real funds</small></a>
+            <a href="https://testnet.cantonstake.pathrocknetwork.org/" aria-current={!isMainnet ? "page" : undefined}>Testnet <small>Explore with test tokens</small></a>
+          </Disclosure>
+          <button className="site-wallet-button mono" type="button" onClick={openPicker} title={connected ? `EVM ${address} · Canton ${partyId}` : "Connect your EVM and Canton wallets"}><IconWallet />{connected ? "Manage wallets" : isConnected || loopConnected ? "Finish connecting" : "Connect wallets"}{connected && <i />}</button>
         </div>
       </div>
       <PriceTape />
+      {isMainnet && pathname !== "/" ? <div className="mainnet-ribbon mono" role="status">MAINNET · REAL FUNDS · TRANSACTIONS CANNOT BE UNDONE</div> : null}
     </header>
   );
 }

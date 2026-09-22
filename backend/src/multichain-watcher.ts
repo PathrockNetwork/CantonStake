@@ -232,7 +232,16 @@ async function watchPolygon(): Promise<void> {
     }
   };
 
-  await poll();
+  // A transient RPC failure on the FIRST poll must not kill the watcher:
+  // the exception would escape startMultichainWatchers() and this chain
+  // would never be polled again for the life of the process. Report it
+  // and let the tick loop retry with backoff.
+  try {
+    await poll();
+  } catch (err) {
+    console.error(`[polygon-watcher] initial poll failed:`, err);
+    reportWatcherError("polygon", err);
+  }
   return new Promise(() => {
     const interval = setInterval(() => void poll(), POLL_MS);
     return () => clearInterval(interval);
@@ -263,7 +272,17 @@ const MONAD_STAKING_PRECOMPILE: Address = "0x00000000000000000000000000000000000
 async function watchMonad(): Promise<void> {
   const EVENT_POLL_MS = 5_000;
   const INITIAL_LOOKBACK_BLOCKS = 50n;
-  const MAX_BLOCK_RANGE = 50n;
+  // Monad's public RPC enforces "eth_getLogs is limited to a 100 range"
+  // (error -32614, started rejecting 2026-09-08). Batches must stay at or
+  // under it.
+  const MAX_BLOCK_RANGE = 100n;
+  // Bounded catch-up per tick so a backlog drains progressively instead of
+  // one unbounded loop.
+  const MAX_BATCHES_PER_POLL = 20;
+  // Past this gap, replaying is pointless (the matching StakingRequests are
+  // long settled) — skip ahead loudly rather than grinding through a day of
+  // blocks. Mirrors the Polygon watcher's catch-up guard.
+  const MAX_CATCHUP_BLOCKS = 5_000n;
   let lastScannedBlock: bigint | undefined;
 
   const poll = async () => {
@@ -277,29 +296,58 @@ async function watchMonad(): Promise<void> {
           : lastScannedBlock + 1n;
       if (fromBlock > latestBlock) return;
 
-      const logs = await monadClient.getLogs({
-        address: MONAD_STAKING_PRECOMPILE,
-        event: monadDelegateAbi,
-        fromBlock,
-        toBlock: latestBlock,
-      });
-
-      for (const log of logs) {
-        const args = (log as unknown as { args: { delegator: Address; amount: bigint; validatorId: bigint } }).args;
-        await handleStakeEvent({
-          evmAddress: args.delegator,
-          amount: args.amount,
-          txHash: log.transactionHash,
-          blockNumber: Number(log.blockNumber),
-          chain: "monad",
-          // Monad Testnet staking precompile — the single contract
-          // custody all delegations on Monad.
-          validatorShare: MONAD_STAKING_PRECOMPILE,
-          validatorId: args.validatorId !== undefined ? Number(args.validatorId) : undefined,
-        });
+      // A single fromBlock→latest request wedges this watcher permanently
+      // once the gap exceeds the RPC's range cap: the call throws, the
+      // cursor never advances, and the failure backoff widens the gap
+      // further. Scan in capped batches and persist the cursor after each
+      // one so progress survives a mid-catch-up error.
+      let cursor = fromBlock;
+      if (latestBlock - cursor > MAX_CATCHUP_BLOCKS) {
+        const skipTo = latestBlock - INITIAL_LOOKBACK_BLOCKS;
+        console.warn(
+          `[monad-watcher] ${latestBlock - cursor} blocks behind (> ${MAX_CATCHUP_BLOCKS}); ` +
+            `skipping ahead to ${skipTo} — delegations in the skipped range are NOT observed.`
+        );
+        cursor = skipTo;
       }
 
-      lastScannedBlock = latestBlock;
+      for (
+        let batches = 0;
+        cursor <= latestBlock && batches < MAX_BATCHES_PER_POLL;
+        batches++
+      ) {
+        const to =
+          cursor + MAX_BLOCK_RANGE - 1n > latestBlock
+            ? latestBlock
+            : cursor + MAX_BLOCK_RANGE - 1n;
+
+        const logs = await monadClient.getLogs({
+          address: MONAD_STAKING_PRECOMPILE,
+          event: monadDelegateAbi,
+          fromBlock: cursor,
+          toBlock: to,
+        });
+
+        for (const log of logs) {
+          const args = (log as unknown as { args: { delegator: Address; amount: bigint; validatorId: bigint } }).args;
+          await handleStakeEvent({
+            evmAddress: args.delegator,
+            amount: args.amount,
+            txHash: log.transactionHash,
+            blockNumber: Number(log.blockNumber),
+            chain: "monad",
+            // Monad Testnet staking precompile — the single contract
+            // custody all delegations on Monad.
+            validatorShare: MONAD_STAKING_PRECOMPILE,
+            validatorId: args.validatorId !== undefined ? Number(args.validatorId) : undefined,
+          });
+        }
+
+        // Persist per batch, not once at the end.
+        lastScannedBlock = to;
+        cursor = to + 1n;
+      }
+
       reportWatcherOk("monad");
     } catch (err) {
       console.error("[monad-watcher]", err);
@@ -307,7 +355,16 @@ async function watchMonad(): Promise<void> {
     }
   };
 
-  await poll();
+  // A transient RPC failure on the FIRST poll must not kill the watcher:
+  // the exception would escape startMultichainWatchers() and this chain
+  // would never be polled again for the life of the process. Report it
+  // and let the tick loop retry with backoff.
+  try {
+    await poll();
+  } catch (err) {
+    console.error(`[monad-watcher] initial poll failed:`, err);
+    reportWatcherError("monad", err);
+  }
   return new Promise(() => {
     let stopped = false;
     const tick = async () => {
@@ -406,7 +463,16 @@ async function watchAptos(): Promise<void> {
     reportWatcherOk("aptos");
   };
 
-  await poll();
+  // A transient RPC failure on the FIRST poll must not kill the watcher:
+  // the exception would escape startMultichainWatchers() and this chain
+  // would never be polled again for the life of the process. Report it
+  // and let the tick loop retry with backoff.
+  try {
+    await poll();
+  } catch (err) {
+    console.error(`[aptos-watcher] initial poll failed:`, err);
+    reportWatcherError("aptos", err);
+  }
   return new Promise(() => {
     let stopped = false;
     const tick = async () => {
@@ -541,7 +607,16 @@ async function watchSolana(): Promise<void> {
     reportWatcherOk("solana");
   };
 
-  await poll();
+  // A transient RPC failure on the FIRST poll must not kill the watcher:
+  // the exception would escape startMultichainWatchers() and this chain
+  // would never be polled again for the life of the process. Report it
+  // and let the tick loop retry with backoff.
+  try {
+    await poll();
+  } catch (err) {
+    console.error(`[solana-watcher] initial poll failed:`, err);
+    reportWatcherError("solana", err);
+  }
   return new Promise(() => {
     let stopped = false;
     const tick = async () => {
@@ -646,7 +721,16 @@ async function watchPolkadot(): Promise<void> {
     reportWatcherOk("polkadot");
   };
 
-  await poll();
+  // A transient RPC failure on the FIRST poll must not kill the watcher:
+  // the exception would escape startMultichainWatchers() and this chain
+  // would never be polled again for the life of the process. Report it
+  // and let the tick loop retry with backoff.
+  try {
+    await poll();
+  } catch (err) {
+    console.error(`[polkadot-watcher] initial poll failed:`, err);
+    reportWatcherError("polkadot", err);
+  }
   return new Promise(() => {
     let stopped = false;
     const tick = async () => {
@@ -745,7 +829,16 @@ async function watchBnb(): Promise<void> {
     reportWatcherOk("bnb");
   };
 
-  await poll();
+  // A transient RPC failure on the FIRST poll must not kill the watcher:
+  // the exception would escape startMultichainWatchers() and this chain
+  // would never be polled again for the life of the process. Report it
+  // and let the tick loop retry with backoff.
+  try {
+    await poll();
+  } catch (err) {
+    console.error(`[bnb-watcher] initial poll failed:`, err);
+    reportWatcherError("bnb", err);
+  }
   return new Promise(() => {
     let stopped = false;
     const tick = async () => {
@@ -928,7 +1021,16 @@ async function watchCosmosChain(net: CosmosNetwork): Promise<void> {
     }
   };
 
-  await poll();
+  // A transient RPC failure on the FIRST poll must not kill the watcher:
+  // the exception would escape startMultichainWatchers() and this chain
+  // would never be polled again for the life of the process. Report it
+  // and let the tick loop retry with backoff.
+  try {
+    await poll();
+  } catch (err) {
+    console.error(`[${net.chain}-watcher] initial poll failed:`, err);
+    reportWatcherError(net.chain, err);
+  }
   return new Promise(() => {
     const interval = setInterval(() => void poll(), POLL_MS);
     return () => clearInterval(interval);
@@ -1036,7 +1138,16 @@ async function watchSui(): Promise<void> {
     }
   };
 
-  await poll();
+  // A transient RPC failure on the FIRST poll must not kill the watcher:
+  // the exception would escape startMultichainWatchers() and this chain
+  // would never be polled again for the life of the process. Report it
+  // and let the tick loop retry with backoff.
+  try {
+    await poll();
+  } catch (err) {
+    console.error(`[sui-watcher] initial poll failed:`, err);
+    reportWatcherError("sui", err);
+  }
   return new Promise(() => {
     let stopped = false;
     const tick = async () => {
@@ -1246,17 +1357,23 @@ const activeWatchers: Array<() => Promise<void>> = [];
 export function startMultichainWatchers(): void {
   console.log("[orchestrator] starting multichain event watchers...");
 
+  // ENABLED_CHAINS wall: a watcher only runs for a chain this deployment
+  // is open for staking on. A walled chain's watcher would otherwise poll
+  // its RPC (often a dead public endpoint) and back off forever for
+  // requests that can no longer be created.
+  const isEnabled = (chain: string) => config.enabledChains.has(chain);
+
   // Start each chain watcher
-  activeWatchers.push(watchPolygon);
-  activeWatchers.push(watchMonad);
+  if (isEnabled("polygon")) activeWatchers.push(watchPolygon);
+  if (isEnabled("monad")) activeWatchers.push(watchMonad);
   for (const net of COSMOS_NETWORKS) {
-    activeWatchers.push(() => watchCosmosChain(net));
+    if (isEnabled(net.chain)) activeWatchers.push(() => watchCosmosChain(net));
   }
-  activeWatchers.push(watchSui);
-  activeWatchers.push(watchAptos);
-  activeWatchers.push(watchPolkadot);
-  activeWatchers.push(watchBnb);
-  activeWatchers.push(watchSolana);
+  if (isEnabled("sui")) activeWatchers.push(watchSui);
+  if (isEnabled("aptos")) activeWatchers.push(watchAptos);
+  if (isEnabled("polkadot")) activeWatchers.push(watchPolkadot);
+  if (isEnabled("bnb")) activeWatchers.push(watchBnb);
+  if (isEnabled("solana")) activeWatchers.push(watchSolana);
 
   // Fire and forget - each watcher starts its own polling loop
   for (const watcher of activeWatchers) {

@@ -164,7 +164,11 @@ const chainsRoutes: FastifyPluginAsync = async (app) => {
       const stats = (Object.entries(all) as [
         SupportedChain,
         (typeof all)[SupportedChain],
-      ][]).map(([chain, snap]) => {
+      ][])
+        // The wall: only ENABLED_CHAINS appear in the catalog the
+        // frontend builds its picker from.
+        .filter(([chain]) => config.enabledChains.has(chain))
+        .map(([chain, snap]) => {
         const validators = snap.validators.filter((v) => !v.jailed);
         const totalStaked = validators.reduce(
           (s, v) => s + v.totalStaked,

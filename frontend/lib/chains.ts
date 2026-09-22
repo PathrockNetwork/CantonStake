@@ -398,6 +398,28 @@ export const CHAINS: ChainConfig[] = [
   },
 ];
 
+// --- Staking wall ------------------------------------------------------------
+//
+// NEXT_PUBLIC_ENABLED_CHAINS (mirrors the backend's ENABLED_CHAINS env) is
+// the whitelist of chains this deployment is open for staking on. Chains
+// outside the wall stay in the catalog for reference but are demoted to
+// "planned": they drop out of liveChains() — the stake picker, analytics
+// and positions — and the backend rejects their POST /api/requests with
+// 403 regardless of what the UI sends.
+export const ENABLED_CHAIN_IDS = new Set<string>(
+  (process.env.NEXT_PUBLIC_ENABLED_CHAINS ?? "polygon")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+);
+
+export const isChainEnabled = (id: ChainConfig["id"]) =>
+  ENABLED_CHAIN_IDS.has(id);
+
+for (const c of CHAINS) {
+  if (!ENABLED_CHAIN_IDS.has(c.id)) c.phase = "planned";
+}
+
 // --- Mainnet display overrides ---------------------------------------------
 //
 // In mainnet mode the same chain entries serve production names, explorers

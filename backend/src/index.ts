@@ -41,12 +41,14 @@ import {
   shutdownAutoCompound,
 } from "./services/auto-compound.js";
 import sweepRoutes from "./routes/sweep.js";
+import rewardHistoryRoutes from "./routes/reward-history.js";
 import validatorRoutes from "./routes/validators.js";
 import notificationsRoutes from "./routes/notifications.js";
 import taxRoutes from "./routes/tax.js";
 import portfolioRoutes from "./routes/portfolio.js";
 import autoCompoundRoutes from "./routes/auto-compound.js";
 import rewardsRoutes from "./routes/rewards.js";
+import protocolRoutes from "./routes/protocol.js";
 import chainsRoutes from "./routes/chains.js";
 import polygonRoutes from "./routes/polygon.js";
 import loopProxyRoutes from "./routes/loop-proxy.js";
@@ -373,6 +375,16 @@ app.post<{ Body: CreateRequestBody }>("/api/requests", async (req, reply) => {
   if (!VALID_CHAINS.has(chain)) {
     return reply.code(400).send({ error: `invalid chain: ${chain}` });
   }
+  // The wall: a chain outside ENABLED_CHAINS is not stakable in this
+  // deployment, even though its id is known. 403 (not 400) so the UI can
+  // distinguish "typo" from "deliberately walled".
+  if (!config.enabledChains.has(chain)) {
+    return reply.code(403).send({
+      error:
+        `chain ${chain} is not open for staking in this deployment ` +
+        `(enabled: ${[...config.enabledChains].join(", ")})`,
+    });
+  }
   // Cosmos / Sui delegator addresses aren't 0x... — we only enforce the
   // EVM regex when the staking chain is EVM-based.
   const isEvmChain = chain === "polygon" || chain === "monad" || chain === "bnb";
@@ -631,6 +643,7 @@ app.post("/api/admin/rounds/trigger", async (req, reply) => {
 
 // --- Sweep routes ---
 await app.register(sweepRoutes);
+await app.register(rewardHistoryRoutes);
 
 // --- Validator scoring routes ---
 await app.register(validatorRoutes);
@@ -649,6 +662,7 @@ await app.register(autoCompoundRoutes);
 
 // --- Rewards rounds + analytics history routes ---
 await app.register(rewardsRoutes);
+await app.register(protocolRoutes);
 
 // --- Chain catalog stats (live APY/TVL/validator count) ---
 await app.register(chainsRoutes);

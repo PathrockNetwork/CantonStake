@@ -23,6 +23,7 @@ import type {
 
 const STORAGE_KEY = "cantonstake_loop_sdk_identity";
 const CHANGE_EVENT = "cantonstake-loop-sdk-change";
+const LOOP_SDK_STORAGE_KEY = "loop_connect";
 
 interface LoopProviderLike {
   party_id: string;
@@ -71,6 +72,30 @@ function clearStored() {
   window.dispatchEvent(new Event(CHANGE_EVENT));
 }
 
+/**
+ * SDK releases before 0.13 stored tickets without the per-ticket auth token.
+ * Those tickets cannot be resumed by the current Loop backend. Remove only
+ * that legacy shape and let the SDK create a fresh session on the next connect.
+ */
+function clearLegacySdkSession() {
+  if (typeof window === "undefined") return;
+
+  const raw = localStorage.getItem(LOOP_SDK_STORAGE_KEY);
+  if (!raw) return;
+
+  try {
+    const session = JSON.parse(raw) as {
+      ticketId?: unknown;
+      ticketAuthToken?: unknown;
+    };
+    if (session.ticketId && !session.ticketAuthToken) {
+      localStorage.removeItem(LOOP_SDK_STORAGE_KEY);
+    }
+  } catch {
+    localStorage.removeItem(LOOP_SDK_STORAGE_KEY);
+  }
+}
+
 function resolveNetwork(): CantonNetwork {
   const env = (
     process.env.NEXT_PUBLIC_LOOP_NETWORK ?? "devnet"
@@ -103,6 +128,8 @@ function resolveWalletUrl(): string | undefined {
 async function loadSdk(): Promise<LoopSdkLike | null> {
   if (typeof window === "undefined") return null;
   if (sdkPromise) return sdkPromise;
+
+  clearLegacySdkSession();
 
   sdkPromise = (async () => {
     try {

@@ -1,13 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAccount, useConnect, useDisconnect } from "wagmi";
 import { Btn } from "@/components/primitives/Btn";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { useCantonWallet } from "@/lib/canton";
-import { useCosmosWallet } from "@/lib/cosmos/use-cosmos-wallet";
-import { useSuiWallet } from "@/lib/sui/use-sui-wallet";
 import { tokens } from "@/lib/tokens";
+import { polygonSettlementChain } from "@/lib/chains";
 
 interface Props {
   open: boolean;
@@ -44,14 +43,47 @@ export function WalletPickerModal({ open, onClose }: Props) {
     isConnecting: loopConnecting,
     error: loopError,
   } = useCantonWallet();
-  const cosmos = useCosmosWallet();
-  const sui = useSuiWallet();
 
+  const dialogRef = useRef<HTMLDivElement>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) setPendingId(null);
   }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const dialog = dialogRef.current;
+    const focusable = () => Array.from(dialog?.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), [tabindex="0"]') ?? [])
+      .filter((element) => element.getClientRects().length > 0);
+    focusable()[0]?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      // Wallet SDKs may open another dialog above this picker.
+      const focusedModal = document.activeElement?.closest('[role="dialog"], wcm-modal, w3m-modal, appkit-modal');
+      if (focusedModal && focusedModal !== dialog && !dialog?.contains(focusedModal)) return;
+      if (event.key === "Escape") { event.preventDefault(); onClose(); }
+      if (event.key === "Tab") {
+        const elements = focusable();
+        const first = elements[0];
+        const last = elements[elements.length - 1];
+        if (!first) { event.preventDefault(); dialog?.focus(); return; }
+        if (event.shiftKey && (document.activeElement === first || !dialog?.contains(document.activeElement))) {
+          event.preventDefault(); last?.focus();
+        } else if (!event.shiftKey && (document.activeElement === last || !dialog?.contains(document.activeElement))) {
+          event.preventDefault(); first.focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = previousOverflow;
+      previousFocus?.focus();
+    };
+  }, [open, onClose]);
 
   if (!open) return null;
 
@@ -59,8 +91,13 @@ export function WalletPickerModal({ open, onClose }: Props) {
 
   return (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
+      aria-labelledby="wallet-dialog-title"
+      aria-describedby="wallet-dialog-description"
+      tabIndex={-1}
+      className="wallet-picker-dialog"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -100,12 +137,14 @@ export function WalletPickerModal({ open, onClose }: Props) {
           <div>
             <SectionLabel>§ Connect wallets</SectionLabel>
             <h2
+              id="wallet-dialog-title"
               className="display"
               style={{ fontSize: 22, margin: "4px 0 0", color: tokens.ink[100] }}
             >
               CantonStake uses two identities.
             </h2>
             <p
+              id="wallet-dialog-description"
               className="mono"
               style={{
                 fontSize: 11,
@@ -170,7 +209,7 @@ export function WalletPickerModal({ open, onClose }: Props) {
             >
               {loopConnected && partyId
                 ? `Connected · ${partyId.slice(0, 24)}…`
-                : "QR or browser handoff via @fivenorth/loop-sdk"}
+                : "Connect securely with your Loop wallet"}
             </div>
           </div>
           {loopConnected ? (
@@ -189,6 +228,7 @@ export function WalletPickerModal({ open, onClose }: Props) {
         </div>
         {loopError ? (
           <div
+            role="alert"
             className="mono"
             style={{ fontSize: 10, color: tokens.danger, marginTop: 6 }}
           >
@@ -198,7 +238,7 @@ export function WalletPickerModal({ open, onClose }: Props) {
 
         {/* EVM wallet section */}
         <div style={{ marginTop: 22 }}>
-          <SectionLabel>2. EVM (Polygon Amoy)</SectionLabel>
+          <SectionLabel>2. EVM · {polygonSettlementChain.name}</SectionLabel>
           {isConnected ? (
             <div
               style={{
@@ -307,132 +347,11 @@ export function WalletPickerModal({ open, onClose }: Props) {
           )}
           {error ? (
             <div
+              role="alert"
               className="mono"
               style={{ fontSize: 10, color: tokens.danger, marginTop: 6 }}
             >
               {error.message}
-            </div>
-          ) : null}
-        </div>
-
-        {/* Cosmos (Keplr / Leap) — only needed if user wants to stake on theta-testnet */}
-        <div style={{ marginTop: 22 }}>
-          <SectionLabel>3. Cosmos (theta-testnet) · optional</SectionLabel>
-          <div
-            style={{
-              marginTop: 8,
-              padding: 14,
-              border: `1px solid ${tokens.hairline}`,
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              gap: 12,
-            }}
-          >
-            <div style={{ minWidth: 0 }}>
-              <div
-                className="mono"
-                style={{ fontSize: 12, color: tokens.ink[100] }}
-              >
-                Keplr / Leap
-              </div>
-              <div
-                className="mono tabular"
-                style={{
-                  fontSize: 10,
-                  color: tokens.ink[400],
-                  marginTop: 2,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {cosmos.isConnected
-                  ? `${cosmos.address?.slice(0, 14)}…${cosmos.address?.slice(-4)}`
-                  : "Browser extension · cosmos1… address"}
-              </div>
-            </div>
-            {cosmos.isConnected ? (
-              <Btn size="sm" variant="ghost" onClick={cosmos.disconnect}>
-                Disconnect
-              </Btn>
-            ) : (
-              <Btn
-                size="sm"
-                onClick={() => void cosmos.connect()}
-                disabled={cosmos.isConnecting}
-              >
-                {cosmos.isConnecting ? "Opening…" : "Connect Keplr"}
-              </Btn>
-            )}
-          </div>
-          {cosmos.error ? (
-            <div
-              className="mono"
-              style={{ fontSize: 10, color: tokens.danger, marginTop: 6 }}
-            >
-              {cosmos.error}
-            </div>
-          ) : null}
-        </div>
-
-        {/* Sui (Slush / Suiet) — only needed if user wants to stake on Sui Testnet */}
-        <div style={{ marginTop: 22 }}>
-          <SectionLabel>4. Sui (testnet) · optional</SectionLabel>
-          <div
-            style={{
-              marginTop: 8,
-              padding: 14,
-              border: `1px solid ${tokens.hairline}`,
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              gap: 12,
-            }}
-          >
-            <div style={{ minWidth: 0 }}>
-              <div
-                className="mono"
-                style={{ fontSize: 12, color: tokens.ink[100] }}
-              >
-                Slush / Suiet / Sui Wallet
-              </div>
-              <div
-                className="mono tabular"
-                style={{
-                  fontSize: 10,
-                  color: tokens.ink[400],
-                  marginTop: 2,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {sui.isConnected
-                  ? `${sui.address?.slice(0, 10)}…${sui.address?.slice(-4)}`
-                  : "Detected via @mysten/dapp-kit"}
-              </div>
-            </div>
-            {sui.isConnected ? (
-              <Btn size="sm" variant="ghost" onClick={sui.disconnect}>
-                Disconnect
-              </Btn>
-            ) : (
-              <Btn
-                size="sm"
-                onClick={() => void sui.connect()}
-                disabled={sui.isConnecting}
-              >
-                {sui.isConnecting ? "Opening…" : "Connect Sui"}
-              </Btn>
-            )}
-          </div>
-          {sui.error ? (
-            <div
-              className="mono"
-              style={{ fontSize: 10, color: tokens.danger, marginTop: 6 }}
-            >
-              {sui.error}
             </div>
           ) : null}
         </div>

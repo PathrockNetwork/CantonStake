@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
 import { tokens } from "@/lib/tokens";
 import {
   startAmbientTrace,
@@ -56,6 +57,7 @@ function formatTime(t: number): string {
 }
 
 export function GlobalLiveTrace() {
+  const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const log = useTraceLog();
   const scroller = useRef<HTMLDivElement | null>(null);
@@ -70,6 +72,8 @@ export function GlobalLiveTrace() {
     }
   }, [log.length]);
 
+  if (pathname === "/") return null;
+
   return (
     <>
       {/* Toggle button — always visible */}
@@ -79,17 +83,18 @@ export function GlobalLiveTrace() {
         type="button"
         style={{
           position: "fixed",
-          right: open ? 420 : 18,
+          right: 18,
           bottom: 18,
           zIndex: 60,
           display: "inline-flex",
           alignItems: "center",
           gap: 8,
-          padding: "9px 14px",
+          padding: "11px 14px",
+          minHeight: 44,
           background: tokens.ink[900],
           border: `1px solid ${tokens.hairline}`,
           color: tokens.ink[100],
-          fontSize: 10.5,
+          fontSize: 12,
           letterSpacing: ".12em",
           textTransform: "uppercase",
           cursor: "pointer",
@@ -116,14 +121,14 @@ export function GlobalLiveTrace() {
         style={{
           position: "fixed",
           top: 0,
-          right: open ? 0 : -420,
+          right: 0,
           bottom: 0,
-          width: 420,
+          width: "min(420px, 100vw)",
           background: "#08080a",
           borderLeft: `1px solid ${tokens.hairline}`,
           zIndex: 55,
           transition: "right 240ms ease",
-          display: "flex",
+          display: open ? "flex" : "none",
           flexDirection: "column",
         }}
       >
