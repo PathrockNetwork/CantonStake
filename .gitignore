@@ -47,3 +47,8 @@ coverage.json
 /ref/
 /generated_video.mp4
 /848abccd-1962-41d7-9e75-1b5d41acf762.png
+
+# local docs and scratch markdown — keep only README.md
+docs/
+*.md
+!README.md
