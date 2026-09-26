@@ -8,7 +8,7 @@
 
 Self-custodial multi-chain staking dApp built on Canton Network. Stake from your own wallet and earn Canton Coin (CC) rewards on top of native validator yield, distributed every 10-minute round via an on-ledger 75/25 beneficiary split.
 
-**Polygon (POL) and Cosmos (ATOM) are the two production paths.** Sui and Monad adapters exist at lower maturity — see [chain status](#multi-chain-staking) before relying on them.
+**Polygon (POL) and Cosmos Hub (ATOM) are the most mature paths.** Celestia, Osmosis, Aptos, Sui, Monad, BNB Chain, Solana, and Polkadot have native adapters at lower maturity — see [chain status](#multi-chain-staking) before relying on them.
 
 ![Canton Network](https://img.shields.io/badge/Canton-Network-00ff9d?style=flat-square)
 ![Daml](https://img.shields.io/badge/Daml-3.5-7c4dff?style=flat-square&logo=daml)
@@ -45,7 +45,7 @@ Self-custodial multi-chain staking dApp built on Canton Network. Stake from your
 
 ## Overview
 
-CantonStake unifies multi-chain staking into one self-custodial flow on Canton Network. Each chain adapter bonds your tokens through your own wallet — Wagmi for EVM chains, Keplr for Cosmos, Mysten dapp-kit for Sui — while the Canton ledger records the canonical lifecycle and routes Canton Coin rewards through an on-ledger beneficiary split contract every 10-minute round.
+CantonStake unifies multi-chain staking into one self-custodial flow on Canton Network. Each chain adapter bonds your tokens through your own wallet — Wagmi for EVM chains, Keplr for Cosmos, Mysten dapp-kit for Sui, Aptos wallet adapter, Solana Wallet Standard, and Polkadot injected wallets — while the Canton ledger records the canonical lifecycle and routes Canton Coin rewards through an on-ledger beneficiary split contract every 10-minute round.
 
 ### The Problem
 
@@ -62,19 +62,33 @@ CantonStake unifies multi-chain staking into one self-custodial flow on Canton N
 ## Core Features
 
 ### Multi-chain staking
-Five testnet chain adapters, each routing through its native wallet primitive (Wagmi for EVM, Keplr/Leap for Cosmos, Mysten dapp-kit for Sui). They are **not at equal maturity** — the table below is the honest status as of 2026-08-14:
+Chain adapters route through each network's native wallet primitive (Wagmi for EVM, Keplr/Leap for Cosmos, Mysten dapp-kit for Sui, Aptos wallet adapter, Solana Wallet Standard, and Polkadot injected wallets). They are **not at equal maturity**:
 
 | Chain | Status | Notes |
 |---|---|---|
 | **Polygon Amoy** | Production path | Real `StakeManager` + per-validator `ValidatorShare` on Sepolia (Polygon PoS settles on Ethereum L1, not Bor). Live `exchangeRate` share math, checkpoint-based unbonding. Read path verified end-to-end against chain; **no user delegation has been broadcast yet** — that needs a funded wallet |
-| **Cosmos Hub theta-testnet** | Production path | Real protobuf `TxRaw → MsgDelegate` decode, live APY derived from the chain's own x/mint + x/staking modules |
-| **Sui Testnet** | Inactive | Event decode fixed, but public fullnodes deprecated JSON-RPC and the GraphQL endpoint is unreachable from our host. The watcher fails loudly rather than silently watching nothing. Point `SUI_RPC_URL` at a GraphQL-capable node to activate |
+| **Cosmos Hub provider testnet** | Native lifecycle | Real protobuf `MsgDelegate`/`MsgUndelegate` decode and EndBlock completion tracking; 21-day unbonding, automatic principal release |
+| **Celestia Mocha-5** | Native lifecycle, needs wallet E2E | Keplr/Leap `utia` delegation and exit, backend event watcher, automatic release; current unbonding is about 14 days |
+| **Osmosis osmo-test-5** | Native lifecycle, needs wallet E2E | Keplr/Leap `uosmo` delegation and exit, backend event watcher, automatic release; testnet unbonding is 5 days (mainnet 14 days) |
+| **Aptos Testnet** | Native lifecycle, needs funded-wallet E2E | Aptos wallet adapter submits delegation-pool add/unlock/withdraw; account-scoped watcher binds settled events to Canton. One position per wallet/pool is supported; pre-existing native stake is rejected. “Unbond all” exits the entire delegation, including compounded rewards and external additions. Partial external unlocks do not transition the whole Canton position; release requires all native stake balances to be zero at the exact withdrawal ledger version. New stakes require at least 11 APT in the app; the backend checks that the amount after the pool's entry fee credits at least 10 APT. Historical settlement reads fail closed if the fullnode pruned the transaction version: operators need a fullnode retaining that version to resume indexing, not a fallback to today's state. |
+| **Sui Testnet** | Native lifecycle | GraphQL `StakingRequestEvent`/`UnstakingRequestEvent` tracking binds each position to its exact `StakedSui` receipt; unstaking releases principal in the same transaction. Requires a Sui wallet and live end-to-end verification |
 | **Monad Testnet** | Estimate only | Monad publishes no reward schedule, so its APY is labelled `source: "estimate"` and is never presented as live data |
+| **BNB Chain Chapel** | Native lifecycle, needs funded-wallet E2E | Wallet-owned StakeHub delegation, unbonding, and claim with validator-bound settlement events; mainnet uses BNB Chain and the same StakeHub address |
+| **Solana Testnet** | Native lifecycle, needs funded-wallet E2E | Wallet-owned stake account, atomic create/initialize/delegate, deactivate, and full withdrawal. Finalized account-scoped signatures are bound to each Canton request. Exit readiness is calculated client-side from the stake account, StakeHistory sysvar, and current epoch because the `getStakeActivation` RPC method was removed. Mainnet mode targets Solana mainnet-beta; use a dedicated RPC for production traffic. |
+| **Polkadot Westend Asset Hub** | Native lifecycle, needs funded-wallet E2E | Wallet-owned nomination-pool join, full unbond, and withdrawal. A finalized-extrinsic watcher binds signer, pool, amount, and pallet events to the Canton request. Funds must be on Asset Hub, not the relay chain. Pool balances and commissions come from Asset Hub; pool-specific yield and uptime remain unmeasured estimates. Westend uses 12 decimals and a live minimum of 0.1 WND; mainnet Asset Hub uses 10 decimals and a 1 DOT minimum. Only one pool position per wallet is supported. |
 
 See [`docs/REAL_DATA_MIGRATION.md`](docs/REAL_DATA_MIGRATION.md) for the full mock-to-real audit and what remains.
 
+Verification boundary: the local test suites, TypeScript checks, and frontend
+production builds pass in testnet and mainnet modes. Funded-wallet lifecycle
+verification is still outstanding; passing a build does not establish a
+production-ready staking route. The conservative deployment default enables
+only Polygon. Keep backend and frontend enabled-chain lists identical, use
+separate deployments/databases for each mode, and validate additional routes
+with funded wallets before enabling them.
+
 ### Self-custodial by construction
-Keys never leave the user's wallet. CantonStake's backend orchestrator only observes chain events and exercises Daml choices on the user's behalf within the scope they signed for. The auto-compound keeper holds its own EVM signing key only to broadcast pre-authorised compound transactions.
+Native staking and exit transactions are signed by the user's wallet. CantonStake's backend observes verified chain events and records the corresponding Daml lifecycle through its app-provider party. The experimental auto-compound keeper is disabled; its permit storage is not yet a verified authorization boundary.
 
 ### Canton Coin reward rounds
 A BullMQ scheduler ticks every 10 minutes, ingests CIP-0104 `AppActivityRecord` entries from the SV Scan API, and distributes CC across active bonded positions pro-rata bonded stake. Idempotent on `(roundNumber, party, eventId)` so re-polling never double-credits.
@@ -85,12 +99,10 @@ Parties and traffic weights are read live from the Scan API. The Scan publishes 
 The `BeneficiarySplit` Daml template enforces `sum(weights) == 1.0` and routes CC to the delegator's Loop party and the app treasury at distribution time. Operator can rotate weights via `Split_Update`, which emits a `BeneficiarySplitUpdated` audit beacon.
 
 ### Validator quality scoring
-Backend service polls each chain's public validator API on a 1-hour cron, normalises into a `ScoredValidator` shape, and caches in Redis. Composite score combines uptime, commission, slash history, and stake concentration. Drives the validator picker UI on the staking flow.
+Backend service polls each chain's validator source on a 1-hour cron, normalises into a `ScoredValidator` shape, and caches by network mode in Redis. Cosmos Hub, Celestia, and Osmosis validators are read from a chain-ID-verified RPC across all pages; the Cosmos live yield estimate uses that same verified RPC. Composite score combines uptime, commission, slash history, and stake concentration, but uptime and slash history remain unmeasured estimates on chains that do not expose them. The scores drive the staking picker.
 
 ### Auto-compound keeper
-Per-chain executors broadcast claim+restake on the user's behalf within their signed permit's scope and expiry. Polygon uses EIP-712, Cosmos uses MsgGrant Authz, Monad uses its staking precompile's `compound()`, and Sui re-stakes via `request_add_stake`.
-
-**Not currently active.** Every executor self-reports `skipped` with a reason until keeper keys are provisioned and funded per chain (`AUTO_COMPOUND_KEEPER_KEY` and the per-chain secrets). The code paths are implemented; the keys are an operator action.
+**Experimental and disabled by default.** `AUTO_COMPOUND_DISABLED=true` blocks both scheduled execution and the manual trigger. Permit storage and executor scaffolding exist, but signatures are not cryptographically verified and wallet-owned delegation authorization is incomplete. Do not enable it merely by provisioning keeper keys. Verified per-chain authorization and funded-wallet testing are required before this can safely compound a user's stake.
 
 ### Slashing & reward alerts
 Slashing monitor diffs validator scores hourly and emits `validator.score_drop` / `validator.jailed` events. Notifications router fans out to Telegram, Resend (email), and Discord webhooks per the user's configured channels — soft-deletable, audit-logged, idempotent on `(alertId, channelId)`.
@@ -102,7 +114,7 @@ Slashing monitor diffs validator scores hourly and emits `validator.score_drop` 
 The `/rewards` page surfaces an Anthropic-powered live commentary on the current round, contextualised with the user's lifetime CC, latest round share, and milestone crossings (10/100/1000 CC). Falls back to a templated explainer when no API key is set.
 
 ### Cross-chain portfolio view
-`/portfolio` aggregates delegations across every adapter into one table, with bonded/unbonding counts, USD totals, and per-row source tags. A `stub` tag means that adapter's live fetch returned nothing — it is shown, not hidden, so an inactive chain never masquerades as an empty portfolio. Refreshes every 30 seconds.
+`/portfolio` aggregates Canton-recorded positions from every connected EVM, Cosmos, Sui, Aptos, Solana, and Polkadot wallet, with bonded/unbonding counts. Cosmos-family wallet reads use chain-ID-checked RPC queries and exhaust pagination. Testnet assets have no real USD valuation; mainnet USD totals are shown only when all active positions have chain metadata and prices. The per-address `/api/portfolio/:address` endpoint combines live Polygon ValidatorShare balances with Canton-recorded native-chain positions and reports unavailable reads or unclassified positions explicitly. Refreshes every 30 seconds.
 
 ### Loop wallet integration
 Browser flow via `@fivenorth/loop-sdk` for Canton party identity. Deployed origins connect directly to Loop so ticket metadata retains the originating dApp. A Fastify reverse proxy remains available at `/loop-proxy/*` for local origins that Loop's CORS policy does not allow.
@@ -110,7 +122,7 @@ Browser flow via `@fivenorth/loop-sdk` for Canton party identity. Deployed origi
 The two deployments use separate Loop environments: CantonStake mainnet connects to `https://cantonloop.com`, while CantonStake testnet connects to `https://devnet.cantonloop.com`. Their accounts, party IDs and private keys are independent.
 
 ### Multi-wallet picker
-A single modal connects Loop, MetaMask/Rabby/Brave/Frame (injected), Coinbase Wallet, Safe, WalletConnect, Keplr, and any Sui wallet via dapp-kit. Top-nav chips trigger the picker globally via React context.
+A single modal connects Loop, MetaMask/Rabby/Brave/Frame (injected), Coinbase Wallet, Safe, WalletConnect, Keplr, Aptos-standard wallets, and Sui wallets via dapp-kit. Top-nav chips trigger the picker globally via React context.
 
 ---
 
@@ -150,7 +162,7 @@ flowchart TB
         CANTON[Canton DevNet · Daml]
         POLY[Polygon Amoy]
         MON[Monad Testnet]
-        COS[Cosmos theta-testnet]
+        COS[Cosmos provider testnet]
         SUI[Sui Testnet]
     end
 
@@ -213,7 +225,7 @@ flowchart TB
 | Daml ledger (Canton DevNet) | Multi-party consent | Signatory + observer parties enforced by Canton consensus |
 | Native staking chains | Trust the chain | Settlement guaranteed by each chain's validator set |
 | Backend orchestrator | Operator | Only writes to Daml within choices the user consented to; never holds user keys |
-| Auto-compound keeper | Bounded | EIP-712 signature scope + `expiresAt` + `maxPerRun` enforced before broadcast |
+| Auto-compound keeper | Disabled / experimental | Scheduled and manual execution are gated; verified permit authorization remains unfinished |
 | Loop SDK reverse proxy | Same-origin | Server-to-server upstream; strips Origin/Referer; CORS issued only for trusted origin |
 | BeneficiarySplit weights | Operator-rotatable | `Split_Update` archives + recreates with `version + 1` and emits audit beacon |
 
@@ -368,7 +380,7 @@ Each demo chain needs testnet tokens. Grab them before running the full flow:
 
 - **Polygon Amoy** — https://faucet.polygon.technology/
 - **Monad Testnet** — https://faucet.monad.xyz/
-- **Cosmos theta-testnet** — `#testnet-faucet` channel on the Cosmos Discord
+- **Cosmos Hub provider testnet** — https://faucet.polypore.xyz/
 - **Sui Testnet** — `#testnet-faucet` on the Sui Discord (`!faucet 0x...`)
 
 ---
@@ -465,6 +477,8 @@ All routes return JSON. POST/PUT/DELETE expect `Content-Type: application/json`.
 | Method | Path | Description | Auth |
 |---|---|---|---|
 | GET | `/api/health` | Liveness + key configuration | none |
+| GET | `/api/readiness` | Canton ledger API reachability (503 when unavailable; separate from process liveness) | none |
+| GET | `/api/watchers` | Per-chain watcher reachability and network mode | none |
 | GET | `/api/health/detail` | Detailed health + warnings array | none |
 | GET | `/metrics` | Prometheus exposition format | none |
 
@@ -482,6 +496,11 @@ All routes return JSON. POST/PUT/DELETE expect `Content-Type: application/json`.
 | POST | `/api/requests` | Create StakingRequest on Canton (chain-agnostic) | none |
 | GET | `/api/requests` | List pending StakingRequests, filter by `?address=` | none |
 | GET | `/api/positions` | List active StakingPositions, filter by `?address=` | none |
+
+`POST /api/requests` requires `clientNetworkMode` (`testnet` or `mainnet`)
+matching the backend deployment. It returns 409 on a missing/mismatched mode
+and 503 until the selected chain's settlement watcher has completed a
+successful scan; neither case creates a Canton request.
 
 ### Rewards
 
@@ -557,7 +576,10 @@ per-chain table and the known mainnet gaps.
 | `SCAN_API_URL` | Canton Scan API base for CIP-0104 attribution (unset = rounds mint 0 CC) | empty |
 | `SCAN_PAGE_SIZE` | Page size for the Scan /v0/events poll | `500` |
 | `SCAN_ROUND_CC_POOL` | Gross CC distributed per network round (configured — the Scan publishes no mint pool; parties + weights are real) | `100` |
-| `AMOY_RPC_URL` | Polygon Amoy JSON-RPC | `https://rpc-amoy.polygon.technology` |
+| `AMOY_RPC_URL` | Polygon Bor/Amoy RPC override (not the staking settlement chain) | mode-selected |
+| `STAKE_SETTLEMENT_RPC_URL` / `STAKE_SETTLEMENT_FALLBACK_RPC_URL` | Polygon Ethereum L1 primary/fallback RPC overrides | mode-selected |
+| `STAKE_SETTLEMENT_CHAIN_ID` | Polygon settlement chain; must match the deployment mode | `11155111` testnet / `1` mainnet |
+| `POLYGON_STAKE_MANAGER_ADDRESS` / `POLYGON_STAKING_LOGGER_ADDRESS` | Polygon settlement contract overrides | mode-selected |
 | `CANTON_JSON_API_URL` | Canton JSON Ledger API | `http://localhost:3975` |
 | `CANTON_APP_PROVIDER_PARTY` | App provider party id | required |
 | `CANTON_AUTH_TOKEN` | Bearer token (or empty if auth disabled) | empty |
@@ -575,14 +597,16 @@ per-chain table and the known mainnet gaps.
 | `AUTO_COMPOUND_DISABLED` | Skip keeper | `true` |
 | `AUTO_COMPOUND_KEEPER_KEY` | EVM keeper signing key | empty |
 | `MONAD_RPC_URL` | Monad Testnet RPC | `https://testnet-rpc.monad.xyz` |
-| `COSMOS_REST_URL` | theta-testnet REST | `https://rest.sentry-01.theta-testnet.polypore.xyz` |
-| `COSMOS_RPC_URL` | theta-testnet RPC | `https://rpc.sentry-01.theta-testnet.polypore.xyz` |
+| `COSMOS_REST_URL` | provider-testnet REST (mainnet is mode-selected) | `https://cosmoshub-testnet.api.kjnodes.com` |
+| `COSMOS_RPC_URL` | provider-testnet RPC (mainnet is mode-selected) | `https://cosmoshub-testnet.rpc.kjnodes.com` |
 | `COSMOS_KEEPER_MNEMONIC` | Cosmos auto-compound keeper mnemonic | empty |
-| `SUI_RPC_URL` | Sui Testnet RPC | `https://fullnode.testnet.sui.io:443` |
+| `SUI_GRAPHQL_URL` | Sui indexed events and validators (mode-selected) | `https://graphql.testnet.sui.io/graphql` |
 | `CELESTIA_RPC_URL` / `CELESTIA_REST_URL` | Celestia mocha testnet RPC/LCD | POPS public endpoints |
 | `OSMOSIS_RPC_URL` / `OSMOSIS_REST_URL` | Osmosis testnet RPC/LCD | official endpoints |
+| `APTOS_REST_URL` / `APTOS_INDEXER_URL` | Aptos fullnode and delegated-pool indexer (mode-selected) | official Aptos endpoints |
 | `APTOS_REST_URL` | Aptos testnet fullnode REST | `https://fullnode.testnet.aptoslabs.com` |
-| `WESTEND_RPC_URL` | Polkadot Westend Substrate RPC | `https://westend-rpc.polkadot.io` |
+| `POLKADOT_RPC_URL` | Polkadot nomination-pool Asset Hub RPC (mode-selected) | `https://westend-asset-hub-rpc.polkadot.io` |
+| `NEXT_PUBLIC_POLKADOT_RPC_URL` | Browser-facing Asset Hub RPC (mode-selected) | `https://westend-asset-hub-rpc.polkadot.io` |
 | `BNB_RPC_URL` | BNB Chain Chapel RPC (StakeHub `0x…2002`) | publicnode |
 | `SOLANA_RPC_URL` | Solana testnet RPC | `https://api.testnet.solana.com` |
 | `SUI_KEEPER_PRIVATE_KEY` | Sui keeper private key | empty |
@@ -592,10 +616,20 @@ per-chain table and the known mainnet gaps.
 
 ### Frontend — `frontend/.env`
 
+For Docker deployments, set browser-facing overrides in the matching Compose
+env file before building. `NEXT_PUBLIC_*` values are baked into each frontend
+image, so changing them requires rebuilding that mode's image; a container
+restart alone will not update the browser bundle. Leave optional overrides
+blank to use mode-selected defaults.
+
 | Variable | Description | Default |
 |---|---|---|
 | `NEXT_PUBLIC_BACKEND_URL` | Backend API base | `http://localhost:4001` |
 | `NEXT_PUBLIC_REAL_VALIDATOR_SHARES` | JSON map `{validator: contract}` (build-time snapshot; the live registry comes from the backend) | `{}` |
+| `NEXT_PUBLIC_POLYGON_SETTLEMENT_CHAIN_ID` / `NEXT_PUBLIC_POLYGON_STAKE_MANAGER` / `NEXT_PUBLIC_POLYGON_STAKING_LOGGER` / `NEXT_PUBLIC_POLYGON_STAKE_TOKEN` | Polygon settlement overrides; chain ID must match the mode (11155111 testnet / 1 mainnet) | mode-selected |
+| `NEXT_PUBLIC_SHARE_SLIPPAGE_BPS` | Polygon ValidatorShare share-conversion slippage | `50` |
+| `NEXT_PUBLIC_SETTLEMENT_RPC_URL` / `NEXT_PUBLIC_AMOY_RPC_URL` | Browser-facing Ethereum settlement and Polygon PoS RPC overrides | mode-selected |
+| `NEXT_PUBLIC_MONAD_RPC_URL` / `NEXT_PUBLIC_BNB_RPC_URL` | Browser-facing Monad and BNB RPC overrides | mode-selected |
 | `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | WalletConnect Cloud project id | empty |
 | `NEXT_PUBLIC_LOOP_NETWORK` | `local` / `devnet` / `mainnet` | `devnet` |
 | `NEXT_PUBLIC_LOOP_SDK_ENABLED` | Real Loop SDK on/off | `true` |
@@ -603,16 +637,18 @@ per-chain table and the known mainnet gaps.
 | `NEXT_PUBLIC_LOOP_API_URL` | Override the SDK's apiUrl | empty |
 | `NEXT_PUBLIC_LOOP_WALLET_URL` | Override the SDK's walletUrl | empty |
 | `NEXT_PUBLIC_CC_USD` | CC price fallback | `0.16` |
-| `NEXT_PUBLIC_SUI_NETWORK` | Sui dapp-kit default network | `testnet` |
-| `NEXT_PUBLIC_SUI_RPC_URL` | Sui RPC URL | `https://fullnode.testnet.sui.io:443` |
-| `NEXT_PUBLIC_COSMOS_CHAIN_ID` | Cosmos chain id | `theta-testnet-001` |
-| `NEXT_PUBLIC_COSMOS_CHAIN_NAME` | Display name for Keplr suggest | `Cosmos Hub Theta Testnet` |
-| `NEXT_PUBLIC_COSMOS_RPC` | RPC | `https://rpc.sentry-01.theta-testnet.polypore.xyz` |
-| `NEXT_PUBLIC_COSMOS_REST` | REST | `https://rest.sentry-01.theta-testnet.polypore.xyz` |
+| `NEXT_PUBLIC_SUI_GRAPHQL_URL` | Sui wallet GraphQL override | mode-selected |
+| `NEXT_PUBLIC_COSMOS_CHAIN_ID` | Cosmos chain id; an override must match the selected mode | `provider` (testnet) / `cosmoshub-4` (mainnet) |
+| `NEXT_PUBLIC_COSMOS_CHAIN_NAME` | Display name for Keplr suggest | mode-selected |
+| `NEXT_PUBLIC_COSMOS_RPC` | Browser-facing Cosmos RPC override | mode-selected |
+| `NEXT_PUBLIC_COSMOS_REST` | Browser-facing Cosmos REST override | mode-selected |
 | `NEXT_PUBLIC_COSMOS_COIN_DENOM` | Display denom | `ATOM` |
-| `NEXT_PUBLIC_COSMOS_COIN_MINIMAL_DENOM` | Base denom | `uatom` |
-| `NEXT_PUBLIC_COSMOS_COIN_DECIMALS` | Decimals | `6` |
+| `NEXT_PUBLIC_COSMOS_COIN_MINIMAL_DENOM` | Base denom; incompatible overrides are rejected | `uatom` |
+| `NEXT_PUBLIC_COSMOS_COIN_DECIMALS` | Decimals; incompatible overrides are rejected | `6` |
 | `NEXT_PUBLIC_COSMOS_COIN_TYPE` | BIP-44 coin type | `118` |
+| `NEXT_PUBLIC_CELESTIA_RPC` / `NEXT_PUBLIC_CELESTIA_REST` | Browser-facing Celestia RPC/LCD overrides | CORS-enabled nodes.guru Mocha endpoints (mode-selected) |
+| `NEXT_PUBLIC_OSMOSIS_RPC` / `NEXT_PUBLIC_OSMOSIS_REST` | Browser-facing Osmosis RPC/LCD overrides | Official Osmosis endpoints (mode-selected) |
+| `NEXT_PUBLIC_APTOS_REST` / `NEXT_PUBLIC_APTOS_INDEXER` | Browser-facing Aptos fullnode/indexer overrides | Official Aptos endpoints (mode-selected) |
 | `NEXT_PUBLIC_REQUIRE_CONNECT_WALL` | Force /connect on landing | `false` |
 
 ---
@@ -628,7 +664,7 @@ per-chain table and the known mainnet gaps.
 | State / data | TanStack Query v5 |
 | EVM | Wagmi v2 + viem v2 |
 | Cosmos | Keplr / Leap browser extension + `@cosmjs/stargate` |
-| Sui | `@mysten/dapp-kit` + `@mysten/sui` |
+| Sui | `@mysten/dapp-kit-react` + `@mysten/sui` GraphQL |
 | Canton | `@fivenorth/loop-sdk` |
 | Styling | Inline tokens + Tailwind CSS |
 | Testing | Vitest |
@@ -655,9 +691,9 @@ per-chain table and the known mainnet gaps.
 | Canonical ledger | Canton DevNet · Daml 3.5 |
 | Reward attribution | CIP-0104 (App Activity Records) with CIP-0047 fallback |
 | Beneficiary split | On-ledger Daml `BeneficiarySplit` template (75/25 default) |
-| Polygon staking | MockValidatorShare on Amoy (real `ValidatorShare` swap behind feature flag) |
+| Polygon staking | Real per-validator `ValidatorShare` on Ethereum settlement (Sepolia for testnet, Ethereum mainnet for mainnet) |
 | Monad staking | Staking precompile (`0x...1000`) on Monad Testnet |
-| Cosmos staking | x/staking + Authz `MsgGrant` on theta-testnet |
+| Cosmos staking | x/staking on provider testnet; EndBlock verifies automatic unbond completion |
 | Sui staking | `0x3::sui_system::request_add_stake` on Sui Testnet |
 
 ### Security & Auth
@@ -665,8 +701,8 @@ per-chain table and the known mainnet gaps.
 | Layer | Technology |
 |---|---|
 | Loop identity | Passkey/biometric handshake via `@fivenorth/loop-sdk` |
-| EVM auth | Wallet signature (`personal_sign` / EIP-712 for permits) |
-| Cosmos auth | `MsgGrant` Authz with bounded scope + expiry |
+| EVM native transactions | User-wallet signatures; auto-compound permit verification is unfinished |
+| Cosmos native transactions | Keplr/Leap signatures; keeper Authz integration is unfinished |
 | Optional CORS fallback | `/loop-proxy` Fastify reverse proxy for unallowlisted local origins |
 | Secrets | `.env` files; recommended `fly secrets` / Doppler in prod |
 
@@ -674,7 +710,7 @@ per-chain table and the known mainnet gaps.
 
 ## Security Model
 
-CantonStake is self-custodial by design — keys never leave the user's wallet, and every Daml choice the orchestrator exercises is bounded by what the user signed for.
+Native staking transactions use the user's wallet; the backend verifies settlement before recording the corresponding Canton lifecycle. This remains a hackathon MVP: request APIs need production authentication, and experimental keeper authorization is unfinished and disabled by default.
 
 ### Key Security Properties
 
@@ -682,7 +718,7 @@ CantonStake is self-custodial by design — keys never leave the user's wallet, 
 |---|---|
 | Self-custody | All staking/unstaking signatures originate from the user's wallet |
 | On-ledger reward routing | `BeneficiarySplit` Daml contract enforces `sum(weights) == 1.0` |
-| Auto-compound scope | Per-chain executor verifies `signature` + checks `expiresAt` + `maxPerRun` cap before broadcast |
+| Auto-compound scope | Execution disabled by default; stored signatures are not yet cryptographically verified |
 | Reward distribution idempotency | `(roundNumber, party, eventId)` unique constraint on `AppActivityRecord` |
 | Alert delivery idempotency | `(alertId, channelId)` unique on `AlertDelivery` — retries don't double-send |
 | Audit trail | Every economic transition emits `OnchainEvent` (CIP-0104) + lifecycle log on `RewardRound` |
@@ -693,14 +729,14 @@ CantonStake is self-custodial by design — keys never leave the user's wallet, 
 | Attack Vector | Status | Mechanism |
 |---|---|---|
 | Operator redirects rewards away from users | ✅ Mitigated | `BeneficiarySplit` weights enforced on-ledger; rotations emit audit beacon |
-| Stale or expired auto-compound permit replayed | ✅ Mitigated | Keeper checks `expiresAt > now` and `enabled === true` before each tick |
-| Auto-compound exceeds user's authorised cap | ✅ Mitigated | `maxPerRun` enforced per chain; pending rewards over the cap → `status="skipped"` |
+| Stale or forged auto-compound permit replayed | ⚠️ Unfinished | Keep execution disabled; expiry/enabled checks do not replace signature verification |
+| Auto-compound exceeds user's authorised cap | ⚠️ Unfinished | Stored caps are not a verified wallet authorization; keep execution disabled |
 | Same activity record double-counted across replays | ✅ Mitigated | Prisma `@@unique([roundNumber, party, eventId])` |
 | Notification spam from re-emitted alerts | ✅ Mitigated | `dedupKey` on `AlertEvent` + `(alertId, channelId)` unique on delivery |
 | Cross-origin abuse of Loop SDK proxy | ⚠️ Partial | `@fastify/cors` reflects request origin; rate limiting + per-origin allowlist recommended for prod |
 | Validator slashing affecting active stakes | ⚠️ Partial | Slashing monitor diffs scores hourly + alerts; manual user action required to redelegate |
 | Polygon mock fixture path in frontend | ✅ Resolved | Adapter ships only the real per-validator `ValidatorShare` path; registry served by `/api/polygon/validator-shares` |
-| Keeper key leak | ⚠️ Partial | `AUTO_COMPOUND_KEEPER_KEY` recommended in secrets manager (AWS / Doppler); only acts within signed permit scope so blast radius is bounded |
+| Keeper key leak | ⚠️ Partial | Keep keeper execution disabled and keys unprovisioned until authorization is verified; signed permit scope is not enforced cryptographically |
 
 ---
 
