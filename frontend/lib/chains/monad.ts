@@ -7,8 +7,11 @@
  * callers pass the validator id as a numeric string (e.g. "42").
  */
 
-import { encodeFunctionData, parseAbi, type Address } from "viem";
+import { readContract } from "@wagmi/core";
+import { encodeFunctionData, isAddress, parseAbi, type Address } from "viem";
 import { fetchValidatorScores, type ValidatorScore } from "../api";
+import { monadEvmChain } from "../chains";
+import { wagmiConfig } from "../wagmi";
 import {
   ChainAdapterError,
   type IChainAdapter,
@@ -26,9 +29,12 @@ const stakingAbi = parseAbi([
   "function undelegate(uint64 validator_id, uint256 amount, uint8 withdraw_id)",
   "function withdraw(uint64 validator_id, uint8 withdraw_id)",
   "function compound(uint64 validator_id)",
-  "function claim_rewards(uint64 validator_id)",
-  "function get_delegator(uint64 validator_id, address delegator) view returns (uint256, uint256, uint256, uint256, uint256, uint64, uint64)",
-  "function get_validator(uint64 validator_id) view returns (address, uint256, uint256, uint256, uint256, uint256, uint256, uint256, uint256, uint256, bytes, bytes)",
+  "function claimRewards(uint64 validator_id)",
+  "function getDelegator(uint64 validator_id, address delegator) view returns (uint256, uint256, uint256, uint256, uint256, uint64, uint64)",
+  "function getValidator(uint64 validator_id) view returns (address, uint64, uint256, uint256, uint256, uint256, uint256, uint256, uint256, uint256, bytes, bytes)",
+  "function getDelegations(address delegator, uint64 startValId) view returns (bool isDone, uint64 nextValId, uint64[] valIds)",
+  "function getWithdrawalRequest(uint64 validator_id, address delegator, uint8 withdraw_id) view returns (uint256 withdrawalAmount, uint256 accRewardPerToken, uint64 withdrawEpoch)",
+  "function getEpoch() view returns (uint64 epoch, bool inEpochDelayPeriod)",
 ]);
 
 function networkError(message: string, cause?: unknown) {
@@ -71,7 +77,7 @@ export const monadAdapter: IChainAdapter = {
   async getValidators(): Promise<Validator[]> {
     try {
       const snap = await fetchValidatorScores("monad");
-      return snap.validators.map((v: ValidatorScore) => ({
+      return snap.validators.filter((v: ValidatorScore) => !v.jailed && /^\d+$/.test(v.address)).map((v: ValidatorScore) => ({
         address: v.address,
         name: v.name,
         apr: 8 * (1 - v.commissionPct / 100),
@@ -83,11 +89,42 @@ export const monadAdapter: IChainAdapter = {
     }
   },
 
-  async getDelegations(): Promise<Position[]> {
-    // Per-delegator query requires the validator id; the orchestrator
-    // tracks user→validator mapping. The adapter exposes the read path
-    // via get_delegator() but doesn't enumerate without external help.
-    return [];
+  async getDelegations(address): Promise<Position[]> {
+    if (!isAddress(address)) return [];
+    const ids: bigint[] = [];
+    let startValId = 0n;
+    let complete = false;
+    for (let page = 0; page < 20; page++) {
+      const [isDone, nextValId, pageIds] = await readContract(wagmiConfig, {
+        chainId: monadEvmChain.id,
+        address: STAKING_CONTRACT,
+        abi: stakingAbi,
+        functionName: "getDelegations",
+        args: [address, startValId],
+      });
+      ids.push(...pageIds);
+      if (isDone) {
+        complete = true;
+        break;
+      }
+      if (nextValId <= startValId || pageIds.length === 0) throw networkError("Monad delegation pagination did not advance.");
+      startValId = nextValId;
+    }
+    if (!complete) throw networkError("Monad delegation pagination exceeded the 20-page safety limit.");
+    const rows = await Promise.all(ids.map(async (id) => {
+      const state = await readContract(wagmiConfig, {
+        chainId: monadEvmChain.id,
+        address: STAKING_CONTRACT,
+        abi: stakingAbi,
+        functionName: "getDelegator",
+        args: [id, address],
+      });
+      const amount = state[0] + state[3] + state[4];
+      return amount > 0n
+        ? { validator: id.toString(), amount, status: "bonded" as const }
+        : null;
+    }));
+    return rows.filter((row): row is NonNullable<typeof row> => row !== null);
   },
 
   async buildDelegateTx({ validator, amount }) {
@@ -102,25 +139,65 @@ export const monadAdapter: IChainAdapter = {
     );
   },
 
-  async buildUndelegateTx({ validator, amount }) {
+  async buildUndelegateTx({ validator, amount, delegator }) {
     const valId = toValidatorId(validator);
+    if (!isAddress(delegator)) throw networkError("Invalid Monad delegator address.");
+    const [state, withdrawal] = await Promise.all([
+      readContract(wagmiConfig, { chainId: monadEvmChain.id, address: STAKING_CONTRACT, abi: stakingAbi, functionName: "getDelegator", args: [valId, delegator] }),
+      readContract(wagmiConfig, { chainId: monadEvmChain.id, address: STAKING_CONTRACT, abi: stakingAbi, functionName: "getWithdrawalRequest", args: [valId, delegator, 0] }),
+    ]);
+    if (amount <= 0n || state[0] === 0n) {
+      throw new ChainAdapterError("INSUFFICIENT_BALANCE", "No active Monad stake can be undelegated yet.");
+    }
+    if (state[3] > 0n || state[4] > 0n) {
+      throw new ChainAdapterError("UNBONDING_PERIOD", "Wait for this Monad delegation to activate before withdrawing it.");
+    }
+    if (withdrawal[0] > 0n) {
+      throw new ChainAdapterError("UNBONDING_PERIOD", "Monad withdrawal slot 0 is already occupied. Withdraw it before unbonding again.");
+    }
     return evmTx(
       encodeFunctionData({
         abi: stakingAbi,
         functionName: "undelegate",
         // withdraw_id 0 — caller may bump to support concurrent undelegations.
-        args: [valId, amount, 0],
+        // One position per wallet/validator: close the full active stake,
+        // including any compounded rewards and after any slash adjustment.
+        args: [valId, state[0], 0],
       }),
     );
   },
 
-  async buildClaimTx({ validator }) {
+  async buildClaimTx({ validator, delegator }) {
     const valId = toValidatorId(validator);
+    if (!isAddress(delegator)) throw networkError("Invalid Monad delegator address.");
+    const [withdrawal, epoch] = await Promise.all([
+      readContract(wagmiConfig, {
+        chainId: monadEvmChain.id,
+        address: STAKING_CONTRACT,
+        abi: stakingAbi,
+        functionName: "getWithdrawalRequest",
+        args: [valId, delegator, 0],
+      }),
+      readContract(wagmiConfig, {
+        chainId: monadEvmChain.id,
+        address: STAKING_CONTRACT,
+        abi: stakingAbi,
+        functionName: "getEpoch",
+      }),
+    ]);
+    if (withdrawal[0] === 0n) {
+      throw new ChainAdapterError("UNBONDING_PERIOD", "No Monad withdrawal is pending in slot 0.");
+    }
+    if (epoch[0] < withdrawal[2] + 1n) {
+      throw new ChainAdapterError("UNBONDING_PERIOD", `Monad withdrawal is not claimable until epoch ${withdrawal[2] + 1n}.`);
+    }
     return evmTx(
       encodeFunctionData({
         abi: stakingAbi,
-        functionName: "claim_rewards",
-        args: [valId],
+        // Position claim means withdraw the principal after undelegation;
+        // claimRewards is a separate, immediate reward-only action.
+        functionName: "withdraw",
+        args: [valId, 0],
       }),
     );
   },
