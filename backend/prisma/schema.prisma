@@ -90,6 +90,8 @@ model StakingPosition {
   unbondingPeriod     String? // e.g. "60000000" microseconds
   unbondNonce         String? // ValidatorShare unbond nonce
   unbondWithdrawEpoch String? // checkpoint epoch recorded by sellVoucher_new
+  unbondAmountBaseUnits String? // Cosmos complete_unbonding amount (uatom/utia/...), for exact EndBlock matching
+  suiStakedObjectId String? // Exact StakedSui receipt; prevents matching another stake in the same pool
 
   releasedAt     DateTime?
   createdAt      DateTime @default(now())
@@ -97,6 +99,30 @@ model StakingPosition {
 
   rewardEvents   RewardEvent[]
   rewardSweeps   RewardSweep[]
+}
+
+/// Off-ledger network/validator binding for a Canton StakingRequest. The
+/// current Daml template does not contain either field, so watchers must not
+/// infer a chain from an EVM address and amount alone.
+model StakingIntent {
+  requestContractId String   @id
+  chain             String
+  validatorAddress  String?
+  evmAddress        String
+  amountPol         String
+  acceptedTxHash    String?
+  createdAt         DateTime @default(now())
+  acceptedAt        DateTime?
+
+  @@index([chain, evmAddress, amountPol])
+}
+
+/// Last fully processed settlement block for an event watcher. The key
+/// includes the network's chain ID so testnet and mainnet never share cursor.
+model WatcherCursor {
+  key              String   @id
+  lastScannedBlock String
+  updatedAt        DateTime @updatedAt
 }
 
 /// Tracks each 10-minute CC reward round.
