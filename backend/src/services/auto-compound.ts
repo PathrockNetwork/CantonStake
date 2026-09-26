@@ -370,14 +370,14 @@ async function executeSui(
     };
   }
 
-  const { SuiJsonRpcClient } = await import("@mysten/sui/jsonRpc");
+  const { SuiGraphQLClient } = await import("@mysten/sui/graphql");
   const { Transaction } = await import("@mysten/sui/transactions");
   const { Ed25519Keypair } = await import("@mysten/sui/keypairs/ed25519");
 
   const keypair = Ed25519Keypair.fromSecretKey(config.suiKeeperPrivateKey);
-  const client = new SuiJsonRpcClient({
-    url: config.suiRpcUrl,
-    network: "testnet",
+  const client = new SuiGraphQLClient({
+    url: config.suiGraphqlUrl,
+    network: config.networkMode,
   });
 
   try {
