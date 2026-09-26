@@ -1,34 +1,14 @@
 /**
- * Auto-compound keeper — scans active AutoCompoundPermit rows and
- * executes claim+restake on the user's behalf within the permit's
- * scope and expiry.
+ * Experimental auto-compound keeper scaffolding. Scheduled and manual
+ * execution are blocked while AUTO_COMPOUND_DISABLED=true (the default).
  *
- * Architecture:
- *
- *   - Permits are created off-chain by the user signing a typed message
- *     (EIP-712 / MsgGrant Authz / equivalent). The signature is opaque
- *     to this service — verification happens in the per-chain executor
- *     before any broadcast.
- *
- *   - A BullMQ repeatable job ticks every autoCompoundIntervalSec
- *     (default 15 min). Each tick:
- *       1. Loads enabled, non-expired permits.
- *       2. Per permit, dispatches to the chain's executor.
- *       3. Records an AutoCompoundRun row with outcome.
- *
- *   - Executors are best-effort and idempotent. The per-chain logic
- *     verifies the signature, queries pending rewards, and broadcasts
- *     the compound tx. Only the Polygon executor is wired, and it targets
- *     the REAL per-validator ValidatorShare on the L1 settlement chain
- *     (restake() capitalises protocol yield); all other chains return a
- *     "skipped" run until Phase 4 provisions their keeper keys.
- *
- *   - Custody note: this service holds AUTO_COMPOUND_KEEPER_KEY for
- *     EVM broadcasts, but ONLY acts within the user's signed permit
- *     scope. We deliberately do NOT integrate Gelato/Chainlink (would
- *     introduce third-party custody risk). Cosmos-side compounding uses
- *     Authz grants and is fully self-custodial — the keeper just
- *     submits a MsgExec.
+ * When enabled, a BullMQ tick loads enabled, non-expired permit rows,
+ * dispatches executors, and records their outcomes. Stored signatures
+ * are NOT cryptographically verified by these executors. Expiry/cap
+ * checks do not establish authorization over a user's native delegation;
+ * wallet-owned execution and Cosmos Authz integration remain unfinished.
+ * Keep this disabled and do not provision/fund keeper keys as a substitute
+ * for implementing verified per-chain authorization and lifecycle tests.
  */
 
 import { Queue, Worker, type Job } from "bullmq";
@@ -46,6 +26,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { polygonAmoy } from "viem/chains";
 import { config } from "../config.js";
 import { prisma } from "../db.js";
+import { runAutoCompoundTickIfEnabled } from "./auto-compound-gate.js";
 import {
   getLiquidRewards,
   resolveValidatorShare,
@@ -391,16 +372,12 @@ async function executeSui(
         tx.pure.address(ctx.validator),
       ],
     });
-    const built = await tx.build({ client });
-    const sig = await keypair.signTransaction(built);
-    const result = await client.executeTransactionBlock({
-      transactionBlock: built,
-      signature: sig.signature,
-    });
+    const result = await client.signAndExecuteTransaction({ transaction: tx, signer: keypair });
+    if (result.$kind !== "Transaction") throw new Error("Sui keeper stake transaction failed");
     return {
       status: "success",
       amountRestaked: ctx.maxPerRun,
-      txHash: result.digest,
+      txHash: result.Transaction.digest,
     };
   } catch (err) {
     return { status: "failed", reason: String(err) };
@@ -492,7 +469,8 @@ async function runTick(_payload: TickPayload): Promise<void> {
 
 // --- Worker ---
 
-const worker = new Worker<TickPayload>(QUEUE_NAME, (job) => runTick(job.data), {
+const worker = new Worker<TickPayload>(QUEUE_NAME, (job) =>
+  runAutoCompoundTickIfEnabled(config.autoCompoundDisabled, () => runTick(job.data)), {
   connection: redis,
   concurrency: 1,
 });
@@ -526,6 +504,7 @@ export async function startAutoCompoundScheduler(): Promise<void> {
 
 /** Manual trigger for demos (not recurring). */
 export async function triggerAutoCompoundTick(): Promise<void> {
+  if (config.autoCompoundDisabled) throw new Error("Auto-compound is disabled via AUTO_COMPOUND_DISABLED");
   await queue.add(
     "tick",
     { reason: "manual" },

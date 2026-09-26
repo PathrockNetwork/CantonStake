@@ -133,6 +133,9 @@ const autoCompoundRoutes: FastifyPluginAsync = async (app) => {
   );
 
   app.post("/api/autocompound/trigger", async (_req, reply) => {
+    if (config.autoCompoundDisabled) {
+      return reply.code(403).send({ error: "Auto-compound is disabled via AUTO_COMPOUND_DISABLED" });
+    }
     if (config.logLevel !== "debug") {
       return reply.code(403).send({
         error: "manual trigger disabled; set LOG_LEVEL=debug",
