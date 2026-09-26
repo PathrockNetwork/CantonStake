@@ -28,10 +28,9 @@
  *                (Amoy, i.e. the testnet whose StakeManager we actually stake
  *                against — the mainnet host lists a completely different
  *                validator set whose signers do not exist on our StakeManager)
- *   - Monad    : https://raw.githubusercontent.com/monad-developers/
- *                validator-info/main/mainnet/validators.json
- *   - Cosmos   : theta-testnet REST (Polypore sentry-01)
- *   - Sui      : JSON-RPC suix_getLatestSuiSystemState (testnet)
+ *   - Monad    : 0x1000 staking precompile on the selected mode's chain
+ *   - Cosmos   : chain-verified CometBFT RPC, selected by mode
+ *   - Sui      : GraphQL current epoch active-validator set
  *
  * All fetchers are defensively coded: a failed call returns `[]` and
  * logs a warning, never throws into the BullMQ worker.
@@ -39,8 +38,15 @@
 
 import IORedis from "ioredis";
 import { Queue, Worker, type Job } from "bullmq";
+import { formatEther } from "viem";
 import { config } from "../config.js";
 import { diffAndAlert } from "./slashing-monitor.js";
+import { listBnbValidators } from "./bnb-staking.js";
+import { listMonadValidators } from "./monad-staking.js";
+import { listPolkadotPoolScoreRows } from "./polkadot-pool-scores.js";
+import { listCosmosBondedValidators } from "./cosmos-validator-catalog.js";
+import { assertAptosChainId, assertSuiChainIdentifier } from "./native-network.js";
+import { assertSolanaNetwork } from "./solana-rpc.js";
 
 // --- Types ---
 
@@ -67,6 +73,7 @@ export interface ScoredValidator {
   // other chain.
   validatorId?: number;
   validatorShare?: string;
+  stakingCredit?: string;   // BNB StakeHub: per-validator credit contract
   commissionPct: number;    // 0..100
   uptimePct: number;        // 0..100, best-effort (some chains don't expose; defaults to 99.0)
   jailed: boolean;
@@ -87,7 +94,9 @@ export interface ChainScoreSnapshot {
 // --- Redis ---
 
 const redis = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
-const REDIS_PREFIX = "vscore:";
+// Testnet and mainnet deployments can share Redis. Never hydrate one mode's
+// validator picker from the other mode's cached addresses or IDs.
+const REDIS_PREFIX = `vscore:${config.networkMode}:`;
 
 function cacheKey(chain: SupportedChain): string {
   return `${REDIS_PREFIX}${chain}`;
@@ -197,154 +206,109 @@ async function fetchJson<T>(
 }
 
 async function fetchPolygon(): Promise<ScoredValidator[]> {
-  // staking-api-amoy.polygon.technology returns { result: [{ id, name, signer,
-  // status, performanceIndex, commissionPercent, selfStake, delegatedStake,
-  // contractAddress, uptimePercent, ... }] } — performanceIndex is roughly an
-  // uptime proxy in basis-points-style.
-  //
-  // `contractAddress` is the validator's ValidatorShare. We take the on-chain
-  // StakeManager registry as authoritative and only fall back to the API's
-  // value if the resolver can't reach L1 — the API is a convenience, the
-  // StakeManager is the source of truth.
+  // The StakeManager on this mode's settlement chain is authoritative. The
+  // Amoy API is metadata only and must never select a mainnet validator.
   type PolygonRow = {
     id: number;
     name?: string;
     signer?: string;
-    status?: string;
-    commissionPercent?: number;
     performanceIndex?: number;
     uptimePercent?: number;
-    contractAddress?: string;
-    selfStake?: string;
-    delegatedStake?: string;
-    isInAuction?: boolean;
   };
-  const body = await fetchJson<{ result?: PolygonRow[] }>(
-    "https://staking-api-amoy.polygon.technology/api/v2/validators?limit=200"
-  );
-  if (!body?.result) return [];
+  const { listValidatorShares } = await import("./validator-share.js");
+  const registry = await listValidatorShares();
+  const metadata = config.networkMode === "testnet"
+    ? await fetchJson<{ result?: PolygonRow[] }>(
+        "https://staking-api-amoy.polygon.technology/api/v2/validators?limit=200",
+      )
+    : null;
+  const byId = new Map((metadata?.result ?? []).map((v) => [v.id, v]));
 
-  // On-chain registry: validatorId → ValidatorShare. Best-effort; a failure
-  // here degrades to the API-reported contractAddress rather than dropping
-  // the validator list entirely.
-  let onChain = new Map<number, { signer: string; share: string }>();
-  try {
-    const { listValidatorShares } = await import("./validator-share.js");
-    const registry = await listValidatorShares();
-    onChain = new Map(
-      registry.map((v) => [v.validatorId, { signer: v.signer, share: v.share }])
-    );
-  } catch (err) {
-    console.warn("[validator-scoring] StakeManager registry unavailable:", err);
-  }
-
-  const rows = body.result.map((v) => {
-    const total =
-      Number(v.selfStake ?? "0") + Number(v.delegatedStake ?? "0");
-    const perf = Number(v.performanceIndex ?? 100);
-    // performanceIndex is approximately 0..100 already; clamp.
-    const uptimePct = clamp(Number(v.uptimePercent ?? perf), 90, 100);
-    const chainEntry = onChain.get(v.id);
+  const rows = registry.filter((v) => v.status === 1 &&
+      /^0x[a-fA-F0-9]{40}$/.test(v.signer) &&
+      v.signer.toLowerCase() !== "0x0000000000000000000000000000000000000000")
+    .map((v) => {
+    const api = byId.get(v.validatorId);
+    const matchingMetadata = api?.signer?.toLowerCase() === v.signer.toLowerCase() ? api : null;
+    const uptimePct = matchingMetadata
+      ? clamp(Number(matchingMetadata.uptimePercent ?? matchingMetadata.performanceIndex ?? 99), 0, 100)
+      : 99; // neutral placeholder; no uptime is exposed by StakeManager
+    const total = Number(formatEther(BigInt(v.selfStake))) +
+      Number(formatEther(BigInt(v.delegatedAmount)));
     return {
       chain: "polygon" as const,
-      address: chainEntry?.signer ?? v.signer ?? `validator-${v.id}`,
-      name: v.name?.trim() || `Validator ${v.id}`,
-      validatorId: v.id,
-      validatorShare: chainEntry?.share ?? v.contractAddress,
-      commissionPct: Number(v.commissionPercent ?? 10),
+      address: v.signer,
+      name: matchingMetadata?.name?.trim() || `Polygon Validator #${v.validatorId}`,
+      validatorId: v.validatorId,
+      validatorShare: v.share,
+      commissionPct: Number(v.commissionRate),
       uptimePct,
-      jailed: v.status !== "Active" && v.status !== "active",
+      jailed: false,
       slashCount: 0,
       totalStaked: total,
     };
   });
-  // A validator with no ValidatorShare cannot be delegated to, so it must not
-  // be offered in the picker.
-  return attachScores(rows.filter((r) => Boolean(r.validatorShare)));
+  return attachScores(rows);
 }
 
 async function fetchMonad(): Promise<ScoredValidator[]> {
-  // Pulled from the monad-developers/validator-info repo's mainnet JSON.
-  // The schema is informally documented; fields below are best-effort.
-  type MonadRow = {
-    address?: string;
-    name?: string;
-    commission?: number;
-    self_stake?: string | number;
-    total_stake?: string | number;
-    active?: boolean;
-  };
-  const body = await fetchJson<MonadRow[] | { validators?: MonadRow[] }>(
-    "https://raw.githubusercontent.com/monad-developers/validator-info/main/mainnet/validators.json"
-  );
-  const rows = Array.isArray(body) ? body : body?.validators ?? [];
-
-  const partial = rows.map((v, i) => ({
+  // The transaction ABI takes a uint64 validator ID, not an EVM address.
+  // Read the active IDs from the precompile on this deployment's network.
+  const rows = await listMonadValidators();
+  const partial = rows.map((v) => ({
     chain: "monad" as const,
-    address: v.address ?? `validator-${i}`,
-    name: v.name ?? v.address?.slice(0, 10) ?? `Monad-${i}`,
-    commissionPct: Number(v.commission ?? 5),
-    uptimePct: 99.0,
-    jailed: v.active === false,
+    address: v.id,
+    name: `Monad Validator #${v.id}`,
+    commissionPct: v.commissionPct,
+    uptimePct: 99.0, // precompile does not expose uptime; score labels must not treat this as measured
+    jailed: false, // only the live execution validator set is enumerated
     slashCount: 0,
-    totalStaked: Number(v.total_stake ?? v.self_stake ?? 0),
+    totalStaked: v.totalStaked,
   }));
   return attachScores(partial);
 }
 
-// --- Cosmos-shape validator fetchers (shared x/staking REST schema) ---
+// --- Cosmos-shape validator fetchers (shared x/staking protobuf schema) ---
 
 async function fetchCosmosChain(
-  chain: SupportedChain,
-  restBase: string,
+  chain: "cosmos" | "celestia" | "osmosis",
+  rpcUrl: string,
   denomDecimals: number
 ): Promise<ScoredValidator[]> {
-  type CosmosVal = {
-    operator_address: string;
-    description?: { moniker?: string };
-    commission?: { commission_rates?: { rate?: string } };
-    tokens?: string;
-    jailed?: boolean;
-    status?: string;
-  };
-  const body = await fetchJson<{ validators?: CosmosVal[] }>(
-    `${restBase.replace(/\/$/, "")}/cosmos/staking/v1beta1/validators?pagination.limit=200&status=BOND_STATUS_BONDED`
-  );
-  if (!body?.validators) return [];
-
-  const partial = body.validators.map((v) => ({
+  const validators = await listCosmosBondedValidators(chain, rpcUrl);
+  const partial = validators.map((v) => ({
     chain,
-    address: v.operator_address,
-    name: v.description?.moniker ?? v.operator_address.slice(0, 14),
-    commissionPct: Number(v.commission?.commission_rates?.rate ?? "0.05") * 100,
-    uptimePct: 99.0,            // Cosmos REST doesn't ship uptime; would need a Mintscan call per-val
-    jailed: v.jailed === true || v.status !== "BOND_STATUS_BONDED",
+    address: v.operatorAddress,
+    name: v.description?.moniker || v.operatorAddress.slice(0, 14),
+    commissionPct: Number(v.commission?.commissionRates?.rate ?? "0.05") * 100,
+    uptimePct: 99.0,            // x/staking doesn't ship uptime; would need signing info per validator
+    jailed: v.jailed,
     slashCount: 0,
-    totalStaked: Number(v.tokens ?? "0") / 10 ** denomDecimals,
+    totalStaked: Number(v.tokens) / 10 ** denomDecimals,
   }));
   return attachScores(partial);
 }
 
 function fetchCosmos(): Promise<ScoredValidator[]> {
-  // Cosmos Hub theta-testnet — Polypore sentry-01 REST endpoint.
-  // Same x/staking schema as mainnet, just a smaller validator set.
-  return fetchCosmosChain("cosmos", config.cosmosRestUrl, 6);
+  // Cosmos Hub provider testnet or mainnet, selected by the shared mode.
+  return fetchCosmosChain("cosmos", config.cosmosRpcUrl, 6);
 }
 
 function fetchCelestia(): Promise<ScoredValidator[]> {
-  // Celestia mocha testnet — POPS public LCD (verified 2026-08-16).
-  return fetchCosmosChain("celestia", config.celestiaRestUrl, 6);
+  return fetchCosmosChain("celestia", config.celestiaRpcUrl, 6);
 }
 
 function fetchOsmosis(): Promise<ScoredValidator[]> {
-  // Osmosis testnet — official LCD (verified 2026-08-16).
-  return fetchCosmosChain("osmosis", config.osmosisRestUrl, 6);
+  return fetchCosmosChain("osmosis", config.osmosisRpcUrl, 6);
 }
 
-// --- Aptos: the stake::ValidatorSet resource on 0x1 (the REST
-// /v1/validators endpoint is not served by these fullnodes) ---
+// --- Aptos: only active validators that expose a real delegation pool.
+// ValidatorSet addresses alone are NOT valid delegation_pool::add_stake
+// targets; the indexer's pool-balance table identifies the native pools. ---
 
 async function fetchAptos(): Promise<ScoredValidator[]> {
+  const ledger = await fetchJson<{ chain_id?: number }>(`${config.aptosRestUrl.replace(/\/$/, "")}/v1`);
+  assertAptosChainId(ledger?.chain_id);
   const body = await fetchJson<{ data?: { active_validators?: Array<{
     addr?: string;
     voting_power?: string;
@@ -353,18 +317,31 @@ async function fetchAptos(): Promise<ScoredValidator[]> {
   );
   const validators = body?.data?.active_validators;
   if (!Array.isArray(validators)) return [];
-
-  const partial = validators.map((v) => ({
+  const active = new Set(validators.map((v) => v.addr?.toLowerCase()).filter(Boolean));
+  const response = await fetch(config.aptosIndexerUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query: `{ ledger_infos(limit: 1) { chain_id } current_delegated_staking_pool_balances(where: {total_coins: {_gt: "0"}}, order_by: {total_coins: desc}, limit: 500) { staking_pool_address operator_commission_percentage total_coins } }` }),
+  });
+  if (!response.ok) throw new Error(`Aptos indexer returned ${response.status}`);
+  const indexed = await response.json() as { data?: { ledger_infos?: Array<{ chain_id?: number | string }>; current_delegated_staking_pool_balances?: Array<{
+    staking_pool_address?: string;
+    operator_commission_percentage?: number;
+    total_coins?: string;
+  }> }; errors?: unknown[] };
+  if (indexed.errors?.length) throw new Error(`Aptos indexer query failed: ${JSON.stringify(indexed.errors)}`);
+  assertAptosChainId(Number(indexed.data?.ledger_infos?.[0]?.chain_id));
+  const pools = indexed.data?.current_delegated_staking_pool_balances ?? [];
+  const partial = pools.filter((pool) => !!pool.staking_pool_address && active.has(pool.staking_pool_address.toLowerCase()))
+    .map((pool) => ({
     chain: "aptos" as const,
-    address: v.addr ?? "unknown",
-    // Aptos pools are commission-free for delegators by protocol design;
-    // names aren't in this resource.
-    name: `Aptos pool ${v.addr?.slice(0, 10) ?? "?"}`,
-    commissionPct: 0,
+    address: pool.staking_pool_address!,
+    name: `Aptos pool ${pool.staking_pool_address!.slice(0, 10)}`,
+    commissionPct: Number(pool.operator_commission_percentage ?? 0) / 100,
     uptimePct: 99.0,
     jailed: false,
     slashCount: 0,
-    totalStaked: Number(v.voting_power ?? "0") / 1e8, // octa → APT
+    totalStaked: Number(pool.total_coins ?? "0") / 1e8, // octa → APT
   }));
   return attachScores(partial);
 }
@@ -372,6 +349,7 @@ async function fetchAptos(): Promise<ScoredValidator[]> {
 // --- Solana: getVoteAccounts via the testnet RPC ---
 
 async function fetchSolana(): Promise<ScoredValidator[]> {
+  await assertSolanaNetwork();
   const body = await fetchJson<{
     result?: {
       current?: Array<{
@@ -407,54 +385,85 @@ async function fetchSolana(): Promise<ScoredValidator[]> {
   return attachScores(partial);
 }
 
-// --- Polkadot + BNB: no free per-validator listing endpoint verified yet.
-// Honest stubs — the chain stats UI shows source:"stub" for these until a
-// real fetcher lands (see docs/CHAIN_EXPANSION_RESEARCH.md §4). ---
+// --- Polkadot Asset Hub nomination pools, not relay-chain validators. ---
 
 async function fetchPolkadot(): Promise<ScoredValidator[]> {
-  return [];
+  const rows = await listPolkadotPoolScoreRows();
+  return attachScores(rows.map((row) => ({
+    chain: "polkadot" as const,
+    ...row,
+    uptimePct: 99.0, // no pool-specific uptime measurement
+    jailed: false, // only open pools
+    slashCount: 0, // not measured; never label as verified no-slash history
+  })));
 }
 
 async function fetchBnb(): Promise<ScoredValidator[]> {
-  return [];
+  const validators = await listBnbValidators();
+  return attachScores(validators.map((v) => ({
+    chain: "bnb" as const,
+    address: v.operator,
+    name: v.name,
+    stakingCredit: v.credit,
+    commissionPct: v.commissionPct,
+    uptimePct: 99.0, // StakeHub does not expose historical signing uptime.
+    jailed: v.jailed,
+    slashCount: 0,
+    totalStaked: v.totalStaked,
+  })));
 }
 
 async function fetchSui(): Promise<ScoredValidator[]> {
-  // suix_getLatestSuiSystemState on Sui Testnet. The schema and method
-  // names are identical to mainnet — Sui keeps its system framework
-  // version-locked across networks.
   type SuiVal = {
-    suiAddress?: string;
-    name?: string;
-    commissionRate?: string;        // basis points, e.g. "500" = 5 %
-    votingPower?: string;           // basis points of total
-    stakingPoolSuiBalance?: string;
-    nextEpochStake?: string;
-    isActive?: boolean;
+    metadata?: { sui_address?: string; name?: string };
+    commission_rate?: string;
+    staking_pool?: { sui_balance?: string };
   };
-  const body = await fetchJson<{
-    result?: { activeValidators?: SuiVal[] };
-  }>("https://fullnode.testnet.sui.io:443", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "suix_getLatestSuiSystemState",
-      params: [],
-    }),
-  });
-  const validators = body?.result?.activeValidators ?? [];
+  const validators: SuiVal[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < 20; page++) {
+    const body: {
+      data?: { chainIdentifier?: string; epoch?: { validatorSet?: { activeValidators?: {
+        nodes?: Array<{ contents?: { json?: SuiVal } }>;
+        pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+      } } } };
+      errors?: Array<{ message?: string }>;
+    } | null = await fetchJson(config.suiGraphqlUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        query: `query($after: String) { chainIdentifier epoch { validatorSet {
+          activeValidators(first: 50, after: $after) {
+            nodes { contents { json } } pageInfo { hasNextPage endCursor }
+          }
+        } } }`,
+        variables: { after: cursor },
+      }),
+    });
+    if (body?.errors?.length) throw new Error(body.errors.map((e) => e.message).join("; "));
+    assertSuiChainIdentifier(body?.data?.chainIdentifier);
+    const connection: {
+      nodes?: Array<{ contents?: { json?: SuiVal } }>;
+      pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+    } | undefined = body?.data?.epoch?.validatorSet?.activeValidators;
+    if (!connection?.nodes || !connection.pageInfo) throw new Error("Sui validator GraphQL connection unavailable");
+    validators.push(...connection.nodes.flatMap((node: { contents?: { json?: SuiVal } }) =>
+      node.contents?.json ? [node.contents.json] : []));
+    if (!connection.pageInfo.hasNextPage) break;
+    if (!connection.pageInfo.endCursor || connection.pageInfo.endCursor === cursor) throw new Error("Sui validator GraphQL pagination stalled");
+    cursor = connection.pageInfo.endCursor;
+    if (page === 19) throw new Error("Sui validator GraphQL exceeded 20 pages");
+  }
 
-  const partial = validators.map((v, i) => ({
+  const partial = validators.filter((v) => !!v.metadata?.sui_address).map((v) => ({
     chain: "sui" as const,
-    address: v.suiAddress ?? `validator-${i}`,
-    name: v.name ?? v.suiAddress?.slice(0, 14) ?? `Sui-${i}`,
-    commissionPct: Number(v.commissionRate ?? "0") / 100, // bps → %
+    address: v.metadata!.sui_address!,
+    name: v.metadata?.name ?? v.metadata!.sui_address!.slice(0, 14),
+    commissionPct: Number(v.commission_rate ?? "0") / 100, // bps → %
     uptimePct: 99.5,
-    jailed: v.isActive === false,
+    jailed: false, // connection contains active validators only
     slashCount: 0,
-    totalStaked: Number(v.stakingPoolSuiBalance ?? "0") / 1e9, // MIST → SUI
+    totalStaked: Number(v.staking_pool?.sui_balance ?? "0") / 1e9, // MIST → SUI
   }));
   return attachScores(partial);
 }
@@ -498,6 +507,9 @@ export async function refreshChain(
     validators = await FETCHERS[chain]();
   } catch (err) {
     warnings.push(`fetch failed: ${String(err)}`);
+  }
+  if (chain === "polkadot" && validators.length > 0) {
+    warnings.push("Pool balances and commissions are live; pool-specific yield, uptime, and slash history are not measured.");
   }
 
   const snapshot: ChainScoreSnapshot = {
