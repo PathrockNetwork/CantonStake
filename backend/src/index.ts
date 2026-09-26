@@ -13,11 +13,11 @@
  */
 import Fastify from "fastify";
 import cors from "@fastify/cors";
-import { createPublicClient, formatEther, http, type Address } from "viem";
+import { createPublicClient, formatEther, http, parseUnits, type Address } from "viem";
 import { polygonAmoy } from "viem/chains";
 import { config } from "./config.js";
 import { canton, cantonDelegator, TEMPLATES } from "./canton.js";
-import { startReleaseChecker, featuredRightCidForDaml } from "./orchestrator.js";
+import { startReleaseChecker, featuredRightCidForDaml, extractCreatedContractId } from "./orchestrator.js";
 import { startMultichainWatchers, watchersHealth } from "./multichain-watcher.js";
 import { prisma } from "./db.js";
 import { startRewardScheduler, shutdownRewardSystem, redisConnection, enqueueRound } from "./reward-rounds.js";
@@ -51,7 +51,21 @@ import rewardsRoutes from "./routes/rewards.js";
 import protocolRoutes from "./routes/protocol.js";
 import chainsRoutes from "./routes/chains.js";
 import polygonRoutes from "./routes/polygon.js";
+import polkadotRoutes from "./routes/polkadot.js";
+import readinessRoutes from "./routes/readiness.js";
 import loopProxyRoutes from "./routes/loop-proxy.js";
+import { normalizeWalletAddress, sameWalletAddress } from "./services/wallet-address.js";
+import { assertSolanaNetwork, solanaRpc, SOLANA_STAKE_ACCOUNT_SPACE } from "./services/solana-rpc.js";
+import { polkadotApi, POLKADOT_ASSET_HUB, parsePolkadotPoolKey } from "./services/polkadot-rpc.js";
+import { decodeAddress, encodeAddress } from "@polkadot/util-crypto";
+import { assertEvmRpcChainId } from "./services/evm-network.js";
+import { settlementClient } from "./services/validator-share.js";
+import { monadStakingClient } from "./services/monad-staking.js";
+import { bnbStakingClient } from "./services/bnb-staking.js";
+import { assertCosmosRpcNetwork, assertSuiGraphqlNetwork } from "./services/native-network.js";
+import { nativeStakeInputError } from "./services/native-staking-input.js";
+import { watcherGateError } from "./services/watcher-gate.js";
+import { parseAptosDelegationStake } from "./services/aptos-lifecycle.js";
 
 const publicClient = createPublicClient({
   chain: polygonAmoy,
@@ -68,10 +82,6 @@ const validatorShareAbi = [
   },
 ] as const;
 
-function normalizeEvmAddress(address: string): string {
-  return address.toLowerCase();
-}
-
 function sumWei(values: string[]): bigint {
   return values.reduce((sum, value) => sum + BigInt(value || "0"), 0n);
 }
@@ -86,7 +96,7 @@ async function upsertUserIdentity(args: {
   displayName?: string;
 }) {
   const evmAddress = args.evmAddress
-    ? normalizeEvmAddress(args.evmAddress)
+    ? normalizeWalletAddress(args.evmAddress)
     : undefined;
 
   const existingByParty = await prisma.user.findUnique({
@@ -359,18 +369,44 @@ const VALID_CHAINS = new Set([
 interface CreateRequestBody {
   evmAddress: string;
   amountPol: string; // decimal string, e.g. "1.5"
+  clientNetworkMode?: "testnet" | "mainnet";
   chain?: string;
   validator?: string;
+  stakeAccountAddress?: string;
   delegator?: string; // Loop/Canton party id
 }
 
+function canonicalStakeAmount(value: string): string | null {
+  const raw = value.trim();
+  if (!/^\d+(?:\.\d+)?$/.test(raw)) return null;
+  const [whole, fraction = ""] = raw.split(".");
+  const integer = whole!.replace(/^0+(?=\d)/, "");
+  const decimal = fraction.replace(/0+$/, "");
+  // StakingRequest.amountPol is a Daml Decimal (Numeric 10). Reject a
+  // nonzero sub-10th-decimal remainder before a wallet transaction is sent.
+  if (decimal.length > 10) return null;
+  const result = decimal ? `${integer}.${decimal}` : integer;
+  return result === "0" ? null : result;
+}
+
 app.post<{ Body: CreateRequestBody }>("/api/requests", async (req, reply) => {
-  const { evmAddress, amountPol, validator } = req.body;
+  const { evmAddress, validator, stakeAccountAddress } = req.body;
+  const amountPol = typeof req.body.amountPol === "string"
+    ? canonicalStakeAmount(req.body.amountPol)
+    : null;
   const chain = req.body.chain ?? "polygon";
   const delegator = req.body.delegator || config.cantonDelegatorParty;
 
+  // A stale frontend image can otherwise create a mainnet Canton intent and
+  // then ask its wallet to sign on testnet (or vice versa). Require every
+  // staking client to state the mode it was built for before any ledger write.
+  if (req.body.clientNetworkMode !== config.networkMode) {
+    return reply.code(409).send({
+      error: `Staking client network ${req.body.clientNetworkMode ?? "unknown"} does not match backend ${config.networkMode}; reload the correct deployment`,
+    });
+  }
   if (!evmAddress || !amountPol) {
-    return reply.code(400).send({ error: "missing required fields" });
+    return reply.code(400).send({ error: "address and positive decimal amount are required" });
   }
   if (!VALID_CHAINS.has(chain)) {
     return reply.code(400).send({ error: `invalid chain: ${chain}` });
@@ -391,13 +427,262 @@ app.post<{ Body: CreateRequestBody }>("/api/requests", async (req, reply) => {
   if (isEvmChain && !/^0x[a-fA-F0-9]{40}$/.test(evmAddress)) {
     return reply.code(400).send({ error: "invalid EVM address" });
   }
+  if ((chain === "bnb" || chain === "polygon") &&
+      (!validator || !/^0x[a-fA-F0-9]{40}$/.test(validator))) {
+    return reply.code(400).send({ error: `${chain} staking requires a validator address` });
+  }
+  if (chain === "monad" && (!validator || !/^\d+$/.test(validator))) {
+    return reply.code(400).send({ error: "Monad staking requires a numeric validator ID" });
+  }
+  if (chain === "cosmos" || chain === "celestia" || chain === "osmosis" || chain === "sui") {
+    const error = nativeStakeInputError(chain, evmAddress, validator, amountPol);
+    if (error) return reply.code(400).send({ error });
+  }
+  if (chain === "aptos" &&
+      (!/^0x[a-fA-F0-9]{64}$/.test(evmAddress) || !validator || !/^0x[a-fA-F0-9]{64}$/.test(validator))) {
+    return reply.code(400).send({ error: "Aptos staking requires full 32-byte delegator and delegation-pool addresses" });
+  }
+  if (chain === "solana" &&
+      (![evmAddress, validator, stakeAccountAddress].every((value) => typeof value === "string" && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value)) ||
+        stakeAccountAddress === evmAddress || stakeAccountAddress === validator)) {
+    return reply.code(400).send({ error: "Solana staking requires distinct wallet, vote-account, and new stake-account public keys" });
+  }
+  const polkadotPoolId = chain === "polkadot" ? parsePolkadotPoolKey(validator ?? "") : null;
+  if (chain === "polkadot") {
+    if (polkadotPoolId === null || !/^[1-9A-HJ-NP-Za-km-z]{47,49}$/.test(evmAddress)) {
+      return reply.code(400).send({ error: "Polkadot staking requires a canonical wallet address and pool ID" });
+    }
+    try {
+      const canonical = encodeAddress(decodeAddress(evmAddress), config.networkMode === "mainnet" ? 0 : 42);
+      if (canonical !== evmAddress) return reply.code(400).send({ error: "Polkadot address does not match this network's SS58 format" });
+    } catch {
+      return reply.code(400).send({ error: "Invalid Polkadot wallet address" });
+    }
+  }
+  let aptosAmountOcta: bigint | null = null;
+  if (chain === "aptos") {
+    if (!/^\d+(?:\.\d{1,8})?$/.test(amountPol)) {
+      return reply.code(400).send({ error: "APT supports at most 8 decimal places" });
+    }
+    aptosAmountOcta = parseUnits(amountPol, 8);
+    if (aptosAmountOcta < 1_100_000_000n || aptosAmountOcta > 18_446_744_073_709_551_615n) {
+      return reply.code(400).send({ error: "Aptos delegation requires at least 11 APT and a u64-sized amount" });
+    }
+  }
+  let solanaAmountLamports: bigint | null = null;
+  let solanaRentLamports: string | null = null;
+  if (chain === "solana") {
+    if (!/^\d+(?:\.\d{1,9})?$/.test(amountPol)) return reply.code(400).send({ error: "SOL supports at most 9 decimal places" });
+    solanaAmountLamports = parseUnits(amountPol, 9);
+    if (solanaAmountLamports <= 0n || solanaAmountLamports > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return reply.code(400).send({ error: "SOL stake amount is outside the supported lamport range" });
+    }
+  }
+  const polkadotAmountPlanck = chain === "polkadot"
+    ? parseUnits(amountPol, POLKADOT_ASSET_HUB[config.networkMode].decimals)
+    : null;
+
+  const watcherError = watcherGateError(chain, watchersHealth());
+  if (watcherError) return reply.code(503).send({ error: watcherError });
 
   try {
-    await upsertUserIdentity({ cantonPartyId: delegator, evmAddress });
+    if (isEvmChain) {
+      const rpc = chain === "polygon" ? settlementClient
+        : chain === "monad" ? monadStakingClient : bnbStakingClient;
+      const expected = chain === "polygon" ? config.stakeSettlementChainId
+        : chain === "monad" ? (config.networkMode === "mainnet" ? 143 : 10143)
+          : (config.networkMode === "mainnet" ? 56 : 97);
+      const label = chain === "polygon" ? "Polygon settlement"
+        : chain === "monad" ? "Monad" : "BNB";
+      try {
+        await assertEvmRpcChainId(rpc, expected, label);
+      } catch (error) {
+        return reply.code(503).send({
+          error: error instanceof Error ? error.message : `${label} RPC chain identity unavailable`,
+        });
+      }
+    }
+    if (chain === "cosmos" || chain === "celestia" || chain === "osmosis" || chain === "sui") {
+      try {
+        if (chain === "sui") await assertSuiGraphqlNetwork();
+        else await assertCosmosRpcNetwork(chain);
+      } catch (error) {
+        return reply.code(503).send({
+          error: error instanceof Error ? error.message : `${chain} RPC chain identity unavailable`,
+        });
+      }
+    }
+    if (chain === "solana") {
+      await assertSolanaNetwork();
+      const [minimum, rent, wallet, stakeAccount, votes] = await Promise.all([
+        solanaRpc<{ value: number }>("getStakeMinimumDelegation", [{ commitment: "finalized" }]),
+        solanaRpc<number>("getMinimumBalanceForRentExemption", [SOLANA_STAKE_ACCOUNT_SPACE]),
+        solanaRpc<{ value: { lamports?: number } | null }>("getAccountInfo", [evmAddress, { commitment: "finalized" }]),
+        solanaRpc<{ value: unknown | null }>("getAccountInfo", [stakeAccountAddress, { commitment: "finalized" }]),
+        solanaRpc<{ current: Array<{ votePubkey: string }> }>("getVoteAccounts"),
+      ]);
+      if (solanaAmountLamports! < BigInt(minimum.value)) {
+        return reply.code(400).send({ error: `Solana minimum delegation is ${minimum.value / 1e9} SOL on this cluster` });
+      }
+      if (stakeAccount.value !== null) return reply.code(409).send({ error: "Solana stake account already exists; create a fresh one" });
+      if (!votes.current?.some((vote) => vote.votePubkey === validator)) {
+        return reply.code(400).send({ error: "Selected Solana vote account is not currently active" });
+      }
+      if (BigInt(wallet.value?.lamports ?? 0) < solanaAmountLamports! + BigInt(rent) + 10_000n) {
+        return reply.code(400).send({ error: "Insufficient SOL for the delegation, stake-account rent, and transaction fee" });
+      }
+      solanaRentLamports = String(rent);
+    }
+    if (chain === "polkadot") {
+      const api = await polkadotApi();
+      const [minJoin, pool, member, account] = await Promise.all([
+        api.query.nominationPools.minJoinBond(),
+        api.query.nominationPools.bondedPools(polkadotPoolId!),
+        api.query.nominationPools.poolMembers(evmAddress),
+        api.query.system.account(evmAddress),
+      ]);
+      if (polkadotAmountPlanck! < BigInt(minJoin.toString())) {
+        return reply.code(400).send({ error: `Polkadot pool minimum is ${minJoin.toString()} planck on this network` });
+      }
+      if ((pool.toJSON() as { state?: string } | null)?.state !== "Open") {
+        return reply.code(400).send({ error: "Selected Polkadot nomination pool is not open" });
+      }
+      if (member.toJSON() !== null) {
+        return reply.code(409).send({ error: "This wallet is already a nomination-pool member; use a fresh account for a CantonStake position" });
+      }
+      // Read the u128 codec directly: toJSON() may round large balances via JS numbers.
+      const free = BigInt((account as unknown as { data: { free: { toString(): string } } }).data.free.toString());
+      const fee = BigInt((await api.tx.nominationPools.join(polkadotAmountPlanck!.toString(), polkadotPoolId!).paymentInfo(evmAddress)).partialFee.toString());
+      const reserve = BigInt(api.consts.balances.existentialDeposit.toString());
+      if (free < polkadotAmountPlanck! + fee + reserve) {
+        return reply.code(400).send({ error: "Insufficient Polkadot balance for the pool stake, transaction fee, and existential deposit" });
+      }
+    }
+    const user = await upsertUserIdentity({ cantonPartyId: delegator, evmAddress });
+
+    // Two indistinguishable pending intents cannot be assigned to distinct
+    // on-chain delegation events. Reject the second until the first settles
+    // or is cancelled on Canton.
+    const activeRequests = await canton.activeContracts(TEMPLATES.StakingRequest);
+    const pendingIntents = await prisma.stakingIntent.findMany({
+      where: {
+        requestContractId: { in: activeRequests.map((r) => r.contractId) },
+        chain,
+        evmAddress: normalizeWalletAddress(evmAddress),
+        amountPol,
+        validatorAddress: validator ?? null,
+        acceptedAt: null,
+      },
+    });
+    if (pendingIntents.length > 0) {
+      return reply.code(409).send({
+        error: "An identical staking request is already pending; wait for it to settle or cancel it before retrying.",
+      });
+    }
+    if (chain === "polkadot" && await prisma.stakingIntent.findFirst({ where: {
+      requestContractId: { in: activeRequests.map((r) => r.contractId) }, chain: "polkadot",
+      evmAddress, acceptedAt: null,
+    } })) {
+      return reply.code(409).send({ error: "This Polkadot wallet already has a pending pool-join request" });
+    }
+    if (["bnb", "monad", "cosmos", "celestia", "osmosis", "sui", "aptos", "solana"].includes(chain) && validator) {
+      const [pendingForValidator, activeForValidator] = await Promise.all([
+        prisma.stakingIntent.findFirst({
+          where: {
+            requestContractId: { in: activeRequests.map((r) => r.contractId) },
+            chain,
+            evmAddress: normalizeWalletAddress(evmAddress),
+            validatorAddress: { equals: validator, mode: "insensitive" },
+            acceptedAt: null,
+          },
+        }),
+        prisma.stakingPosition.findFirst({
+          where: {
+            chain,
+            evmAddress: normalizeWalletAddress(evmAddress),
+            status: { in: ["Bonded", "Unbonding"] },
+            ...(chain === "bnb"
+              ? { OR: [
+                  { validatorAddress: { equals: validator, mode: "insensitive" as const } },
+                  { validatorShare: { equals: validator, mode: "insensitive" as const } },
+                ] }
+              : { validatorAddress: validator }),
+          },
+        }),
+      ]);
+      if (pendingForValidator || activeForValidator) {
+        return reply.code(409).send({
+          error: `This ${chain} wallet already has a pending or active position with that validator; choose another validator.`,
+        });
+      }
+    }
 
     // Use the known Canton delegator party for contract creation — the
     // Loop SDK party may not exist on the local Canton participant.
     const knownDelegator = config.cantonDelegatorParty;
+
+    if (chain === "aptos") {
+      const base = config.aptosRestUrl.replace(/\/$/, "");
+      const [ledgerResponse, accountResponse, feeResponse, stakeResponse] = await Promise.all([
+        fetch(`${base}/v1`),
+        fetch(`${base}/v1/accounts/${evmAddress}`),
+        fetch(`${base}/v1/view`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            function: "0x1::delegation_pool::get_add_stake_fee",
+            type_arguments: [],
+            arguments: [validator, aptosAmountOcta!.toString()],
+          }),
+        }),
+        fetch(`${base}/v1/view`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ function: "0x1::delegation_pool::get_stake",
+            type_arguments: [], arguments: [validator, evmAddress] }),
+        }),
+      ]);
+      if (!ledgerResponse.ok || !accountResponse.ok || !feeResponse.ok || !stakeResponse.ok) {
+        return reply.code(503).send({ error: "Aptos fullnode, delegation pool, or wallet account is unavailable; check the pool and fund the account" });
+      }
+      const fee = await feeResponse.json() as unknown;
+      if (!Array.isArray(fee) || !/^\d+$/.test(String(fee[0]))) {
+        return reply.code(503).send({ error: "Aptos delegation-pool fee is unavailable" });
+      }
+      if (aptosAmountOcta! - BigInt(String(fee[0])) < 1_000_000_000n) {
+        return reply.code(400).send({ error: "Amount minus the Aptos pool entry fee must credit at least 10 APT" });
+      }
+      const ledger = await ledgerResponse.json() as { chain_id?: number };
+      const expectedChainId = config.networkMode === "mainnet" ? 1 : 2;
+      if (ledger.chain_id !== expectedChainId) {
+        return reply.code(503).send({ error: `Aptos fullnode is on chain ${ledger.chain_id}, expected ${expectedChainId}` });
+      }
+      const stake = parseAptosDelegationStake(await stakeResponse.json());
+      if (stake.active > 0n || stake.inactive > 0n || stake.pendingInactive > 0n) {
+        return reply.code(409).send({ error: "This Aptos wallet already has native stake in that pool; choose another pool. CantonStake tracks the entire wallet/pool delegation, including rewards." });
+      }
+      const account = await accountResponse.json() as { sequence_number?: string };
+      if (!account.sequence_number || !/^\d+$/.test(account.sequence_number)) {
+        return reply.code(503).send({ error: "Aptos account sequence is unavailable" });
+      }
+      const key = `aptos:${expectedChainId}:${evmAddress.toLowerCase()}`;
+      // Seed the first account-scoped watcher cursor BEFORE the wallet can
+      // broadcast. Never move an existing cursor forward past pending exits.
+      await prisma.watcherCursor.upsert({
+        where: { key },
+        create: { key, lastScannedBlock: account.sequence_number },
+        update: {},
+      });
+    }
+    if (chain === "polkadot") {
+      const api = await polkadotApi();
+      const head = await api.rpc.chain.getFinalizedHead();
+      const height = (await api.rpc.chain.getHeader(head)).number.toNumber();
+      const key = `polkadot:${POLKADOT_ASSET_HUB[config.networkMode].genesis}`;
+      await prisma.watcherCursor.upsert({
+        where: { key }, create: { key, lastScannedBlock: String(height) }, update: {},
+      });
+    }
 
     const result = await cantonDelegator.createContract({
       templateId: TEMPLATES.StakingRequest,
@@ -410,21 +695,30 @@ app.post<{ Body: CreateRequestBody }>("/api/requests", async (req, reply) => {
       },
       actAs: [knownDelegator],
     });
+    const requestContractId = extractCreatedContractId(result.events);
+    if (!requestContractId) {
+      throw new Error("Canton created a StakingRequest but did not return its contract ID; cannot bind network intent");
+    }
+    await prisma.stakingIntent.create({
+      data: {
+        requestContractId,
+        chain,
+        validatorAddress: validator ?? null,
+        stakeAccountAddress: chain === "solana" ? stakeAccountAddress : null,
+        stakeRentLamports: solanaRentLamports,
+        evmAddress: normalizeWalletAddress(evmAddress),
+        userId: user.id,
+        amountPol,
+      },
+    });
 
     req.log.info(
       { chain, validator, evmAddress, amountPol },
       "[requests] StakingRequest created"
     );
 
-    if (chain !== "polygon") {
-      req.log.warn(
-        { chain },
-        "[requests] non-polygon stake — orchestrator will not auto-Accept this. " +
-          "Use POST /api/admin/requests/:txId/accept to force-Accept after the EVM tx confirms."
-      );
-    }
-
-    return { ok: true, transactionId: result.transactionId, delegator: knownDelegator, chain };
+    return { ok: true, transactionId: result.transactionId, requestContractId, delegator: knownDelegator, chain,
+      ...(solanaRentLamports ? { stakeRentLamports: solanaRentLamports } : {}) };
   } catch (err) {
     req.log.error(err);
     return reply.code(500).send({ error: String(err) });
@@ -442,7 +736,7 @@ app.get<{ Querystring: { address?: string } }>(
       const filtered = address
         ? contracts.filter((c) => {
             const a = c.argument as { evmAddress?: string };
-            return a.evmAddress?.toLowerCase() === address.toLowerCase();
+            return sameWalletAddress(a.evmAddress, address);
           })
         : contracts;
       return { requests: filtered };
@@ -460,13 +754,13 @@ app.get<{ Querystring: { address?: string } }>(
   async (req, reply) => {
     const { address } = req.query;
     try {
-      // Canton contracts already have markersEmitted set by Daml
-      // No need to merge with Postgres - Canton is the source of truth
+      // Canton owns lifecycle status; Postgres adds chain and tx metadata
+      // absent from the current StakingPosition template.
       const contracts = await canton.activeContracts(TEMPLATES.StakingPosition);
       const filtered = address
         ? contracts.filter((c) => {
             const a = c.argument as { evmAddress?: string };
-            return a.evmAddress?.toLowerCase() === address.toLowerCase();
+            return sameWalletAddress(a.evmAddress, address);
           })
         : contracts;
 
@@ -485,8 +779,10 @@ app.get<{ Querystring: { address?: string } }>(
           validatorAddress: true,
           validatorShare: true,
           validatorId: true,
+          evmTxHash: true,
           unbondNonce: true,
           unbondWithdrawEpoch: true,
+          suiStakedObjectId: true,
         },
       });
       const byCid = new Map(mirrors.map((m) => [m.contractId, m]));
@@ -509,7 +805,7 @@ app.get<{ Querystring: { address?: string } }>(
 app.get<{ Params: { address: string } }>(
   "/api/rewards/:address",
   async (req, reply) => {
-    const address = req.params.address.toLowerCase();
+    const address = normalizeWalletAddress(req.params.address);
     try {
       // Find user by EVM address
       const user = await prisma.user.findFirst({
@@ -642,6 +938,7 @@ app.post("/api/admin/rounds/trigger", async (req, reply) => {
 });
 
 // --- Sweep routes ---
+await app.register(readinessRoutes);
 await app.register(sweepRoutes);
 await app.register(rewardHistoryRoutes);
 
@@ -669,6 +966,7 @@ await app.register(chainsRoutes);
 
 // --- Polygon staking params + validator-share registry ---
 await app.register(polygonRoutes);
+await app.register(polkadotRoutes);
 
 // --- Loop SDK reverse proxy (CORS bypass for dev origins) ---
 await app.register(loopProxyRoutes);
@@ -678,7 +976,7 @@ await app.register(loopProxyRoutes);
 await app.listen({ port: config.port, host: "0.0.0.0" });
 app.log.info(`cantonstake backend listening on :${config.port}`);
 
-startMultichainWatchers();
+await startMultichainWatchers();
 startReleaseChecker();
 app.log.info("orchestrator running");
 
