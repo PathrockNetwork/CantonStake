@@ -2,6 +2,8 @@ export type UnsignedTx =
   | { kind: "evm"; to: `0x${string}`; data: `0x${string}`; value?: bigint; gas?: bigint }
   | { kind: "substrate"; method: string; args: unknown[] }
   | { kind: "cosmos"; typeUrl: string; value: Record<string, unknown> }
+  | { kind: "aptos"; function: `0x${string}::${string}::${string}`; args: string[] }
+  | { kind: "solana"; action: "stake" | "deactivate" | "withdraw"; voteAccount?: string; stakeAccount?: string; amountLamports?: bigint }
   | { kind: "sui"; tx: unknown };
 
 export type Position = {
