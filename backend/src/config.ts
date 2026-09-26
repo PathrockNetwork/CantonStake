@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { assertPolygonSettlementMode } from "./services/evm-network.js";
 
 function required(key: string): string {
   const v = process.env[key];
@@ -33,12 +34,13 @@ function modeDefault<T>(envKey: string, testnet: T, mainnet: T): T {
 // --- Chain wall -------------------------------------------------------------
 //
 // ENABLED_CHAINS is the staking whitelist for this deployment. A chain
-// outside the wall is rejected at POST /api/requests, excluded from
-// /api/chains/stats and validator scoring, and its watcher never starts.
-// Default is polygon only: it is the one chain with a verified end-to-end
-// path in BOTH modes (docs/STAKING_INTEGRATION_ROADMAP.md); the rest are
-// research-verified but stay behind the wall until their adapters are
-// production-grade. Unknown ids in the env are ignored rather than
+// outside the wall is rejected at POST /api/requests and excluded from
+// /api/chains/stats and validator scoring. Its watcher still runs if pending
+// requests or live positions need lifecycle tracking.
+// Default is polygon only for a conservative rollout of the most mature
+// adapter. A registered adapter is not proof of funded-wallet lifecycle
+// verification in either mode; open more chains after that verification.
+// Unknown ids in the env are ignored rather than
 // fatal so a typo cannot brick startup.
 
 const KNOWN_CHAINS = [
@@ -254,13 +256,13 @@ export const config = {
     "https://rpc.monad.xyz"
   ),
   monadStakingContract: optional("MONAD_STAKING_CONTRACT"),
-  // Cosmos Hub theta-testnet — Polypore sentry-01 endpoints
+  // Cosmos Hub provider testnet (theta-testnet-001 halted in 2024).
   cosmosRestUrl: modeDefault("COSMOS_REST_URL",
-    "https://cosmoshub-testnet.api.kjnodes.com", // theta-testnet
+    "https://cosmoshub-testnet.api.kjnodes.com", // provider
     "https://cosmos-api.polkachu.com"            // Cosmos Hub mainnet
   ),
   cosmosRpcUrl: modeDefault("COSMOS_RPC_URL",
-    "https://cosmoshub-testnet.rpc.kjnodes.com", // theta-testnet
+    "https://cosmoshub-testnet.rpc.kjnodes.com", // provider
     "https://cosmos-rpc.polkachu.com"            // Cosmos Hub mainnet
   ),
   // Celestia mocha testnet (public POPS endpoints, verified reachable
@@ -287,13 +289,15 @@ export const config = {
     "https://fullnode.testnet.aptoslabs.com",
     "https://fullnode.mainnet.aptoslabs.com"
   ),
-  // Polkadot Westend testnet (Substrate RPC over HTTPS; Cloudflare-hosted,
-  // blocks non-browser UAs — viem/fetch default UA works).
-  // Substrate RPC: Westend testnet / Polkadot mainnet — same runtime
-  // shapes (nominationPools), different chain.
+  aptosIndexerUrl: modeDefault("APTOS_INDEXER_URL",
+    "https://api.testnet.aptoslabs.com/v1/graphql",
+    "https://api.mainnet.aptoslabs.com/v1/graphql"
+  ),
+  // Nomination pools run on Asset Hub, not the relay-chain endpoint. The
+  // relay runtime exposes stakingAhClient but no nominationPools pallet.
   polkadotRpcUrl: modeDefault("POLKADOT_RPC_URL",
-    "https://westend-rpc.polkadot.io",
-    "https://rpc.polkadot.io"
+    "https://westend-asset-hub-rpc.polkadot.io",
+    "https://polkadot-asset-hub-rpc.polkadot.io"
   ),
   // BNB Smart Chain Chapel testnet.
   // StakeHub lives at the same 0x…2002 address on both networks
@@ -310,8 +314,12 @@ export const config = {
   cosmosKeeperMnemonic: optional("COSMOS_KEEPER_MNEMONIC"),
   cosmosKeeperPrefix: optional("COSMOS_KEEPER_PREFIX", "cosmos"),
   cosmosGasPrice: optional("COSMOS_GAS_PRICE", "0.025uatom"),
-  // Sui Testnet
-  suiRpcUrl: optional("SUI_RPC_URL", "https://fullnode.testnet.sui.io:443"),
+  // Indexed staking events, validator reads and keeper transactions use
+  // GraphQL; the public JSON-RPC fullnodes have retired that API.
+  suiGraphqlUrl: modeDefault("SUI_GRAPHQL_URL",
+    "https://graphql.testnet.sui.io/graphql",
+    "https://graphql.mainnet.sui.io/graphql"
+  ),
   suiKeeperPrivateKey: optional("SUI_KEEPER_PRIVATE_KEY"),
 
   // Loop SDK CORS proxy. Devnet's edge (Cloudflare-fronted) blocks any
@@ -321,9 +329,9 @@ export const config = {
   // once fivenorth allowlists your real origin.
   loopProxyEnabled:
     optional("LOOP_PROXY_ENABLED", "true").toLowerCase() === "true",
-  loopProxyUpstream: optional(
-    "LOOP_API_UPSTREAM",
-    "https://devnet.cantonloop.com"
+  loopProxyUpstream: modeDefault("LOOP_API_UPSTREAM",
+    "https://devnet.cantonloop.com",
+    "https://cantonloop.com"
   ),
 
   // Observability (§6). Sentry DSN unset = error capture is a no-op.
@@ -332,3 +340,7 @@ export const config = {
   sentryEnv: optional("SENTRY_ENV", "development"),
   sentryRelease: optional("SENTRY_RELEASE"),
 } as const;
+
+// A mainnet chain ID must never bypass the explicit mainnet acknowledgement
+// by being configured under a deployment that still reports testnet mode.
+assertPolygonSettlementMode(config.networkMode, config.stakeSettlementChainId);
