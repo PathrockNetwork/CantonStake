@@ -1,41 +1,25 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { cosmosNetworks, type CosmosChainKey, type CosmosNetwork } from "./networks";
+import { networkMode } from "../network";
+import { assertWalletOwner } from "../wallet-binding";
 
 /**
  * Cosmos wallet hook — Keplr / Leap browser extension on
- * theta-testnet (Cosmos Hub testnet, chain id `theta-testnet-001`).
+ * Cosmos Hub provider testnet (chain id `provider`).
  *
  * The shape mirrors wagmi's `useAccount` so the stake page can branch
  * on `selectedChain.id === "cosmos"` and use the same UX.
  *
  * Keplr is preferred when present; Leap and Cosmostation also expose
  * a `window.keplr`-compatible API. We attempt experimentalSuggestChain
- * once on connect so users without theta-testnet pre-configured don't
+ * once on connect so users without the provider testnet pre-configured don't
  * have to add it manually.
  */
 
-// Defaults target Cosmos Hub theta-testnet. Each can be overridden via
-// NEXT_PUBLIC_COSMOS_* env vars at build time so a different testnet
-// (e.g. provider, mainnet) can be slotted in without code changes.
-const CHAIN_ID =
-  process.env.NEXT_PUBLIC_COSMOS_CHAIN_ID ?? "theta-testnet-001";
-const CHAIN_NAME =
-  process.env.NEXT_PUBLIC_COSMOS_CHAIN_NAME ?? "Cosmos Hub Theta Testnet";
-const RPC =
-  process.env.NEXT_PUBLIC_COSMOS_RPC ??
-  "https://rpc.sentry-01.theta-testnet.polypore.xyz";
-const REST =
-  process.env.NEXT_PUBLIC_COSMOS_REST ??
-  "https://rest.sentry-01.theta-testnet.polypore.xyz";
-const COIN_DENOM = process.env.NEXT_PUBLIC_COSMOS_COIN_DENOM ?? "ATOM";
-const COIN_MINIMAL_DENOM =
-  process.env.NEXT_PUBLIC_COSMOS_COIN_MINIMAL_DENOM ?? "uatom";
-const COIN_DECIMALS = Number(
-  process.env.NEXT_PUBLIC_COSMOS_COIN_DECIMALS ?? "6",
-);
-const COIN_TYPE = Number(process.env.NEXT_PUBLIC_COSMOS_COIN_TYPE ?? "118");
-const STORAGE_KEY = "cantonstake_cosmos_address";
+const walletEvent = "cantonstake:cosmos-wallet-change";
+const storageKey = (chain: CosmosChainKey) => `cantonstake_${networkMode}_${chain}_address`;
 
 interface KeplrLike {
   enable(chainId: string | string[]): Promise<void>;
@@ -60,42 +44,42 @@ function getKeplrLike(): KeplrLike | null {
   return window.keplr ?? window.leap ?? null;
 }
 
-async function suggestThetaTestnet(keplr: KeplrLike): Promise<void> {
+async function suggestCosmosChain(keplr: KeplrLike, network: CosmosNetwork): Promise<void> {
   if (!keplr.experimentalSuggestChain) return;
   try {
     await keplr.experimentalSuggestChain({
-      chainId: CHAIN_ID,
-      chainName: CHAIN_NAME,
-      rpc: RPC,
-      rest: REST,
-      bip44: { coinType: COIN_TYPE },
+      chainId: network.chainId,
+      chainName: network.chainName,
+      rpc: network.rpc,
+      rest: network.rest,
+      bip44: { coinType: network.coinType },
       bech32Config: {
-        bech32PrefixAccAddr: "cosmos",
-        bech32PrefixAccPub: "cosmospub",
-        bech32PrefixValAddr: "cosmosvaloper",
-        bech32PrefixValPub: "cosmosvaloperpub",
-        bech32PrefixConsAddr: "cosmosvalcons",
-        bech32PrefixConsPub: "cosmosvalconspub",
+        bech32PrefixAccAddr: network.prefix,
+        bech32PrefixAccPub: `${network.prefix}pub`,
+        bech32PrefixValAddr: `${network.prefix}valoper`,
+        bech32PrefixValPub: `${network.prefix}valoperpub`,
+        bech32PrefixConsAddr: `${network.prefix}valcons`,
+        bech32PrefixConsPub: `${network.prefix}valconspub`,
       },
       currencies: [
         {
-          coinDenom: COIN_DENOM,
-          coinMinimalDenom: COIN_MINIMAL_DENOM,
-          coinDecimals: COIN_DECIMALS,
+          coinDenom: network.symbol,
+          coinMinimalDenom: network.denom,
+          coinDecimals: network.decimals,
         },
       ],
       feeCurrencies: [
         {
-          coinDenom: COIN_DENOM,
-          coinMinimalDenom: COIN_MINIMAL_DENOM,
-          coinDecimals: COIN_DECIMALS,
-          gasPriceStep: { low: 0.005, average: 0.025, high: 0.04 },
+          coinDenom: network.symbol,
+          coinMinimalDenom: network.denom,
+          coinDecimals: network.decimals,
+          gasPriceStep: { low: network.gasPrice, average: network.gasPrice, high: network.gasPrice * 1.6 },
         },
       ],
       stakeCurrency: {
-        coinDenom: COIN_DENOM,
-        coinMinimalDenom: COIN_MINIMAL_DENOM,
-        coinDecimals: COIN_DECIMALS,
+        coinDenom: network.symbol,
+        coinMinimalDenom: network.denom,
+        coinDecimals: network.decimals,
       },
     });
   } catch (err) {
@@ -119,7 +103,8 @@ export interface UseCosmosWalletReturn {
   }) => Promise<{ txHash: string }>;
 }
 
-export function useCosmosWallet(): UseCosmosWalletReturn {
+export function useCosmosWallet(chain: CosmosChainKey = "cosmos"): UseCosmosWalletReturn {
+  const network = cosmosNetworks[chain];
   const [address, setAddress] = useState<string | null>(null);
   const [name, setName] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
@@ -128,9 +113,15 @@ export function useCosmosWallet(): UseCosmosWalletReturn {
   // Restore the connected address on mount so the chip persists across reloads.
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) setAddress(stored);
-  }, []);
+    const sync = () => setAddress(localStorage.getItem(storageKey(chain)));
+    sync();
+    window.addEventListener(walletEvent, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(walletEvent, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, [chain]);
 
   const connect = useCallback(async () => {
     setError(null);
@@ -142,24 +133,31 @@ export function useCosmosWallet(): UseCosmosWalletReturn {
           "Keplr / Leap not detected. Install the Keplr extension from keplr.app and reload.",
         );
       }
-      await suggestThetaTestnet(keplr);
-      await keplr.enable(CHAIN_ID);
-      const key = await keplr.getKey(CHAIN_ID);
+      await suggestCosmosChain(keplr, network);
+      await keplr.enable(network.chainId);
+      const key = await keplr.getKey(network.chainId);
+      if (!key.bech32Address.startsWith(`${network.prefix}1`)) {
+        throw new Error(`Wallet returned an address for the wrong network; expected ${network.prefix}.`);
+      }
       setAddress(key.bech32Address);
       setName(key.name ?? null);
-      localStorage.setItem(STORAGE_KEY, key.bech32Address);
+      localStorage.setItem(storageKey(chain), key.bech32Address);
+      window.dispatchEvent(new Event(walletEvent));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsConnecting(false);
     }
-  }, []);
+  }, [chain, network]);
 
   const disconnect = useCallback(() => {
     setAddress(null);
     setName(null);
-    if (typeof window !== "undefined") localStorage.removeItem(STORAGE_KEY);
-  }, []);
+    if (typeof window !== "undefined") {
+      localStorage.removeItem(storageKey(chain));
+      window.dispatchEvent(new Event(walletEvent));
+    }
+  }, [chain]);
 
   const signAndBroadcast = useCallback(
     async (msg: { typeUrl: string; value: Record<string, unknown> }) => {
@@ -167,6 +165,8 @@ export function useCosmosWallet(): UseCosmosWalletReturn {
       if (!keplr || !address) {
         throw new Error("Cosmos wallet not connected");
       }
+      const currentKey = await keplr.getKey(network.chainId);
+      assertWalletOwner(network.chainName, currentKey.bech32Address, address);
 
       // Lazy-import @cosmjs/stargate to keep the initial bundle small.
       const { SigningStargateClient, GasPrice } = await import(
@@ -174,22 +174,26 @@ export function useCosmosWallet(): UseCosmosWalletReturn {
       );
       const offlineSigner = (
         keplr.getOfflineSignerAuto
-          ? await keplr.getOfflineSignerAuto(CHAIN_ID)
-          : keplr.getOfflineSigner(CHAIN_ID)
+          ? await keplr.getOfflineSignerAuto(network.chainId)
+          : keplr.getOfflineSigner(network.chainId)
       ) as Parameters<typeof SigningStargateClient.connectWithSigner>[1];
 
       const client = await SigningStargateClient.connectWithSigner(
-        RPC,
+        network.rpc,
         offlineSigner,
-        { gasPrice: GasPrice.fromString(`0.025${COIN_MINIMAL_DENOM}`) },
+        { gasPrice: GasPrice.fromString(`${network.gasPrice}${network.denom}`) },
       );
 
       try {
+        const actualChainId = await client.getChainId();
+        if (actualChainId !== network.chainId) {
+          throw new Error(`RPC connected to ${actualChainId}, expected ${network.chainId}.`);
+        }
         const result = await client.signAndBroadcast(
           address,
           [msg],
           "auto",
-          "CantonStake delegate",
+          `CantonStake ${chain} staking`,
         );
         if (result.code !== 0) {
           throw new Error(`broadcast failed: code=${result.code} log=${result.rawLog ?? ""}`);
@@ -199,7 +203,7 @@ export function useCosmosWallet(): UseCosmosWalletReturn {
         client.disconnect();
       }
     },
-    [address],
+    [address, chain, network],
   );
 
   return {
@@ -214,4 +218,4 @@ export function useCosmosWallet(): UseCosmosWalletReturn {
   };
 }
 
-export const cosmosChainId = CHAIN_ID;
+export const cosmosChainId = cosmosNetworks.cosmos.chainId;

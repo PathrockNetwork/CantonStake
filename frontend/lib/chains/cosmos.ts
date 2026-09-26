@@ -1,15 +1,15 @@
 /**
- * Cosmos chain adapter — Cosmos Hub (cosmoshub-4) read paths + tx builders.
+ * Cosmos chain adapter — provider testnet or cosmoshub-4 read paths and tx builders.
  *
- * Read paths (validators, delegations) hit the public Cosmos REST API
- * (cosmos.directory). Tx builders return `kind: "cosmos"` UnsignedTx
+ * Read paths use the selected network's chain-checked RPC. Tx builders return
+ * `kind: "cosmos"` UnsignedTx
  * envelopes; the actual signing happens either:
  *   - in the user's Keplr wallet via `window.keplr.signAmino` (frontend), or
  *   - in the backend auto-compound keeper via @cosmjs/stargate.
  *
  * REStake (references/restake) uses the same shape for its bot. We
- * mirror its message types — MsgDelegate / MsgUndelegate /
- * MsgWithdrawDelegatorReward — and let the signer pick how to broadcast.
+ * mirror its MsgDelegate / MsgUndelegate messages and let the signer pick
+ * how to broadcast. Unbonded principal releases automatically in EndBlock.
  */
 
 import {
@@ -20,14 +20,12 @@ import {
   type Validator,
 } from "./types";
 import { fetchValidatorScores, type ValidatorScore } from "../api";
+import { cosmosNetworks, type CosmosChainKey } from "../cosmos/networks";
+import { chainById } from "../chains";
 
-const COSMOS_CHAIN_ID = "cosmos";
-// theta-testnet — KJNodes provides a stable public REST endpoint.
-const COSMOS_REST =
-  "https://cosmoshub-testnet.api.kjnodes.com";
 const UATOM_PER_ATOM = 1_000_000n;
-// theta-testnet unbonding window is 1 day (vs 21 days on mainnet).
-const UNBONDING_SECONDS = 24 * 60 * 60;
+// Cosmos Hub provider testnet and mainnet both currently use 21 days.
+const UNBONDING_SECONDS = 21 * 24 * 60 * 60;
 
 function networkError(message: string, cause?: unknown) {
   return new ChainAdapterError("NETWORK", message, cause);
@@ -38,98 +36,34 @@ function toAdapterError(message: string, cause: unknown) {
   return networkError(message, cause);
 }
 
-interface CosmosRestValidator {
-  operator_address: string;
-  description?: { moniker?: string };
-  commission?: { commission_rates?: { rate?: string } };
-  tokens?: string;
-  jailed?: boolean;
-  status?: string;
-}
-
-interface CosmosRestDelegation {
-  delegation: {
-    delegator_address: string;
-    validator_address: string;
-    shares: string;
-  };
-  balance: { denom: string; amount: string };
-}
-
-interface CosmosRestUnbonding {
-  delegator_address: string;
-  validator_address: string;
-  entries: Array<{
-    creation_height: string;
-    completion_time: string;
-    initial_balance: string;
-    balance: string;
-  }>;
-}
-
-async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, { headers: { accept: "application/json" } });
-  if (!res.ok) {
-    throw networkError(`Cosmos REST ${url} returned ${res.status}`);
-  }
-  return res.json() as Promise<T>;
-}
-
-export const cosmosAdapter: IChainAdapter = {
-  chainId: COSMOS_CHAIN_ID,
+export function createCosmosAdapter(chainKey: CosmosChainKey): IChainAdapter {
+  const network = cosmosNetworks[chainKey];
+  const adapter: IChainAdapter = {
+  chainId: chainKey,
 
   async getValidators(): Promise<Validator[]> {
     try {
-      const snap = await fetchValidatorScores("cosmos");
+      const snap = await fetchValidatorScores(chainKey);
+      const baseApyPct = chainById(chainKey)?.apy ?? 0;
       return snap.validators.map((v: ValidatorScore) => ({
         address: v.address,
         name: v.name,
-        apr: (1 - v.commissionPct / 100) * 21,
+        apr: (1 - v.commissionPct / 100) * baseApyPct,
         commission: v.commissionPct,
         uptime: v.uptimePct,
       }));
     } catch (cause) {
-      throw toAdapterError("Failed to load Cosmos validators.", cause);
+      throw toAdapterError(`Failed to load ${network.chainName} validators.`, cause);
     }
   },
 
   async getDelegations(address: string): Promise<Position[]> {
     try {
-      const [delegations, unbondings] = await Promise.all([
-        fetchJson<{ delegation_responses?: CosmosRestDelegation[] }>(
-          `${COSMOS_REST}/cosmos/staking/v1beta1/delegations/${encodeURIComponent(address)}`,
-        ),
-        fetchJson<{ unbonding_responses?: CosmosRestUnbonding[] }>(
-          `${COSMOS_REST}/cosmos/staking/v1beta1/delegators/${encodeURIComponent(address)}/unbonding_delegations`,
-        ),
-      ]);
-
-      const out: Position[] = [];
-      for (const d of delegations.delegation_responses ?? []) {
-        const amount = BigInt(d.balance.amount || "0");
-        if (amount > 0n) {
-          out.push({
-            validator: d.delegation.validator_address,
-            amount,
-            status: "bonded",
-          });
-        }
-      }
-      for (const u of unbondings.unbonding_responses ?? []) {
-        for (const entry of u.entries) {
-          out.push({
-            validator: u.validator_address,
-            amount: BigInt(entry.balance || "0"),
-            status: "unbonding",
-            unbondingReadyAt:
-              new Date(entry.completion_time).getTime() / 1000,
-          });
-        }
-      }
-      return out;
+      const { readCosmosPositions } = await import("../cosmos/staking-queries");
+      return await readCosmosPositions(network, address);
     } catch (cause) {
       throw toAdapterError(
-        `Failed to load Cosmos delegations for ${address}.`,
+        `Failed to load ${network.chainName} delegations for ${address}.`,
         cause,
       );
     }
@@ -142,7 +76,7 @@ export const cosmosAdapter: IChainAdapter = {
       value: {
         delegatorAddress: delegator,
         validatorAddress: validator,
-        amount: { denom: "uatom", amount: amount.toString() },
+        amount: { denom: network.denom, amount: amount.toString() },
       },
     } satisfies UnsignedTx;
   },
@@ -154,26 +88,19 @@ export const cosmosAdapter: IChainAdapter = {
       value: {
         delegatorAddress: delegator,
         validatorAddress: validator,
-        amount: { denom: "uatom", amount: amount.toString() },
+        amount: { denom: network.denom, amount: amount.toString() },
       },
     } satisfies UnsignedTx;
   },
 
-  async buildClaimTx({ validator, delegator }) {
-    return {
-      kind: "cosmos",
-      typeUrl: "/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward",
-      value: {
-        delegatorAddress: delegator,
-        validatorAddress: validator,
-      },
-    } satisfies UnsignedTx;
+  async buildClaimTx() {
+    throw new ChainAdapterError("UNBONDING_PERIOD", `${network.chainName} releases unbonded principal automatically; no claim transaction exists.`);
   },
 
   async estimateGas(tx) {
     if (tx.kind !== "cosmos") {
       throw networkError(
-        `Cosmos adapter cannot estimate gas for ${tx.kind} txs.`,
+        `${network.chainName} adapter cannot estimate gas for ${tx.kind} txs.`,
       );
     }
     // Cosmos Hub gas is tiny + chain-set; a sensible default beats a
@@ -185,7 +112,7 @@ export const cosmosAdapter: IChainAdapter = {
     let cancelled = false;
     const tick = async () => {
       try {
-        const positions = await cosmosAdapter.getDelegations(address);
+        const positions = await adapter.getDelegations(address);
         if (!cancelled) {
           cb(
             positions[0] ?? {
@@ -206,7 +133,13 @@ export const cosmosAdapter: IChainAdapter = {
       clearInterval(id);
     };
   },
-};
+  };
+  return adapter;
+}
+
+export const cosmosAdapter = createCosmosAdapter("cosmos");
+export const celestiaAdapter = createCosmosAdapter("celestia");
+export const osmosisAdapter = createCosmosAdapter("osmosis");
 
 export const cosmosUnbondingSeconds = UNBONDING_SECONDS;
 export const cosmosDenomScale = UATOM_PER_ATOM;
