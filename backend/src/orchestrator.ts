@@ -296,11 +296,24 @@ export async function handlePolygonUnbondEvent(args: {
       `amount=${formatEther(args.amount)} nonce=${args.nonce} tx=${args.txHash}`
   );
 
-  const position = await findBondedPosition(args.user);
-  if (!position) {
-    console.warn(`  no matching Bonded StakingPosition for ${args.user}`);
+  const active = await canton.activeContracts(TEMPLATES.StakingPosition);
+  const bonded = active.filter((p) => {
+    const arg = p.argument as { evmAddress?: string; status?: string };
+    return arg.evmAddress?.toLowerCase() === args.user.toLowerCase() && arg.status === "Bonded";
+  });
+  const mirrors = await prisma.stakingPosition.findMany({
+    where: { contractId: { in: bonded.map((p) => p.contractId) }, chain: "polygon" },
+  });
+  const matching = bonded.filter((p) => mirrors.some((m) =>
+    m.contractId === p.contractId &&
+    m.validatorShare?.toLowerCase() === args.validatorShare.toLowerCase() &&
+    m.amountShares === args.shares.toString(),
+  ));
+  if (matching.length !== 1) {
+    console.warn(`  expected one Polygon bonded position for ${args.user} / ${args.validatorShare} / ${args.shares} shares; found ${matching.length}`);
     return;
   }
+  const position = matching[0]!;
 
   try {
     const unbond = await getUnbond(args.validatorShare, args.user, args.nonce);
@@ -327,32 +340,28 @@ export async function handlePolygonUnbondEvent(args: {
     });
     console.log(`  -> unbonding confirmed. tx=${result.transactionId}`);
 
-    const posArg = position.argument as {
-      evmAddress?: string;
-      delegator?: string;
-      amountPol?: string;
-    };
-    await mirrorPosition({
-      contractId: position.contractId,
-      evmAddress: posArg.evmAddress || args.user,
-      partyId: posArg.delegator || "unknown",
-      amountPol: posArg.amountPol || formatEther(args.amount),
-      status: "Unbonding",
-      evmTxHash: args.txHash,
-      cantonTxId: result.transactionId,
-      unbondingReadyAt,
-      chain: "polygon",
-      validatorShare: args.validatorShare,
-      validatorId: args.validatorId,
-      unbondNonce: args.nonce.toString(),
-      unbondWithdrawEpoch: unbond.withdrawEpoch.toString(),
+    const newPositionCid = extractCreatedContractId(result.events);
+    if (!newPositionCid) throw new Error("Canton confirmed unbond but returned no new StakingPosition CID");
+    const updated = await prisma.stakingPosition.updateMany({
+      where: { contractId: position.contractId, chain: "polygon" },
+      data: {
+        contractId: newPositionCid,
+        status: "Unbonding",
+        evmTxHash: args.txHash,
+        cantonTxId: result.transactionId,
+        unbondingReadyAt,
+        validatorShare: args.validatorShare,
+        validatorId: args.validatorId,
+        unbondNonce: args.nonce.toString(),
+        unbondWithdrawEpoch: unbond.withdrawEpoch.toString(),
+      },
     });
+    if (updated.count !== 1) throw new Error("Polygon unbond position mirror was not updated");
     console.log(`  -> mirrored Unbonding position to Postgres`);
 
     // CIP-0104 traffic attribution beacon for the Unbond transition. Note
     // that ConfirmUnbond archives the old position CID and creates a new
     // one; RecordStake fires on the *new* CID extracted from the result.
-    const newPositionCid = extractCreatedContractId(result.events) || position.contractId;
     await recordStakeEvent({
       positionContractId: newPositionCid,
       eventKind: "Unbond",
@@ -365,157 +374,81 @@ export async function handlePolygonUnbondEvent(args: {
     });
   } catch (err) {
     console.error(`  failed to confirm unbond:`, err);
+    throw err;
   }
 }
 
-function readyAtMillis(value: string): number {
-  if (/^\d+$/.test(value)) {
-    const epoch = Number(value);
-    return epoch < 1_000_000_000_000 ? epoch * 1_000 : epoch;
+/** Release only the nonce-specific position named by a settled EventsHub claim. */
+export async function handlePolygonClaimEvent(args: {
+  user: Address;
+  amount: bigint;
+  nonce: bigint;
+  validatorId: number;
+  validatorShare: Address;
+  txHash: string;
+  blockNumber: number;
+}): Promise<void> {
+  const active = await canton.activeContracts(TEMPLATES.StakingPosition);
+  const unbonding = active.filter((p) => {
+    const arg = p.argument as { evmAddress?: string; status?: string };
+    return arg.evmAddress?.toLowerCase() === args.user.toLowerCase() && arg.status === "Unbonding";
+  });
+  const mirrors = await prisma.stakingPosition.findMany({
+    where: { contractId: { in: unbonding.map((p) => p.contractId) }, chain: "polygon", status: "Unbonding" },
+  });
+  const matching = unbonding.filter((p) => mirrors.some((m) =>
+    m.contractId === p.contractId &&
+    m.validatorShare?.toLowerCase() === args.validatorShare.toLowerCase() &&
+    m.validatorId === args.validatorId &&
+    m.unbondNonce === args.nonce.toString(),
+  ));
+  if (matching.length !== 1) {
+    console.warn(`[polygon-claim] expected one unbonding position for ${args.user} / nonce ${args.nonce}; found ${matching.length}`);
+    return;
   }
-  return new Date(value).getTime();
+
+  const position = matching[0]!;
+  const proof = {
+    txHash: args.txHash,
+    blockNumber: args.blockNumber,
+    validatorShare: args.validatorShare,
+  };
+  try {
+    const result = await canton.exerciseChoice({
+      templateId: TEMPLATES.StakingPosition,
+      contractId: position.contractId,
+      choice: "StakingPosition_Release",
+      argument: { proof },
+    });
+    const newPositionCid = extractCreatedContractId(result.events);
+    if (!newPositionCid) throw new Error("Canton released Polygon stake but returned no new position CID");
+    const updated = await prisma.stakingPosition.updateMany({
+      where: { contractId: position.contractId, chain: "polygon", status: "Unbonding" },
+      data: {
+        contractId: newPositionCid,
+        status: "Released",
+        evmTxHash: args.txHash,
+        cantonTxId: result.transactionId,
+        releasedAt: new Date(),
+      },
+    });
+    if (updated.count !== 1) throw new Error("Polygon claimed position mirror was not updated");
+    await recordStakeEvent({
+      positionContractId: newPositionCid,
+      eventKind: "Release",
+      txProof: proof,
+      occurredAt: new Date().toISOString(),
+    });
+    console.log(`[polygon-claim] released ${position.contractId} via ${args.txHash}`);
+  } catch (err) {
+    console.error(`[polygon-claim] failed to release nonce ${args.nonce}:`, err);
+    throw err;
+  }
 }
 
-/**
- * Polling-based release checker.
- *
- * The mock version released a position as soon as a 60-second wall-clock
- * timer elapsed. On real Polygon that is wrong twice over: the delay is
- * checkpoint-based, and the stake is not actually returned until the
- * delegator themselves calls `unstakeClaimTokens_new`.
- *
- * So for a Polygon position (one that carries a resolved ValidatorShare and
- * an unbond nonce) we release only when the chain says so:
- *
- *   - `unbonds_new[user][nonce].shares == 0` means the record was deleted,
- *     i.e. the delegator's claim landed. That is the release signal.
- *   - Still-existing-but-not-yet-claimable records are skipped with the real
- *     remaining checkpoint count logged.
- *   - Existing-and-claimable records are also skipped: the funds are still
- *     on the ValidatorShare until the user claims. We never fabricate a
- *     Released position for stake the user still has to withdraw.
- *
- * Positions with no on-chain unbond metadata (non-Polygon chains, or
- * pre-migration rows) keep the old timestamp behaviour so this change stays
- * scoped to Polygon.
- */
+/** Releases are event-driven; no position is released by a wall-clock timer. */
 export function startReleaseChecker(): void {
-  setInterval(async () => {
-    try {
-      const positions = await canton.activeContracts(TEMPLATES.StakingPosition);
-      const now = Date.now();
-      for (const p of positions) {
-        const arg = p.argument as {
-          status?: string;
-          unbondingReadyAt?: string;
-          evmAddress?: string;
-        };
-        if (arg.status !== "Unbonding") continue;
-
-        const mirrored = await prisma.stakingPosition.findUnique({
-          where: { contractId: p.contractId },
-        });
-
-        // Daml's StakingPosition_Release takes a required EvmProof, so this
-        // is always populated before the exercise.
-        let releaseProof: {
-          txHash: string;
-          blockNumber: number;
-          validatorShare: string;
-        };
-
-        if (mirrored?.validatorShare && mirrored.unbondNonce) {
-          // Real Polygon position — ask the chain, not the clock.
-          let unbond;
-          try {
-            unbond = await getUnbond(
-              mirrored.validatorShare as Address,
-              (arg.evmAddress ?? mirrored.evmAddress) as Address,
-              BigInt(mirrored.unbondNonce)
-            );
-          } catch (err) {
-            console.warn(
-              `[release-checker] unbond read failed for ${p.contractId}:`,
-              err
-            );
-            continue;
-          }
-
-          if (unbond.exists) {
-            if (!unbond.claimable) {
-              console.log(
-                `[release-checker] ${arg.evmAddress} still unbonding: ` +
-                  `${unbond.epochsRemaining} checkpoints to go ` +
-                  `(epoch ${unbond.currentEpoch}/${unbond.claimableAtEpoch})`
-              );
-            } else {
-              console.log(
-                `[release-checker] ${arg.evmAddress} unbond is claimable ` +
-                  `(epoch ${unbond.currentEpoch} >= ${unbond.claimableAtEpoch}) ` +
-                  `— waiting for the delegator to call unstakeClaimTokens_new`
-              );
-            }
-            continue;
-          }
-
-          releaseProof = {
-            txHash: mirrored.evmTxHash ?? "claimed",
-            blockNumber: 0,
-            validatorShare: mirrored.validatorShare,
-          };
-        } else {
-          // Non-Polygon / legacy position: fall back to the recorded ready
-          // timestamp. Phase 3 replaces this for the other chains.
-          if (!arg.unbondingReadyAt) continue;
-          const readyAt = readyAtMillis(arg.unbondingReadyAt);
-          if (!Number.isFinite(readyAt)) continue;
-          if (now < readyAt) continue;
-          releaseProof = {
-            txHash: mirrored?.evmTxHash ?? "auto-release",
-            blockNumber: 0,
-            // Deliberately not an address: nothing on-chain was verified on
-            // this path. Phase 3 replaces it with a real per-chain identifier.
-            validatorShare: `${mirrored?.chain ?? "unknown"}::timer-release`,
-          };
-        }
-
-        console.log(`[release-checker] releasing position for ${arg.evmAddress}`);
-        try {
-          const result = await canton.exerciseChoice({
-            templateId: TEMPLATES.StakingPosition,
-            contractId: p.contractId,
-            choice: "StakingPosition_Release",
-            argument: { proof: releaseProof },
-          });
-
-          // Mirror to Postgres: update position to Released
-          const posArg = p.argument as { evmAddress?: string; delegator?: string; amountPol?: string };
-          await mirrorPosition({
-            contractId: p.contractId,
-            evmAddress: posArg.evmAddress || "unknown",
-            partyId: posArg.delegator || "unknown",
-            amountPol: posArg.amountPol || "0",
-            status: "Released",
-            cantonTxId: result.transactionId,
-          });
-          console.log(`  -> mirrored Released position to Postgres`);
-
-          // CIP-0104 traffic attribution beacon for the Release transition.
-          const newReleasedCid = extractCreatedContractId(result.events) || p.contractId;
-          await recordStakeEvent({
-            positionContractId: newReleasedCid,
-            eventKind: "Release",
-            txProof: null,
-            occurredAt: new Date().toISOString(),
-          });
-        } catch (err) {
-          console.error(`  release failed:`, err);
-        }
-      }
-    } catch (err) {
-      console.error("[release-checker]", err);
-    }
-  }, 15_000);
+  console.log("[release-checker] waiting for verified chain claim/withdraw events");
 }
 
 export async function recordNativeSweep(args: {

@@ -53,12 +53,15 @@ import {
   createPublicClient,
   fallback,
   http,
+  keccak256,
   parseAbi,
+  toBytes,
   type Address,
   type PublicClient,
 } from "viem";
 import { mainnet, sepolia } from "viem/chains";
 import { config } from "../config.js";
+import { assertEvmRpcChainId } from "./evm-network.js";
 
 // --- Chain + client -------------------------------------------------------
 
@@ -112,6 +115,7 @@ export const stakeManagerAbi = parseAbi([
   "function withdrawalDelay() view returns (uint256)",
   "function token() view returns (address)",
   "function logger() view returns (address)",
+  "function getRegistry() view returns (address)",
   "function rootChain() view returns (address)",
   "function delegationEnabled() view returns (bool)",
 ]);
@@ -134,20 +138,52 @@ export const validatorShareAbi = parseAbi([
   "function restake() returns (uint256, uint256)",
 ]);
 
-/**
- * Delegation events, as emitted by the shared StakingInfo logger. `amount` is
- * indexed on all of these (it is the third indexed topic), which is why the
- * event data payload is often empty.
- */
+/** Delegation and reward events emitted by StakingInfo. */
 export const stakingLoggerAbi = parseAbi([
   "event ShareMinted(uint256 indexed validatorId, address indexed user, uint256 indexed amount, uint256 tokens)",
   "event ShareBurned(uint256 indexed validatorId, address indexed user, uint256 indexed amount, uint256 tokens)",
-  "event ShareBurnedWithId(uint256 indexed validatorId, address indexed user, uint256 indexed amount, uint256 tokens, uint256 nonce)",
   "event DelegatorUnstaked(uint256 indexed validatorId, address indexed user, uint256 amount)",
-  "event DelegatorUnstakeWithId(uint256 indexed validatorId, address indexed user, uint256 amount, uint256 nonce)",
   "event DelegatorClaimedRewards(uint256 indexed validatorId, address indexed user, uint256 indexed rewards)",
   "event DelegatorRestaked(uint256 indexed validatorId, address indexed user, uint256 totalStaked)",
 ]);
+
+/** New nonce-based unstake events emitted by the registry's EventsHub. */
+export const eventsHubAbi = parseAbi([
+  "event ShareBurnedWithId(uint256 indexed validatorId, address indexed user, uint256 indexed amount, uint256 tokens, uint256 nonce)",
+  "event DelegatorUnstakeWithId(uint256 indexed validatorId, address indexed user, uint256 amount, uint256 nonce)",
+]);
+
+const registryAbi = parseAbi([
+  "function contractMap(bytes32 key) view returns (address)",
+]);
+const EVENTS_HUB_KEY = keccak256(toBytes("eventsHub"));
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+let eventsHubPromise: Promise<Address> | null = null;
+
+/** ShareBurnedWithId and DelegatorUnstakeWithId live on EventsHub, not StakingInfo. */
+export function eventsHubAddress(): Promise<Address> {
+  if (eventsHubPromise) return eventsHubPromise;
+  eventsHubPromise = (async () => {
+    const registry = await settlementClient.readContract({
+      address: stakeManagerAddress,
+      abi: stakeManagerAbi,
+      functionName: "getRegistry",
+    });
+    if (registry === ZERO_ADDRESS) throw new Error("StakeManager registry is not configured");
+    const hub = await settlementClient.readContract({
+      address: registry,
+      abi: registryAbi,
+      functionName: "contractMap",
+      args: [EVENTS_HUB_KEY],
+    });
+    if (hub === ZERO_ADDRESS) throw new Error("Polygon EventsHub is not configured in the registry");
+    return hub;
+  })().catch((err) => {
+    eventsHubPromise = null;
+    throw err;
+  });
+  return eventsHubPromise;
+}
 
 export const erc20Abi = parseAbi([
   "function allowance(address owner, address spender) view returns (uint256)",
@@ -224,6 +260,7 @@ export interface ValidatorShareEntry {
  */
 export async function listValidatorShares(): Promise<ValidatorShareEntry[]> {
   return cached("registry", config.validatorShareCacheTtlSec, async () => {
+    await assertEvmRpcChainId(settlementClient, config.stakeSettlementChainId, "Polygon settlement");
     const count = await settlementClient.readContract({
       address: stakeManagerAddress,
       abi: stakeManagerAbi,
@@ -282,7 +319,6 @@ export async function listValidatorShares(): Promise<ValidatorShareEntry[]> {
   });
 }
 
-const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 /** Only validators that can actually accept a delegation right now. */
 export async function listActiveValidatorShares(): Promise<ValidatorShareEntry[]> {
