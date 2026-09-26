@@ -3,8 +3,9 @@ import { config } from "../config.js";
 // USD reference prices for portfolio valuation (routes/portfolio.ts,
 // services/portfolio-snapshots.ts). Split by network mode:
 //
-//   - testnet: the fixed table below is the price (labelled "indicative"
-//     in the UI). No market calls.
+//   - testnet: the fixed table remains available for legacy reference views,
+//     but portfolio totals are null: faucet assets have no real USD value.
+//     No market calls.
 //   - mainnet: live CoinGecko prices, refreshed at most once per
 //     CACHE_TTL_MS, with the fixed table as the offline/cold fallback.
 //     The response carries which source served the numbers.
@@ -76,8 +77,9 @@ async function fetchCoinGecko(): Promise<Record<string, number> | null> {
 }
 
 /**
- * USD prices for the requested symbols. Testnet always returns the fixed
- * reference table. Mainnet refreshes from CoinGecko at most once per
+ * USD reference prices for the requested symbols. Testnet returns the fixed
+ * reference table, but callers must not value faucet assets with it.
+ * Mainnet refreshes from CoinGecko at most once per
  * CACHE_TTL_MS and falls back to the last known prices (the fixed table on
  * a cold start) whenever the API errors — a price-provider outage must not
  * take the portfolio endpoints down with it.

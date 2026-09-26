@@ -3,7 +3,8 @@
  * portfolioSnapshotIntervalSec cadence so the analytics chart has a
  * proper time series instead of a synthesised one.
  *
- * Scope: snapshots every active User who has an EVM address on file.
+ * Scope: snapshots every wallet address recorded for a user, including
+ * native-chain addresses that are no longer the user's latest address.
  * Rate-limited by the portfolio cache (60 s default), so a 5-minute
  * snapshot cadence with N users does at most 1 RPC fetch per chain
  * per 60 s anyway — Redis absorbs the duplicate calls.
@@ -14,6 +15,7 @@ import IORedis from "ioredis";
 import { config } from "../config.js";
 import { prisma } from "../db.js";
 import { getPortfolio } from "./portfolio-cache.js";
+import { validPortfolioAddress } from "./portfolio-recorded.js";
 
 const QUEUE_NAME = "portfolio-snapshots";
 const redis = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
@@ -24,40 +26,45 @@ interface SnapshotPayload {
 }
 
 async function runSnapshotTick(_payload: SnapshotPayload): Promise<void> {
+  // Testnet faucet assets have no market value. Do not persist a synthetic
+  // USD TVL based on their namesake mainnet symbols.
+  if (config.networkMode !== "mainnet") return;
   const users = await prisma.user.findMany({
-    where: { evmAddress: { not: null } },
+    where: { OR: [{ evmAddress: { not: null } }, { positions: { some: {} } }] },
+    include: { positions: { select: { evmAddress: true } } },
   });
   if (users.length === 0) {
-    console.log("[portfolio-snapshots] no users with EVM address — skipping");
+    console.log("[portfolio-snapshots] no users with wallet positions — skipping");
     return;
   }
 
   let written = 0;
   for (const user of users) {
-    if (!user.evmAddress) continue;
-    try {
-      const snap = await getPortfolio(user.evmAddress);
-      const perChain: Record<string, number> = {};
-      for (const d of snap.delegations) {
-        perChain[d.chain] = (perChain[d.chain] ?? 0) + Number(d.amount);
+    const addresses = [...new Set([user.evmAddress, ...user.positions.map((p) => p.evmAddress)]
+      .filter((address): address is string => !!address && validPortfolioAddress(address)))];
+    for (const address of addresses) {
+      try {
+        const snap = await getPortfolio(address);
+        if (snap.totalUsd === null) continue;
+        const perChain: Record<string, number> = {};
+        for (const d of snap.delegations) {
+          perChain[d.chain] = (perChain[d.chain] ?? 0) + Number(d.amount);
+        }
+        await prisma.tvlSnapshot.create({
+          data: {
+            userId: user.id,
+            evmAddress: address,
+            totalUsd: snap.totalUsd,
+            perChain,
+          },
+        });
+        written += 1;
+      } catch (err) {
+        console.warn(`[portfolio-snapshots] user=${user.id} address=${address} snapshot failed:`, err);
       }
-      await prisma.tvlSnapshot.create({
-        data: {
-          userId: user.id,
-          evmAddress: user.evmAddress,
-          totalUsd: snap.totalUsd,
-          perChain,
-        },
-      });
-      written += 1;
-    } catch (err) {
-      console.warn(
-        `[portfolio-snapshots] user=${user.id} snapshot failed:`,
-        err
-      );
     }
   }
-  console.log(`[portfolio-snapshots] tick wrote ${written}/${users.length} rows`);
+  console.log(`[portfolio-snapshots] tick wrote ${written} wallet rows for ${users.length} users`);
 }
 
 const worker = new Worker<SnapshotPayload>(
@@ -74,7 +81,7 @@ worker.on("failed", (job, err) => {
 });
 
 export async function startPortfolioSnapshotScheduler(): Promise<void> {
-  if (config.portfolioSnapshotsDisabled) {
+  if (config.portfolioSnapshotsDisabled || config.networkMode !== "mainnet") {
     console.log("[portfolio-snapshots] disabled via PORTFOLIO_SNAPSHOTS_DISABLED");
     return;
   }

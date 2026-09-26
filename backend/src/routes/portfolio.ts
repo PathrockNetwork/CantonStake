@@ -8,6 +8,8 @@
 import type { FastifyPluginAsync } from "fastify";
 import { prisma } from "../db.js";
 import { getPortfolio } from "../services/portfolio-cache.js";
+import { validPortfolioAddress } from "../services/portfolio-recorded.js";
+import { normalizeWalletAddress } from "../services/wallet-address.js";
 
 const portfolioRoutes: FastifyPluginAsync = async (app) => {
   app.get<{
@@ -15,8 +17,8 @@ const portfolioRoutes: FastifyPluginAsync = async (app) => {
     Querystring: { refresh?: string };
   }>("/api/portfolio/:address", async (req, reply) => {
     const { address } = req.params;
-    if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
-      return reply.code(400).send({ error: "invalid EVM address" });
+    if (!validPortfolioAddress(address)) {
+      return reply.code(400).send({ error: "invalid wallet address" });
     }
     try {
       const snap = await getPortfolio(address, {
@@ -34,18 +36,18 @@ const portfolioRoutes: FastifyPluginAsync = async (app) => {
     Querystring: { hours?: string };
   }>("/api/portfolio/:address/series", async (req, reply) => {
     const { address } = req.params;
-    if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
-      return reply.code(400).send({ error: "invalid EVM address" });
+    if (!validPortfolioAddress(address)) {
+      return reply.code(400).send({ error: "invalid wallet address" });
     }
     const hours = Math.max(1, Math.min(720, Number(req.query.hours ?? "24")));
     const since = new Date(Date.now() - hours * 60 * 60 * 1000);
     try {
       const series = await prisma.tvlSnapshot.findMany({
-        where: { evmAddress: address.toLowerCase(), snapshotAt: { gte: since } },
+        where: { evmAddress: normalizeWalletAddress(address), snapshotAt: { gte: since } },
         orderBy: { snapshotAt: "asc" },
       });
       return {
-        address: address.toLowerCase(),
+        address: normalizeWalletAddress(address),
         windowHours: hours,
         series: series.map((s) => ({
           at: s.snapshotAt.toISOString(),
