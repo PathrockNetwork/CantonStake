@@ -28,7 +28,7 @@ export interface PriceSnapshot {
 const TESTNET_PRICES = {
   pol: 0.42,   // Polygon Amoy POL (same as mainnet POL)
   mon: 0.50,   // Monad Testnet MON (not on CoinGecko)
-  atom: 5.00,  // Cosmos theta-testnet THETA (using ATOM proxy)
+  atom: 5.00,  // ATOM fallback when the live price feed is unavailable
   tia: 2.20,   // Celestia testnet TIA (mainnet proxy)
   osmo: 0.20,  // Osmosis testnet OSMO (mainnet proxy)
   sui: 1.50,   // Sui testnet SUI (same as mainnet SUI)

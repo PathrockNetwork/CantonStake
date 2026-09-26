@@ -1,3 +1,5 @@
+import { networkMode } from "./network";
+
 const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4001";
 
@@ -30,8 +32,10 @@ export interface PositionRow {
     validatorAddress: string | null;
     validatorShare: string | null;
     validatorId: number | null;
+    evmTxHash: string | null;
     unbondNonce: string | null;
     unbondWithdrawEpoch: string | null;
+    suiStakedObjectId: string | null;
   } | null;
 }
 
@@ -72,16 +76,18 @@ export async function createStakingRequest(body: {
   delegator: string;
   chain?: "polygon" | "monad" | "cosmos" | "celestia" | "osmosis" | "sui" | "aptos" | "polkadot" | "bnb" | "solana";
   validator?: string;
+  stakeAccountAddress?: string;
 }): Promise<{
   ok: boolean;
   transactionId: string;
   delegator: string;
   chain?: string;
+  stakeRentLamports?: string;
 }> {
   const res = await fetch(`${BACKEND_URL}/api/requests`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ ...body, clientNetworkMode: networkMode }),
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -210,6 +216,20 @@ export interface WatcherStatus {
   consecutiveFailures: number;
 }
 
+export interface CantonReadiness {
+  status: "ready" | "unavailable";
+  canton: "reachable" | "unreachable";
+  networkMode: "testnet" | "mainnet";
+  time: string;
+}
+
+export async function fetchCantonReadiness(): Promise<CantonReadiness> {
+  const res = await fetch(`${BACKEND_URL}/api/readiness`, { signal: AbortSignal.timeout(5_000) });
+  const body = await res.json() as CantonReadiness;
+  if (!res.ok && res.status !== 503) throw new Error(`Canton readiness HTTP ${res.status}`);
+  return body;
+}
+
 /** Per-chain watcher reachability + the deployment's network mode. */
 export async function fetchWatcherStatus(): Promise<
   WatcherStatus[] & { networkMode?: string }
@@ -291,9 +311,10 @@ export interface DelegationRow {
 export interface PortfolioSnapshot {
   address: string;
   fetchedAt: string;
-  totalUsd: number;
+  totalUsd: number | null;
   delegations: DelegationRow[];
-  source: Record<string, "live" | "stub" | "cache">;
+  source: Record<string, "live" | "unavailable" | "cache" | "canton">;
+  unclassifiedPositions: number;
 }
 
 export async function fetchPortfolio(
@@ -302,7 +323,7 @@ export async function fetchPortfolio(
 ): Promise<PortfolioSnapshot> {
   const params = refresh ? "?refresh=true" : "";
   const res = await fetch(
-    `${BACKEND_URL}/api/portfolio/${address}${params}`,
+    `${BACKEND_URL}/api/portfolio/${encodeURIComponent(address)}${params}`,
   );
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -473,6 +494,7 @@ export interface ValidatorScore {
   chain: string;
   address: string;
   name: string;
+  stakingCredit?: string;
   commissionPct: number;
   uptimePct: number;
   jailed: boolean;
