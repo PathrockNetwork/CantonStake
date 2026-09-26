@@ -12,6 +12,7 @@
   "dependencies": {
     "@cosmjs/proto-signing": "^0.39.0",
     "@cosmjs/stargate": "^0.39.0",
+    "@cosmjs/tendermint-rpc": "^0.39.0",
     "@fastify/cors": "^11.0.0",
     "@fastify/http-proxy": "^11.4.4",
     "@mysten/sui": "^2.16.0",

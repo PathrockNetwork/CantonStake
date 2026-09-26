@@ -31,6 +31,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import IORedis from "ioredis";
 import { config } from "../config.js";
+import { readCosmosInflationAndPool } from "../services/cosmos-validator-catalog.js";
 import {
   getAllScores,
   type SupportedChain,
@@ -46,7 +47,7 @@ const BASE_YIELD: Record<SupportedChain, number> = {
   osmosis: 0.12, // ~12% — Osmosis staking aperture (mid-range, varies with fee share)
   sui: 0.035, // ~3.5% — Sui staking yield as of 2026 epochs
   aptos: 0.07, // ~7% — Aptos target, set by validator count / staked ratio
-  polkadot: 0.12, // ~12% — Polkadot inflation-funded nomination yield (net of inflation)
+  polkadot: 0.12, // display estimate only; actual pool/era yield is not measured here
   bnb: 0.05, // ~5% — BNB Chain native staking rate (post-BC-fusion)
   solana: 0.07, // ~7% — Solana issuance-adjusted staking yield
 };
@@ -59,7 +60,7 @@ const BASE_YIELD_SOURCE: Record<SupportedChain, BaseYieldSource> = {
   osmosis: "documented-schedule",
   sui: "documented-schedule",
   aptos: "documented-schedule",
-  polkadot: "documented-schedule",
+  polkadot: "estimate",
   bnb: "documented-schedule",
   solana: "documented-schedule",
 };
@@ -70,10 +71,10 @@ type BaseYieldSource = "live" | "documented-schedule" | "estimate";
 //
 // staking APR = inflation × (total supply / bonded tokens): the minted
 // ATOM is spread across the bonded share of supply. Fetched from the
-// chain's own x/mint and x/staking modules on theta-testnet.
+// chain's own x/mint and x/staking modules on the selected Cosmos network.
 
 const redis = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
-const COSMOS_YIELD_CACHE_KEY = "chains:cosmos-base-yield";
+const COSMOS_YIELD_CACHE_KEY = `chains:cosmos-base-yield:${config.networkMode}`;
 const COSMOS_YIELD_TTL_SEC = 3600;
 
 interface CosmosYield {
@@ -83,21 +84,7 @@ interface CosmosYield {
 }
 
 async function fetchCosmosBaseYield(): Promise<CosmosYield | null> {
-  const base = config.cosmosRestUrl.replace(/\/$/, "");
-  const [inflationRes, poolRes] = await Promise.all([
-    fetch(`${base}/cosmos/mint/v1beta1/inflation`),
-    fetch(`${base}/cosmos/staking/v1beta1/pool`),
-  ]);
-  if (!inflationRes.ok || !poolRes.ok) return null;
-
-  const inflationBody = (await inflationRes.json()) as { inflation?: string };
-  const poolBody = (await poolRes.json()) as {
-    pool?: { bonded_tokens?: string; not_bonded_tokens?: string };
-  };
-
-  const inflation = Number(inflationBody.inflation ?? NaN);
-  const bonded = Number(poolBody.pool?.bonded_tokens ?? NaN);
-  const notBonded = Number(poolBody.pool?.not_bonded_tokens ?? NaN);
+  const { inflation, bonded, notBonded } = await readCosmosInflationAndPool(config.cosmosRpcUrl);
   if (!Number.isFinite(inflation) || !Number.isFinite(bonded) || !Number.isFinite(notBonded)) {
     return null;
   }
@@ -156,11 +143,11 @@ const chainsRoutes: FastifyPluginAsync = async (app) => {
     try {
       const [all, cosmosYield] = await Promise.all([
         getAllScores(),
-        cosmosBaseYield(),
+        config.enabledChains.has("cosmos") ? cosmosBaseYield() : Promise.resolve(null),
       ]);
-      const liveYield: Partial<Record<SupportedChain, CosmosYield>> = {
-        cosmos: cosmosYield,
-      };
+      const liveYield: Partial<Record<SupportedChain, CosmosYield>> = cosmosYield
+        ? { cosmos: cosmosYield }
+        : {};
       const stats = (Object.entries(all) as [
         SupportedChain,
         (typeof all)[SupportedChain],
