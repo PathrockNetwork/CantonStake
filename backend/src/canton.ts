@@ -184,6 +184,11 @@ class CantonClient {
     return offset;
   }
 
+  /** Lightweight authenticated readiness check; does not scan contracts. */
+  async probe(signal?: AbortSignal): Promise<void> {
+    await this.ledgerEndOffset(signal);
+  }
+
   /**
    * Query active contracts for a given template.
    */
