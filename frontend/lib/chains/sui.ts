@@ -1,12 +1,11 @@
 /**
  * Sui chain adapter — `0x3::sui_system::request_add_stake` /
  * `request_withdraw_stake`. Tx builder returns a `kind: "sui"` envelope
- * that the user's wallet (via @mysten/dapp-kit) executes; the backend
+ * that the user's wallet (via @mysten/dapp-kit-react) executes; the backend
  * keeper builds the same envelope and signs with its keypair.
  *
- * Read paths use the JSON-RPC `suix_getLatestSuiSystemState` (validators)
- * and `suix_getStakes` (positions). Pattern lifted from
- * references/sui-staker-ui/src/StakingForm.tsx.
+ * Owned stake receipts are read through Sui GraphQL. The retired JSON-RPC
+ * `suix_getStakes` method is not available on current public mainnet nodes.
  */
 
 import {
@@ -17,16 +16,15 @@ import {
   type Validator,
 } from "./types";
 import { fetchValidatorScores, type ValidatorScore } from "../api";
+import { assertSuiNetworkIdentifier, suiNetwork } from "../sui/network";
 
 const SUI_CHAIN_ID = "sui";
 // Sui Testnet — same `0x3::sui_system` module as mainnet (system objects
 // at well-known addresses are constant across networks).
-const SUI_RPC = "https://fullnode.testnet.sui.io:443";
 const SUI_SYSTEM_STATE = "0x5";
 const SUI_SYSTEM_MODULE = "0x3::sui_system";
-// Sui testnet epoch is ~24h on testnet too; stakes mature at the next
-// epoch boundary.
-const UNBONDING_SECONDS = 24 * 60 * 60;
+// request_withdraw_stake transfers principal in the same transaction.
+const UNBONDING_SECONDS = 0;
 
 function networkError(message: string, cause?: unknown) {
   return new ChainAdapterError("NETWORK", message, cause);
@@ -37,35 +35,16 @@ function toAdapterError(message: string, cause: unknown) {
   return networkError(message, cause);
 }
 
-async function rpc<T>(method: string, params: unknown[]): Promise<T> {
-  const res = await fetch(SUI_RPC, {
+async function gql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+  const res = await fetch(suiNetwork.graphql, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    body: JSON.stringify({ query, variables }),
   });
-  if (!res.ok) throw networkError(`Sui RPC ${method} ${res.status}`);
-  const body = (await res.json()) as { result?: T; error?: { message: string } };
-  if (body.error) throw networkError(body.error.message);
-  return body.result as T;
-}
-
-interface SuiValidator {
-  suiAddress?: string;
-  name?: string;
-  commissionRate?: string;
-  votingPower?: string;
-  stakingPoolSuiBalance?: string;
-  isActive?: boolean;
-}
-
-interface SuiStakeRow {
-  validatorAddress: string;
-  stakes: Array<{
-    principal: string;
-    stakedSuiId: string;
-    status: string;
-    estimatedReward?: string;
-  }>;
+  if (!res.ok) throw networkError(`Sui GraphQL returned ${res.status}`);
+  const body = (await res.json()) as { data?: T; errors?: Array<{ message?: string }> };
+  if (body.errors?.length || !body.data) throw networkError(body.errors?.map((e) => e.message).join("; ") ?? "Sui GraphQL returned no data");
+  return body.data;
 }
 
 export const suiAdapter: IChainAdapter = {
@@ -88,18 +67,44 @@ export const suiAdapter: IChainAdapter = {
 
   async getDelegations(address: string): Promise<Position[]> {
     try {
-      const stakes = await rpc<SuiStakeRow[]>("suix_getStakes", [address]);
       const out: Position[] = [];
-      for (const row of stakes ?? []) {
-        for (const s of row.stakes) {
-          const amount = BigInt(s.principal || "0");
-          if (amount === 0n) continue;
-          out.push({
-            validator: row.validatorAddress,
-            amount,
-            status: s.status === "Active" ? "bonded" : "unbonding",
-          });
+      let cursor: string | null = null;
+      for (let pageIndex = 0; pageIndex < 20; pageIndex++) {
+        const data: {
+          chainIdentifier?: string;
+          epoch?: { epochId?: number };
+          address?: { objects?: { nodes?: Array<{ contents?: { json?: {
+            pool_id?: string; principal?: string; stake_activation_epoch?: string;
+          } } }>; pageInfo?: { hasNextPage?: boolean; endCursor?: string | null } } };
+        } = await gql(`query($owner: SuiAddress!, $after: String) {
+          chainIdentifier
+          epoch { epochId }
+          address(address: $owner) { objects(first: 50, after: $after,
+            filter: {type: "0x3::staking_pool::StakedSui"}) {
+            nodes { contents { json } }
+            pageInfo { hasNextPage endCursor }
+          } }
+        }`, { owner: address, after: cursor });
+        try {
+          assertSuiNetworkIdentifier(data.chainIdentifier);
+        } catch (cause) {
+          throw networkError("Sui GraphQL does not match this app's selected network.", cause);
         }
+        const page = data.address?.objects;
+        if (!page?.nodes || !page.pageInfo) throw new Error("Sui stake object query returned no page");
+        for (const node of page.nodes) {
+          const stake = node.contents?.json;
+          if (!stake?.pool_id || !stake.principal || !/^\d+$/.test(stake.principal)) continue;
+          const amount = BigInt(stake.principal);
+          if (amount <= 0n) continue;
+          const activeAt = Number(stake.stake_activation_epoch);
+          out.push({ validator: stake.pool_id, amount,
+            status: Number.isSafeInteger(activeAt) && (data.epoch?.epochId ?? 0) >= activeAt ? "bonded" : "pending" });
+        }
+        if (!page.pageInfo.hasNextPage) break;
+        if (!page.pageInfo.endCursor || page.pageInfo.endCursor === cursor) throw new Error("Sui stake object pagination stalled");
+        if (pageIndex === 19) throw new Error("Sui stake object pagination exceeded 20 pages");
+        cursor = page.pageInfo.endCursor;
       }
       return out;
     } catch (cause) {
@@ -123,38 +128,12 @@ export const suiAdapter: IChainAdapter = {
     } satisfies UnsignedTx;
   },
 
-  async buildUndelegateTx({ validator, amount, delegator }) {
-    return {
-      kind: "sui",
-      tx: {
-        target: `${SUI_SYSTEM_MODULE}::request_withdraw_stake`,
-        systemState: SUI_SYSTEM_STATE,
-        validator,
-        delegator,
-        // The actual `request_withdraw_stake` move call takes a
-        // StakedSui object id. The signing client (frontend wallet or
-        // backend keeper) resolves the user's StakedSui id from
-        // suix_getStakes before submitting.
-        amountMist: amount.toString(),
-      },
-    } satisfies UnsignedTx;
+  async buildUndelegateTx() {
+    throw new ChainAdapterError("NETWORK", "Sui unstaking requires the tracked StakedSui receipt ID; use the connected wallet's unstake action.");
   },
 
-  async buildClaimTx({ validator, delegator }) {
-    // Sui auto-mints rewards into the StakedSui object; "claim" is
-    // effectively a re-stake of the matured rewards. We model it as a
-    // delegate call with a 0 amount so the keeper can resolve and
-    // restake at execution time.
-    return {
-      kind: "sui",
-      tx: {
-        target: `${SUI_SYSTEM_MODULE}::request_add_stake`,
-        systemState: SUI_SYSTEM_STATE,
-        validator,
-        delegator,
-        amountMist: "0",
-      },
-    } satisfies UnsignedTx;
+  async buildClaimTx() {
+    throw new ChainAdapterError("UNBONDING_PERIOD", "Sui returns principal during request_withdraw_stake; no second claim transaction exists.");
   },
 
   async estimateGas() {

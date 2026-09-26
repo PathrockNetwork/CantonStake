@@ -1,18 +1,13 @@
 "use client";
 
-import {
-  useConnectWallet,
-  useCurrentAccount,
-  useDisconnectWallet,
-  useSignAndExecuteTransaction,
-  useSuiClient,
-  useWallets,
-} from "@mysten/dapp-kit";
+import { useCurrentAccount, useCurrentClient, useDAppKit, useWalletConnection, useWallets } from "@mysten/dapp-kit-react";
 import { Transaction } from "@mysten/sui/transactions";
 import { useCallback, useState } from "react";
+import { assertWalletOwner } from "../wallet-binding";
+import { assertSuiNetworkIdentifier } from "./network";
 
 /**
- * Sui wallet hook — wraps `@mysten/dapp-kit`'s primitives into the same
+ * Sui wallet hook — wraps `@mysten/dapp-kit-react`'s primitives into the same
  * connect/sign/disconnect shape used by useWagmi / useCosmosWallet so
  * the stake page can branch on chain id without bespoke per-wallet code.
  */
@@ -24,6 +19,7 @@ export interface UseSuiWalletReturn {
   error: string | null;
   connect: () => Promise<void>;
   disconnect: () => void;
+  assertNetwork: () => Promise<void>;
   /**
    * Build + sign + execute a request_add_stake move call. Returns the
    * tx digest on success.
@@ -31,35 +27,30 @@ export interface UseSuiWalletReturn {
   delegate: (args: {
     validator: string;
     amountMist: bigint;
+    expectedWallet: string;
   }) => Promise<{ digest: string }>;
   /**
    * Build + sign + execute a request_withdraw_stake move call. Returns the
    * tx digest on success.
    */
-  undelegate: (args: {
-    validator: string;
-    amountMist: bigint;
-  }) => Promise<{ digest: string }>;
-  /**
-   * Withdraw staked SUI after the unbonding epoch. Returns the digest.
-   */
-  withdraw: (args: {
-    validator: string;
-  }) => Promise<{ digest: string }>;
+  undelegate: (args: { stakedSuiId: string; expectedWallet: string }) => Promise<{ digest: string }>;
 }
 
 const SUI_SYSTEM_STATE = "0x5";
 const SUI_SYSTEM_MODULE = "0x3::sui_system";
-
 export function useSuiWallet(): UseSuiWalletReturn {
   const account = useCurrentAccount();
-  const client = useSuiClient();
+  const client = useCurrentClient();
+  const dAppKit = useDAppKit();
   const wallets = useWallets();
-  const { mutateAsync: connectWallet, isPending: connecting } =
-    useConnectWallet();
-  const { mutate: disconnectWallet } = useDisconnectWallet();
-  const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
+  const connection = useWalletConnection();
   const [error, setError] = useState<string | null>(null);
+
+  const assertSuiNetwork = useCallback(async () => {
+    const result = await client.query<{ chainIdentifier?: string }>({ query: "{ chainIdentifier }", variables: {} });
+    if (result.errors?.length) throw new Error("Sui GraphQL chain identity is unavailable.");
+    assertSuiNetworkIdentifier(result.data?.chainIdentifier);
+  }, [client]);
 
   const connect = useCallback(async () => {
     setError(null);
@@ -72,15 +63,19 @@ export function useSuiWallet(): UseSuiWalletReturn {
     try {
       // Pick the first available wallet — the user is then prompted by
       // their wallet's native UI to approve.
-      await connectWallet({ wallet: wallets[0]! });
+      await dAppKit.connectWallet({ wallet: wallets[0]! });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [wallets, connectWallet]);
+  }, [wallets, dAppKit]);
 
   const delegate = useCallback(
-    async (args: { validator: string; amountMist: bigint }) => {
+    async (args: { validator: string; amountMist: bigint; expectedWallet: string }) => {
       if (!account) throw new Error("Sui wallet not connected");
+      await assertSuiNetwork();
+      const signingAccount = dAppKit.stores.$connection.get().account;
+      assertWalletOwner("Sui", signingAccount?.address, args.expectedWallet, true);
+      if (!signingAccount) throw new Error("Sui wallet not connected");
 
       const tx = new Transaction();
       const [stakeCoin] = tx.splitCoins(tx.gas, [args.amountMist]);
@@ -93,93 +88,50 @@ export function useSuiWallet(): UseSuiWalletReturn {
         ],
       });
 
-      const result = await signAndExecute({ transaction: tx });
+      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx, account: signingAccount });
+      if (result.$kind !== "Transaction") throw new Error("Sui stake transaction failed");
       // Wait for finalisation so the next caller can rely on the
       // staked-balance read seeing the new position.
-      await client.waitForTransaction({ digest: result.digest });
-      return { digest: result.digest };
+      await client.waitForTransaction({ digest: result.Transaction.digest });
+      return { digest: result.Transaction.digest };
     },
-    [account, signAndExecute, client],
+    [account, dAppKit, client, assertSuiNetwork],
   );
 
   const undelegate = useCallback(
-    async (args: { validator: string; amountMist: bigint }) => {
+    async (args: { stakedSuiId: string; expectedWallet: string }) => {
       if (!account) throw new Error("Sui wallet not connected");
+      await assertSuiNetwork();
+      const signingAccount = dAppKit.stores.$connection.get().account;
+      assertWalletOwner("Sui", signingAccount?.address, args.expectedWallet, true);
+      if (!signingAccount) throw new Error("Sui wallet not connected");
 
       const tx = new Transaction();
-      // Find the user's StakedSui objects for this validator
-      const stakes = await client.getStakes({
-        owner: account.address,
-      });
-      const validatorStakes = stakes.filter(
-        (s) => s.validatorAddress === args.validator
-      );
-
-      if (validatorStakes.length === 0 || validatorStakes[0].stakes.length === 0) {
-        throw new Error("No stake found for this validator");
-      }
-
-      // Use the first active staked Sui object
-      const stakedSuiId = validatorStakes[0].stakes[0].stakedSuiId;
-
       tx.moveCall({
         target: `${SUI_SYSTEM_MODULE}::request_withdraw_stake`,
         arguments: [
           tx.object(SUI_SYSTEM_STATE),
-          tx.object(stakedSuiId),
+          tx.object(args.stakedSuiId),
         ],
       });
 
-      const result = await signAndExecute({ transaction: tx });
-      await client.waitForTransaction({ digest: result.digest });
-      return { digest: result.digest };
+      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx, account: signingAccount });
+      if (result.$kind !== "Transaction") throw new Error("Sui unstake transaction failed");
+      await client.waitForTransaction({ digest: result.Transaction.digest });
+      return { digest: result.Transaction.digest };
     },
-    [account, client, signAndExecute],
-  );
-
-  const withdraw = useCallback(
-    async (args: { validator: string }) => {
-      if (!account) throw new Error("Sui wallet not connected");
-
-      const tx = new Transaction();
-      // Find the user's stake objects for this validator
-      const stakes = await client.getStakes({
-        owner: account.address,
-      });
-      const validatorStakes = stakes.filter(
-        (s) => s.validatorAddress === args.validator
-      );
-
-      if (validatorStakes.length === 0 || validatorStakes[0].stakes.length === 0) {
-        throw new Error("No stake found for this validator");
-      }
-
-      const stakedSuiId = validatorStakes[0].stakes[0].stakedSuiId;
-
-      tx.moveCall({
-        target: `${SUI_SYSTEM_MODULE}::withdraw_stake`,
-        arguments: [
-          tx.object(SUI_SYSTEM_STATE),
-          tx.object(stakedSuiId),
-        ],
-      });
-
-      const result = await signAndExecute({ transaction: tx });
-      await client.waitForTransaction({ digest: result.digest });
-      return { digest: result.digest };
-    },
-    [account, client, signAndExecute],
+    [account, client, dAppKit, assertSuiNetwork],
   );
 
   return {
     address: account?.address ?? null,
     isConnected: !!account,
-    isConnecting: connecting,
+    isConnecting: connection.isConnecting,
     error,
     connect,
-    disconnect: () => disconnectWallet(),
+    disconnect: () => { void dAppKit.disconnectWallet(); },
+    assertNetwork: assertSuiNetwork,
     delegate,
     undelegate,
-    withdraw,
   };
 }
