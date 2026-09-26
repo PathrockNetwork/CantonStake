@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useAccount, useSendTransaction, useWaitForTransactionReceipt, useSwitchChain } from "wagmi";
-import { parseEther } from "viem";
+import { useAccount, useReadContract, useSendTransaction, useSwitchChain } from "wagmi";
+import { getAccount, waitForTransactionReceipt } from "@wagmi/core";
+import { parseAbi, parseEther, parseUnits } from "viem";
 import { Btn } from "@/components/primitives/Btn";
 import { Card } from "@/components/primitives/Card";
 import { Chip } from "@/components/primitives/Chip";
@@ -14,21 +15,36 @@ import { PageMasthead } from "@/components/primitives/PageMasthead";
 import {
   fetchPositions,
   fetchRewards,
+  fetchWatcherStatus,
   sweepNativeRewards,
   type PositionRow,
 } from "@/lib/api";
-import { liveChains, chainById } from "@/lib/chains";
+import { liveChains } from "@/lib/chains";
+import { wagmiConfig } from "@/lib/wagmi";
 import { adapterFor } from "@/lib/chains/index";
 import { fetchStakingParams } from "@/lib/chains/polygon";
+import { monadStakingContract } from "@/lib/chains/monad";
 import { chainFromAddress } from "@/lib/chains";
 import { fmt, fmtUsd } from "@/lib/format";
 import { usePrices } from "@/lib/prices";
 import { accountChain, positionUsd, shortId, totalPositionUsd, validatorLabel } from "@/lib/account-view";
 import { AccountEmpty, AccountLink, AccountMetric, AccountPanel, ChainBadge, LifecycleRail, StatusBadge, WalletNotice } from "@/components/account/AccountUI";
-import { lookupPositionMeta, lookupPositionChain } from "@/lib/position-chain-map";
+import { lookupPositionMeta } from "@/lib/position-chain-map";
 import { useCosmosWallet } from "@/lib/cosmos/use-cosmos-wallet";
+import { isCosmosChainKey, type CosmosChainKey } from "@/lib/cosmos/networks";
 import { useSuiWallet } from "@/lib/sui/use-sui-wallet";
+import { useAptosWallet } from "@/lib/aptos/use-aptos-wallet";
+import { aptosPendingWithdrawal, aptosView } from "@/lib/aptos/network";
+import { useSolanaWallet } from "@/lib/solana/use-solana-wallet";
+import { usePolkadotWallet } from "@/lib/polkadot/use-polkadot-wallet";
+import { polkadotApi, polkadotNetwork } from "@/lib/polkadot/network";
+import { PublicKey } from "@solana/web3.js";
+import { readSolanaStakeActivation } from "@/lib/solana/stake-activation";
 import { tokens } from "@/lib/tokens";
+import { networkMode } from "@/lib/network";
+import { assertEvmWalletBinding } from "@/lib/wallet-binding";
+import { createExclusiveAction } from "@/lib/exclusive-action";
+import { successfulEvmSettlementHash } from "@/lib/evm-settlement";
 
 /**
  * Positions — staking lifecycle view with Unbond and Claim actions.
@@ -42,6 +58,10 @@ import { tokens } from "@/lib/tokens";
  */
 
 type Lifecycle = "bonded" | "unbonding" | "released" | "cancelled" | "pending";
+
+const monadEpochAbi = parseAbi([
+  "function getEpoch() view returns (uint64 epoch, bool inEpochDelayPeriod)",
+]);
 
 const STATUS_TO_LIFECYCLE: Record<string, Lifecycle> = {
   Bonded: "bonded",
@@ -85,9 +105,15 @@ function positionChain(p: PositionRow) {
 }
 
 export default function PositionsPage() {
-  const { address, isConnected } = useAccount();
-  const cosmos = useCosmosWallet();
+  const { address } = useAccount();
+  const cosmos = useCosmosWallet("cosmos");
+  const celestia = useCosmosWallet("celestia");
+  const osmosis = useCosmosWallet("osmosis");
+  const cosmosWallets = { cosmos, celestia, osmosis };
   const sui = useSuiWallet();
+  const aptos = useAptosWallet();
+  const solana = useSolanaWallet();
+  const polkadot = usePolkadotWallet();
   const { switchChainAsync } = useSwitchChain();
   const { data: prices } = usePrices();
   const [search, setSearch] = useState("");
@@ -95,10 +121,28 @@ export default function PositionsPage() {
   const [chainFilter, setChainFilter] = useState("all");
   const [order, setOrder] = useState("newest");
   const [selectedId, setSelectedId] = useState<string | null | undefined>(undefined);
-  const positionsQ = useQuery({ queryKey: ["positions", address], queryFn: () => fetchPositions(address!), enabled: !!address, refetchInterval: 5000 });
+  const walletAddresses = [...new Set([address, cosmos.address, celestia.address, osmosis.address, sui.address, aptos.address, solana.address, polkadot.address].filter((value): value is string => !!value))];
+  const anyWalletConnected = walletAddresses.length > 0;
+  const positionsQ = useQuery({
+    queryKey: ["positions", ...walletAddresses],
+    queryFn: async () => {
+      const batches = await Promise.all(walletAddresses.map(fetchPositions));
+      return [...new Map(batches.flat().map(position => [position.contractId, position])).values()];
+    },
+    enabled: anyWalletConnected,
+    refetchInterval: 5000,
+  });
   const rewardsQ = useQuery({ queryKey: ["rewards", address], queryFn: () => fetchRewards(address!), enabled: !!address, refetchInterval: 10_000 });
+  const { data: watcherStatus } = useQuery({
+    queryKey: ["watcher-status"], queryFn: fetchWatcherStatus, refetchInterval: 60_000,
+  });
+  const backendMode = watcherStatus?.networkMode;
+  const actionModeError = backendMode === networkMode ? null
+    : backendMode === "testnet" || backendMode === "mainnet"
+      ? `This page is built for ${networkMode}, but the staking backend is on ${backendMode}. Open the matching deployment before signing.`
+      : "Cannot verify the staking backend's network mode yet. Wait for the connection before signing.";
   const positions = positionsQ.data ?? [];
-  useEffect(() => { setSelectedId(undefined); }, [address]);
+  useEffect(() => { setSelectedId(undefined); }, [address, cosmos.address, celestia.address, osmosis.address, sui.address, aptos.address, solana.address, polkadot.address]);
   useEffect(() => {
     if (selectedId !== undefined || !positions.length) return;
     const requested = new URLSearchParams(window.location.search).get("position");
@@ -107,7 +151,7 @@ export default function PositionsPage() {
   const focused = positions.find(position => position.contractId === selectedId);
   const bonded = positions.filter(p => p.argument.status === "Bonded");
   const unbonding = positions.filter(p => p.argument.status === "Unbonding");
-  const haveData = isConnected && !!positionsQ.data && !positionsQ.isError;
+  const haveData = anyWalletConnected && !!positionsQ.data && !positionsQ.isError;
   const activeValue = haveData ? totalPositionUsd(bonded, prices) : null;
   const exitingValue = haveData ? totalPositionUsd(unbonding, prices) : null;
   const visible = positions.filter(p => (status === "all" || p.argument.status === status) && (chainFilter === "all" || accountChain(p).id === chainFilter)
@@ -116,7 +160,7 @@ export default function PositionsPage() {
   const refresh = () => { void positionsQ.refetch(); void rewardsQ.refetch(); };
   return <div className="page-shell account-page">
     <PageMasthead index="03" section="Positions" title="Positions." accent="Your stake, your control." description="Monitor and manage your staking positions. View bonded, unbonding, and released positions and follow their lifecycle on Canton." />
-    <WalletNotice connected={isConnected} error={positionsQ.isError || rewardsQ.isError} loading={isConnected && positionsQ.isLoading} onRetry={refresh} />
+    <WalletNotice connected={anyWalletConnected} error={positionsQ.isError || (!!address && rewardsQ.isError)} loading={anyWalletConnected && positionsQ.isLoading} onRetry={refresh} />
     <div className="account-metrics">
       <AccountMetric label="Total active stake" value={activeValue === null ? "—" : fmtUsd(activeValue, 2)} detail="Estimated value of bonded positions" icon="stack" />
       <AccountMetric label="Total unbonding" value={exitingValue === null ? "—" : fmtUsd(exitingValue, 2)} detail="Estimated value awaiting release" icon="clock" color="#bb6aff" />
@@ -134,7 +178,7 @@ export default function PositionsPage() {
         <div className="account-table-wrap"><table className="account-table"><thead><tr><th>Chain · validator</th><th>Amount</th><th>Est. USD</th><th>Status</th><th>Details</th></tr></thead><tbody>
           {visible.map(position => <tr key={position.contractId} data-selected={position.contractId === selectedId}><td><ChainBadge symbol={accountChain(position).symbol} label={accountChain(position).id === "polygon" ? "Polygon PoS" : accountChain(position).name} /><small>{validatorLabel(position)}</small></td><td className="mono">{fmt(Number(position.argument.amountPol), 2)} {accountChain(position).symbol}</td><td>{positionUsd(position, prices) === null ? "—" : fmtUsd(positionUsd(position, prices)!, 2)}</td><td><StatusBadge status={position.argument.status} /></td><td><button className="account-button" aria-pressed={position.contractId === selectedId} aria-label={`View position ${shortId(position.contractId)}`} onClick={() => setSelectedId(position.contractId)}>View →</button></td></tr>)}
         </tbody></table></div>
-        {!visible.length && <AccountEmpty>{!isConnected ? "Connect your wallet to view and manage your positions." : positionsQ.isLoading ? "Loading positions…" : positionsQ.isError ? "Positions are temporarily unavailable." : positions.length ? "No positions match your filters." : <>No positions yet.<AccountLink href="/stake">Create your first position</AccountLink></>}</AccountEmpty>}
+        {!visible.length && <AccountEmpty>{!anyWalletConnected ? "Connect your wallet to view and manage your positions." : positionsQ.isLoading ? "Loading positions…" : positionsQ.isError ? "Positions are temporarily unavailable." : positions.length ? "No positions match your filters." : <>No positions yet.<AccountLink href="/stake">Create your first position</AccountLink></>}</AccountEmpty>}
         <div className="account-results"><span>Showing {visible.length} of {positions.length} positions</span><small>USD values are indicative.</small></div>
       </AccountPanel>
       <div className="account-stack account-position-details">
@@ -144,7 +188,7 @@ export default function PositionsPage() {
             <div className="account-position-amount"><strong>{fmt(Number(focused.argument.amountPol), 2)} {accountChain(focused).symbol}</strong><span className="account-muted">{positionUsd(focused, prices) === null ? "—" : `${fmtUsd(positionUsd(focused, prices)!, 2)} estimated value`}</span></div>
             <div className="account-position-lifecycle"><h3>Staking lifecycle</h3><LifecycleRail status={focused.argument.status} /></div>
             <dl className="account-definition"><div><dt>Position ID</dt><dd className="mono" title={focused.contractId}>{shortId(focused.contractId, 14)}</dd></div><div><dt>Validator</dt><dd title={focused.chainMeta?.validatorAddress ?? ""}>{validatorLabel(focused)}</dd></div><div><dt>Bonded</dt><dd>{focused.argument.bondedAt ? new Date(focused.argument.bondedAt).toLocaleString() : "Awaiting bond"}</dd></div><div><dt>Activity markers</dt><dd>{focused.argument.markersEmitted}</dd></div><div><dt>CC beneficiary split</dt><dd>75% delegator / 25% treasury</dd></div></dl>
-            <div className="account-position-actions"><PositionActions key={focused.contractId} p={focused} cosmos={cosmos} sui={sui} switchChainAsync={switchChainAsync} /><AccountLink href="/rewards">View rewards</AccountLink></div>
+            <div className="account-position-actions"><PositionActions key={focused.contractId} p={focused} cosmosWallets={cosmosWallets} sui={sui} aptos={aptos} solana={solana} polkadot={polkadot} switchChainAsync={switchChainAsync} modeError={actionModeError} /><AccountLink href="/rewards">View rewards</AccountLink></div>
             <details className="account-position-proof"><summary>View recorded lifecycle</summary><Timeline p={focused} /></details>
           </> : <><AccountEmpty>{positions.length ? "Select a position to inspect its lifecycle and available actions." : "Your selected position and its actions will appear here."}</AccountEmpty><LifecycleRail /></>}
         </AccountPanel>
@@ -155,24 +199,31 @@ export default function PositionsPage() {
 
 function PositionActions({
   p,
-  cosmos,
+  cosmosWallets,
   sui,
+  aptos,
+  solana,
+  polkadot,
   switchChainAsync,
+  modeError,
 }: {
   p: PositionRow;
-  cosmos: ReturnType<typeof useCosmosWallet>;
+  cosmosWallets: Record<CosmosChainKey, ReturnType<typeof useCosmosWallet>>;
   sui: ReturnType<typeof useSuiWallet>;
+  aptos: ReturnType<typeof useAptosWallet>;
+  solana: ReturnType<typeof useSolanaWallet>;
+  polkadot: ReturnType<typeof usePolkadotWallet>;
   switchChainAsync: ReturnType<typeof useSwitchChain>["switchChainAsync"];
+  modeError: string | null;
 }) {
   const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<"sweep" | "unbond" | "claim" | null>(null);
+  const runPositionAction = useRef(createExclusiveAction()).current;
 
   const { address } = useAccount();
-  const { sendTransaction } = useSendTransaction();
-  const { isSuccess: confirmed } = useWaitForTransactionReceipt({
-    hash: undefined, // Will be set during unbond/claim
-  });
+  const { sendTransactionAsync } = useSendTransaction();
 
   const lifecycle = STATUS_TO_LIFECYCLE[p.argument.status] ?? "pending";
   const color = lifecycleColor(lifecycle);
@@ -181,11 +232,20 @@ function PositionActions({
   // Get position metadata (chain + validator)
   const meta = lookupPositionMeta(p.argument.evmAddress, p.argument.amountPol);
   const chainId = chain.id;
+  const isCosmos = isCosmosChainKey(chainId);
+  const cosmos = isCosmos ? cosmosWallets[chainId] : cosmosWallets.cosmos;
   const validator = p.chainMeta?.validatorAddress ?? meta?.validator;
 
   // Determine available actions
-  const canSweep = lifecycle === "bonded";
-  const canUnbond = lifecycle === "bonded" && !!validator;
+  const canSweep = lifecycle === "bonded" && chain.id === "polygon";
+  // Cosmos's watcher verifies MsgUndelegate and releases automatically on
+  // the EndBlock completion event. Sui's immediate exit still needs a
+  // transaction watcher before its action can safely be enabled here.
+  const lifecycleWatcherReady = ["polygon", "monad", "bnb", "cosmos", "celestia", "osmosis", "aptos"].includes(chain.id) ||
+    (chain.id === "solana" && !!p.chainMeta?.validatorShare) ||
+    (chain.id === "polkadot" && !!p.chainMeta?.validatorShare) ||
+    (chain.id === "sui" && !!p.chainMeta?.suiStakedObjectId);
+  const canUnbond = lifecycle === "bonded" && !!validator && lifecycleWatcherReady;
 
   // Polygon's claim gate is checkpoint-based, not wall-clock:
   // `unstakeClaimTokens_new` only succeeds once
@@ -200,16 +260,92 @@ function PositionActions({
     enabled: isPolygon && lifecycle === "unbonding",
     staleTime: 60_000,
   });
+  const { data: monadEpoch } = useReadContract({
+    address: monadStakingContract,
+    abi: monadEpochAbi,
+    functionName: "getEpoch",
+    chainId: chain.wagmiChain?.id,
+    query: { enabled: chain.id === "monad" && lifecycle === "unbonding", refetchInterval: 10_000 },
+  });
+  const { data: aptosPending, isError: aptosPendingError } = useQuery({
+    queryKey: ["aptos-pending-withdrawal", validator, p.argument.evmAddress],
+    queryFn: async () => {
+      return aptosPendingWithdrawal(await aptosView("0x1::delegation_pool::get_pending_withdrawal", [validator!, p.argument.evmAddress]));
+    },
+    enabled: chain.id === "aptos" && lifecycle === "unbonding" && !!validator,
+    refetchInterval: 15_000,
+  });
+  const solanaStakeAccount = chain.id === "solana" ? p.chainMeta?.validatorShare : null;
+  const { data: solanaActivation, isError: solanaActivationError } = useQuery({
+    queryKey: ["solana-stake-activation", solanaStakeAccount],
+    queryFn: () => readSolanaStakeActivation(new PublicKey(solanaStakeAccount!)),
+    enabled: chain.id === "solana" && lifecycle === "unbonding" && !!solanaStakeAccount,
+    refetchInterval: 15_000,
+  });
+  const { data: polkadotExit, isError: polkadotExitError } = useQuery({
+    queryKey: ["polkadot-exit", p.argument.evmAddress, p.chainMeta?.validatorShare],
+    queryFn: async () => {
+      const api = await polkadotApi();
+      const member = (await api.query.nominationPools.poolMembers(p.argument.evmAddress)).toJSON() as
+        { poolId?: number; points?: string | number; unbondingEras?: Record<string, unknown> } | null;
+      const poolId = Number(p.chainMeta!.validatorShare!.slice(5));
+      if (!member || member.poolId !== poolId || BigInt(String(member.points ?? 0)) !== 0n) {
+        return { ready: false, reason: "Polkadot pool position is not fully unbonded." };
+      }
+      const eraValue = (await api.query.staking.currentEra()).toJSON();
+      const era = eraValue === null ? -1 : Number(eraValue);
+      const eras = Object.keys(member.unbondingEras ?? {}).map(Number);
+      return era >= 0 && eras.length > 0 && eras.every((item) => Number.isSafeInteger(item) && item <= era)
+        ? { ready: true, reason: null }
+        : { ready: false, reason: "Waiting for Polkadot Asset Hub unbonding eras." };
+    },
+    enabled: chain.id === "polkadot" && lifecycle === "unbonding" && !!p.chainMeta?.validatorShare,
+    refetchInterval: 15_000,
+  });
 
   const claimGate: { ready: boolean; reason: string | null } = (() => {
     if (lifecycle !== "unbonding") return { ready: false, reason: null };
+    if (!lifecycleWatcherReady) return { ready: false, reason: "Native exit tracking is not available for this chain yet." };
+    if (isCosmos) return { ready: false, reason: `${chain.symbol} releases automatically when the unbonding period ends.` };
+    if (chain.id === "aptos") {
+      if (aptosPendingError) return { ready: false, reason: "Aptos withdrawal status is unavailable." };
+      if (!aptosPending) return { ready: false, reason: "checking Aptos lockup…" };
+      return aptosPending.ready && aptosPending.amount > 0n
+        ? { ready: true, reason: null }
+        : { ready: false, reason: "Aptos lockup has not ended." };
+    }
+    if (chain.id === "solana") {
+      if (!solanaStakeAccount) return { ready: false, reason: "Solana stake-account binding is unavailable." };
+      if (solanaActivationError) return { ready: false, reason: "Solana stake activation is unavailable." };
+      if (!solanaActivation) return { ready: false, reason: "Checking Solana cooldown…" };
+      return solanaActivation.state === "inactive"
+        ? { ready: true, reason: null }
+        : { ready: false, reason: `Solana stake is ${solanaActivation.state}; wait for cooldown.` };
+    }
+    if (chain.id === "polkadot") {
+      if (polkadotExitError) return { ready: false, reason: "Polkadot exit status is unavailable." };
+      return polkadotExit ?? { ready: false, reason: "Checking Polkadot unbonding eras…" };
+    }
 
-    // Non-Polygon chains settle on the timer-based release path, where the
-    // recorded timestamp IS the gate.
+    if (chain.id === "monad") {
+      const activationEpoch = p.chainMeta?.unbondWithdrawEpoch;
+      if (!activationEpoch || !monadEpoch) return { ready: false, reason: "checking Monad epoch…" };
+      const readyEpoch = BigInt(activationEpoch) + 1n;
+      return monadEpoch[0] >= readyEpoch
+        ? { ready: true, reason: null }
+        : { ready: false, reason: `${readyEpoch - monadEpoch[0]} more Monad epoch(s)` };
+    }
+
+    // BNB stores a Unix-second ETA in Daml. It enables the wallet
+    // action only; the backend still requires a settled claim/withdraw event
+    // before changing the Canton position to Released.
     if (!isPolygon) {
       const ts = p.argument.unbondingReadyAt;
+      const parsed = ts && /^\d+$/.test(ts)
+        ? new Date(Number(ts) * (Number(ts) < 1_000_000_000_000 ? 1000 : 1))
+        : ts ? new Date(ts) : null;
       return {
-        ready: !!ts && new Date(ts) <= new Date(),
+        ready: chain.hasAdapter !== false && !!parsed && Number.isFinite(parsed.getTime()) && parsed <= new Date(),
         reason: null,
       };
     }
@@ -240,10 +376,18 @@ function PositionActions({
 
   const canClaim = claimGate.ready;
   const hasActions = canSweep || canUnbond || canClaim;
+  const actionUnavailable = lifecycle === "bonded" && !lifecycleWatcherReady
+    ? chain.id === "sui"
+      ? "This Sui stake has no verified receipt ID; unstake tracking is unavailable."
+      : "Native exit tracking is not available for this chain yet."
+    : null;
 
   // Sweep mutation (claim native rewards)
   const sweepMut = useMutation({
-    mutationFn: () => sweepNativeRewards(p.contractId),
+    mutationFn: () => {
+      if (modeError) throw new Error(modeError);
+      return sweepNativeRewards(p.contractId);
+    },
     onSuccess: (res) => {
       const native =
         res &&
@@ -269,28 +413,33 @@ function PositionActions({
   });
 
   // Unbond handler
-  const handleUnbond = async () => {
-    if (!address || !validator) return;
+  const handleUnbond = () => runPositionAction(async () => {
+    if (modeError) { setError(modeError); return; }
+    if (!validator) return;
+    if (!lifecycleWatcherReady) {
+      setError("Native exit tracking is not available for this chain yet.");
+      return;
+    }
     setError(null);
     setOkMsg(null);
+    setPendingAction("unbond");
 
     try {
       const adapter = adapterFor(chainId);
       const amountWei = parseEther(p.argument.amountPol);
 
       // Check chain type
-      const isCosmos = chainId === "cosmos";
       const isSui = chainId === "sui";
       const isEvm = !!chain.wagmiChain;
 
       if (isCosmos) {
-        if (!cosmos.isConnected || !cosmos.address) {
+        if (!cosmos.isConnected || !cosmos.address || cosmos.address.toLowerCase() !== p.argument.evmAddress.toLowerCase()) {
           setError("Connect Keplr wallet first");
           return;
         }
         const tx = await adapter.buildUndelegateTx({
           validator,
-          amount: amountWei,
+          amount: parseUnits(p.argument.amountPol, 6),
           delegator: cosmos.address,
         });
         if (tx.kind !== "cosmos") {
@@ -304,16 +453,54 @@ function PositionActions({
         setTimeout(() => setOkMsg(null), 3000);
         // Refresh positions after a delay
         setTimeout(() => qc.invalidateQueries({ queryKey: ["positions"] }), 5000);
+      } else if (chainId === "aptos") {
+        if (!aptos.isConnected || !aptos.address || aptos.address.toLowerCase() !== p.argument.evmAddress.toLowerCase()) {
+          throw new Error("Connect the Aptos wallet that owns this position.");
+        }
+        const tx = await adapter.buildUndelegateTx({
+          validator,
+          amount: parseUnits(p.argument.amountPol, 8),
+          delegator: aptos.address,
+        });
+        const result = await aptos.signAndSubmit(tx, p.argument.evmAddress);
+        setOkMsg(`Aptos unlock settled; awaiting Canton indexing… ${result.hash.slice(0, 10)}…`);
+        setTimeout(() => qc.invalidateQueries({ queryKey: ["positions"] }), 5000);
+      } else if (chainId === "solana") {
+        if (!solana.isConnected || !solana.address || solana.address !== p.argument.evmAddress) {
+          throw new Error("Connect the Solana wallet that owns this position.");
+        }
+        const stakeAccount = p.chainMeta?.validatorShare;
+        if (!stakeAccount) throw new Error("This Solana position has no verified stake-account address.");
+        const tx = await adapter.buildUndelegateTx({ validator: stakeAccount, amount: parseUnits(p.argument.amountPol, 9), delegator: solana.address });
+        if (tx.kind !== "solana" || tx.action !== "deactivate") throw new Error("Invalid Solana deactivate plan.");
+        const result = await solana.deactivate(stakeAccount);
+        setOkMsg(`SOL deactivation finalized; awaiting Canton indexing… ${result.signature.slice(0, 10)}…`);
+        setTimeout(() => qc.invalidateQueries({ queryKey: ["positions"] }), 5000);
+      } else if (chainId === "polkadot") {
+        if (!polkadot.address || polkadot.address !== p.argument.evmAddress) throw new Error("Connect the Polkadot wallet that owns this pool position.");
+        const pool = p.chainMeta?.validatorShare;
+        if (!pool || !/^pool:[1-9]\d*$/.test(pool)) throw new Error("This Polkadot position has no verified pool ID.");
+        const tx = await adapter.buildUndelegateTx({ validator: pool,
+          amount: parseUnits(p.argument.amountPol, polkadotNetwork.decimals), delegator: polkadot.address });
+        if (tx.kind !== "substrate" || tx.method !== "nominationPools.unbond") throw new Error("Invalid Polkadot unbond plan.");
+        const result = await polkadot.unbond(Number(pool.slice(5)));
+        setOkMsg(`Polkadot unbond finalized; awaiting Canton indexing… ${result.hash.slice(0, 10)}…`);
+        setTimeout(() => qc.invalidateQueries({ queryKey: ["positions"] }), 5000);
       } else if (isSui) {
-        if (!sui.isConnected || !sui.address) {
+        if (!sui.isConnected || !sui.address || sui.address.toLowerCase() !== p.argument.evmAddress.toLowerCase()) {
           setError("Connect Sui wallet first");
           return;
         }
-        const result = await sui.undelegate({ validator, amountMist: amountWei });
-        setOkMsg(`Unbonding... tx: ${result.digest.slice(0, 10)}...`);
+        const stakedSuiId = p.chainMeta?.suiStakedObjectId;
+        if (!stakedSuiId) throw new Error("This Sui stake has no verified receipt object ID.");
+        const result = await sui.undelegate({ stakedSuiId, expectedWallet: p.argument.evmAddress });
+        setOkMsg(`Unstake settled; awaiting Canton indexing… ${result.digest.slice(0, 10)}...`);
         setTimeout(() => setOkMsg(null), 3000);
         setTimeout(() => qc.invalidateQueries({ queryKey: ["positions"] }), 5000);
       } else if (isEvm) {
+        if (!address || address.toLowerCase() !== p.argument.evmAddress.toLowerCase()) {
+          throw new Error(`Connect the EVM wallet that owns this ${chain.name} position.`);
+        }
         // Switch to the correct chain first
         const wagmiChain = chain.wagmiChain;
         if (wagmiChain) {
@@ -329,60 +516,82 @@ function PositionActions({
           throw new Error("Unexpected tx kind");
         }
 
-        sendTransaction({
+        assertEvmWalletBinding(getAccount(wagmiConfig), p.argument.evmAddress, wagmiChain!.id);
+        const hash = await sendTransactionAsync({
+          account: address,
+          chainId: wagmiChain!.id,
           to: tx.to,
           data: tx.data,
           value: tx.value ?? 0n,
           gas: tx.gas,
         });
-        setOkMsg("Confirming unbond...");
+        let replacementReason: "repriced" | "replaced" | "cancelled" | undefined;
+        const receipt = await waitForTransactionReceipt(wagmiConfig, { hash, chainId: wagmiChain!.id,
+          onReplaced: ({ reason }) => { replacementReason = reason; } });
+        if (receipt.status !== "success") throw new Error("The unbond transaction reverted.");
+        if (!successfulEvmSettlementHash(receipt, replacementReason)) throw new Error("The wallet cancelled or replaced the unbond call. Review the replacement before retrying.");
+        setOkMsg("Unbond settled; awaiting Canton indexing…");
+        void qc.invalidateQueries({ queryKey: ["positions"] });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPendingAction(null);
     }
-  };
+  });
 
   // Claim handler
-  const handleClaim = async () => {
-    if (!address || !validator) return;
+  const handleClaim = () => runPositionAction(async () => {
+    if (modeError) { setError(modeError); return; }
+    if (!validator) return;
+    if (!lifecycleWatcherReady) {
+      setError("Native exit tracking is not available for this chain yet.");
+      return;
+    }
     setError(null);
     setOkMsg(null);
+    setPendingAction("claim");
 
     try {
       const adapter = adapterFor(chainId);
-      const isCosmos = chainId === "cosmos";
-      const isSui = chainId === "sui";
       const isEvm = !!chain.wagmiChain;
 
       if (isCosmos) {
-        if (!cosmos.isConnected || !cosmos.address) {
-          setError("Connect Keplr wallet first");
-          return;
+        throw new Error(`${chain.name} returns principal automatically; no claim transaction is needed.`);
+      } else if (chainId === "aptos") {
+        if (!aptos.isConnected || !aptos.address || aptos.address.toLowerCase() !== p.argument.evmAddress.toLowerCase()) {
+          throw new Error("Connect the Aptos wallet that owns this position.");
         }
-        const tx = await adapter.buildClaimTx({
-          validator,
-          delegator: cosmos.address,
-        });
-        if (tx.kind !== "cosmos") {
-          throw new Error("Unexpected tx kind");
-        }
-        const result = await cosmos.signAndBroadcast({
-          typeUrl: tx.typeUrl,
-          value: tx.value,
-        });
-        setOkMsg(`Claimed! tx: ${result.txHash.slice(0, 10)}...`);
-        setTimeout(() => setOkMsg(null), 3000);
+        const tx = await adapter.buildClaimTx({ validator, delegator: aptos.address });
+        const result = await aptos.signAndSubmit(tx, p.argument.evmAddress);
+        setOkMsg(`APT withdrawal settled; awaiting Canton indexing… ${result.hash.slice(0, 10)}…`);
         setTimeout(() => qc.invalidateQueries({ queryKey: ["positions"] }), 5000);
-      } else if (isSui) {
-        if (!sui.isConnected || !sui.address) {
-          setError("Connect Sui wallet first");
-          return;
+      } else if (chainId === "solana") {
+        if (!solana.isConnected || !solana.address || solana.address !== p.argument.evmAddress) {
+          throw new Error("Connect the Solana wallet that owns this position.");
         }
-        const result = await sui.withdraw({ validator });
-        setOkMsg(`Claimed! tx: ${result.digest.slice(0, 10)}...`);
-        setTimeout(() => setOkMsg(null), 3000);
+        const stakeAccount = p.chainMeta?.validatorShare;
+        if (!stakeAccount) throw new Error("This Solana position has no verified stake-account address.");
+        const tx = await adapter.buildClaimTx({ validator: stakeAccount, delegator: solana.address });
+        if (tx.kind !== "solana" || tx.action !== "withdraw") throw new Error("Invalid Solana withdrawal plan.");
+        const result = await solana.withdraw(stakeAccount);
+        setOkMsg(`SOL withdrawal finalized; awaiting Canton indexing… ${result.signature.slice(0, 10)}…`);
         setTimeout(() => qc.invalidateQueries({ queryKey: ["positions"] }), 5000);
+      } else if (chainId === "polkadot") {
+        if (!polkadot.address || polkadot.address !== p.argument.evmAddress) throw new Error("Connect the Polkadot wallet that owns this pool position.");
+        const pool = p.chainMeta?.validatorShare;
+        if (!pool || !/^pool:[1-9]\d*$/.test(pool)) throw new Error("This Polkadot position has no verified pool ID.");
+        const tx = await adapter.buildClaimTx({ validator: pool, delegator: polkadot.address });
+        if (tx.kind !== "substrate" || tx.method !== "nominationPools.withdrawUnbonded") throw new Error("Invalid Polkadot withdrawal plan.");
+        const result = await polkadot.withdraw(Number(pool.slice(5)));
+        setOkMsg(`Polkadot withdrawal finalized; awaiting Canton indexing… ${result.hash.slice(0, 10)}…`);
+        setTimeout(() => qc.invalidateQueries({ queryKey: ["positions"] }), 5000);
+      } else if (chainId === "sui") {
+        throw new Error("Sui returns principal in the unstake transaction; no separate claim exists.");
       } else if (isEvm) {
+        if (!address || address.toLowerCase() !== p.argument.evmAddress.toLowerCase()) {
+          throw new Error(`Connect the EVM wallet that owns this ${chain.name} position.`);
+        }
         const wagmiChain = chain.wagmiChain;
         if (wagmiChain) {
           await switchChainAsync({ chainId: wagmiChain.id });
@@ -396,20 +605,37 @@ function PositionActions({
           throw new Error("Unexpected tx kind");
         }
 
-        sendTransaction({
+        assertEvmWalletBinding(getAccount(wagmiConfig), p.argument.evmAddress, wagmiChain!.id);
+        const hash = await sendTransactionAsync({
+          account: address,
+          chainId: wagmiChain!.id,
           to: tx.to,
           data: tx.data,
           value: tx.value ?? 0n,
           gas: tx.gas,
         });
-        setOkMsg("Confirming claim...");
+        let replacementReason: "repriced" | "replaced" | "cancelled" | undefined;
+        const receipt = await waitForTransactionReceipt(wagmiConfig, { hash, chainId: wagmiChain!.id,
+          onReplaced: ({ reason }) => { replacementReason = reason; } });
+        if (receipt.status !== "success") throw new Error("The claim transaction reverted.");
+        if (!successfulEvmSettlementHash(receipt, replacementReason)) throw new Error("The wallet cancelled or replaced the claim call. Review the replacement before retrying.");
+        setOkMsg("Claim settled; awaiting Canton indexing…");
+        void qc.invalidateQueries({ queryKey: ["positions"] });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPendingAction(null);
     }
-  };
+  });
 
-  const isPending = sweepMut.isPending;
+  const handleSweep = () => runPositionAction(async () => {
+    setPendingAction("sweep");
+    try { await sweepMut.mutateAsync(); }
+    catch { /* mutation onError supplies the user-facing error */ }
+    finally { setPendingAction(null); }
+  });
+  const isPending = sweepMut.isPending || pendingAction !== null;
 
   return (
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -419,10 +645,10 @@ function PositionActions({
               <Btn
                 size="sm"
                 variant="ghost"
-                onClick={() => sweepMut.mutate()}
-                disabled={isPending}
+                onClick={() => { void handleSweep(); }}
+                disabled={isPending || !!modeError}
               >
-                {isPending ? "Sweeping…" : "Sweep"}
+                {pendingAction === "sweep" ? "Sweeping…" : "Sweep"}
               </Btn>
             )}
             {canUnbond && (
@@ -430,10 +656,10 @@ function PositionActions({
                 size="sm"
                 variant="ghost"
                 onClick={handleUnbond}
-                disabled={isPending}
+                disabled={isPending || !!modeError}
                 style={{ color: tokens.warning }}
               >
-                Unbond
+                {pendingAction === "unbond" ? "Unbonding…" : chain.id === "aptos" ? "Unbond all" : "Unbond"}
               </Btn>
             )}
             {canClaim && (
@@ -441,22 +667,22 @@ function PositionActions({
                 size="sm"
                 variant="ghost"
                 onClick={handleClaim}
-                disabled={isPending}
+                disabled={isPending || !!modeError}
                 style={{ color: tokens.neon }}
               >
-                Claim
+                {pendingAction === "claim" ? "Claiming…" : "Claim"}
               </Btn>
             )}
           </div>
-        ) : claimGate.reason ? (
+        ) : claimGate.reason || actionUnavailable ? (
           // Unbonding but not yet claimable. Show the real remaining
           // checkpoint count rather than an enabled button that reverts.
           <span
             className="mono"
             style={{ fontSize: 10, color: tokens.warning }}
-            title="Polygon releases unbonds by checkpoint, not by clock time"
+            title={claimGate.reason ?? actionUnavailable ?? undefined}
           >
-            {claimGate.reason}
+            {claimGate.reason ?? actionUnavailable}
           </span>
         ) : (
           <span
@@ -466,7 +692,14 @@ function PositionActions({
             —
           </span>
         )}
-        {okMsg ? (
+        {chain.id === "aptos" && canUnbond && (
+          <span className="mono" style={{ fontSize: 10, color: tokens.warning }}>
+            Exits your entire delegation to this pool, including rewards and any external additions.
+          </span>
+        )}
+        {modeError ? (
+          <span role="alert" className="mono" style={{ fontSize: 10, color: tokens.warning }}>{modeError}</span>
+        ) : okMsg ? (
           <span
             className="mono"
             style={{ fontSize: 9, color: tokens.neon }}

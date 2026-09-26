@@ -1,5 +1,5 @@
 import type { Chain } from "viem";
-import { bscTestnet, mainnet, monadTestnet, sepolia } from "wagmi/chains";
+import { bsc, bscTestnet, mainnet, monad, monadTestnet, polygon, polygonAmoy, sepolia } from "wagmi/chains";
 
 export type ChainPhase = "live" | "planned" | "soon";
 
@@ -145,25 +145,39 @@ export function knownValidatorShares(): Array<{
 // transactions on the settlement chain, NOT on Bor, even though the token
 // being staked is POL and the chain being secured is Polygon.
 export const POLYGON_SETTLEMENT_CHAIN_ID = Number(
-  process.env.NEXT_PUBLIC_POLYGON_SETTLEMENT_CHAIN_ID ??
+  process.env.NEXT_PUBLIC_POLYGON_SETTLEMENT_CHAIN_ID ||
     (process.env.NEXT_PUBLIC_NETWORK_MODE === "mainnet" ? "1" : "11155111"),
 );
 
+const expectedPolygonSettlementChainId =
+  process.env.NEXT_PUBLIC_NETWORK_MODE === "mainnet" ? mainnet.id : sepolia.id;
+if (POLYGON_SETTLEMENT_CHAIN_ID !== expectedPolygonSettlementChainId) {
+  throw new Error(
+    `Polygon settlement chain ${POLYGON_SETTLEMENT_CHAIN_ID} does not match this frontend's network mode; expected ${expectedPolygonSettlementChainId}`,
+  );
+}
+
 export const polygonSettlementChain: Chain =
   POLYGON_SETTLEMENT_CHAIN_ID === mainnet.id ? mainnet : sepolia;
+export const polygonNativeChain: Chain =
+  process.env.NEXT_PUBLIC_NETWORK_MODE === "mainnet" ? polygon : polygonAmoy;
+export const monadEvmChain: Chain =
+  process.env.NEXT_PUBLIC_NETWORK_MODE === "mainnet" ? monad : monadTestnet;
+export const bnbEvmChain: Chain =
+  process.env.NEXT_PUBLIC_NETWORK_MODE === "mainnet" ? bsc : bscTestnet;
 
 // Contract fallbacks follow the deployment mode, mirroring the backend's
 // modeDefault(): explicit env wins, else the mode's own addresses. Both
 // address pairs were verified on-chain (Sepolia 2026-08-14; mainnet
 // 2026-08-16 StakeManager.logger() and 2026-09-17 POL symbol()).
 export const stakeManagerAddress = (process.env
-  .NEXT_PUBLIC_POLYGON_STAKE_MANAGER ??
+  .NEXT_PUBLIC_POLYGON_STAKE_MANAGER ||
   (process.env.NEXT_PUBLIC_NETWORK_MODE === "mainnet"
     ? "0x5e3Ef299fDDf15eAa0432E6e66473ace8c13D908" // Ethereum mainnet
     : "0x4AE8f648B1Ec892B6cc68C89cc088583964d08bE")) as `0x${string}`; // Sepolia (Amoy)
 
 export const stakingLoggerAddress = (process.env
-  .NEXT_PUBLIC_POLYGON_STAKING_LOGGER ??
+  .NEXT_PUBLIC_POLYGON_STAKING_LOGGER ||
   (process.env.NEXT_PUBLIC_NETWORK_MODE === "mainnet"
     ? "0xa59C847Bd5aC0172Ff4FE912C5d29E5A71A7512B" // Ethereum mainnet
     : "0x5E3111a5d928D24718c1A7897261D0B9087002ed")) as `0x${string}`; // Sepolia (Amoy)
@@ -176,7 +190,7 @@ export const stakingLoggerAddress = (process.env
  * The delegator approves the StakeManager — not the ValidatorShare —
  * because StakeManager.delegationDeposit does the transferFrom.
  */
-export const stakeTokenAddress = (process.env.NEXT_PUBLIC_POLYGON_STAKE_TOKEN ??
+export const stakeTokenAddress = (process.env.NEXT_PUBLIC_POLYGON_STAKE_TOKEN ||
   (process.env.NEXT_PUBLIC_NETWORK_MODE === "mainnet"
     ? "0x455e53CBB86018Ac2B8092FdCd39d8444aFFC3F6"
     : "0x44499312f493F62f2DFd3C6435Ca3603EbFCeeBa")) as `0x${string}`;
@@ -186,7 +200,7 @@ export const stakeTokenAddress = (process.env.NEXT_PUBLIC_POLYGON_STAKE_TOKEN ??
  * `_minSharesToMint` / `maximumSharesToBurn` arguments.
  */
 export const SHARE_SLIPPAGE_BPS = Number(
-  process.env.NEXT_PUBLIC_SHARE_SLIPPAGE_BPS ?? "50",
+  process.env.NEXT_PUBLIC_SHARE_SLIPPAGE_BPS || "50",
 );
 
 export const CHAINS: ChainConfig[] = [
@@ -242,7 +256,7 @@ export const CHAINS: ChainConfig[] = [
     validators: 100,
     tvl: "testnet",
     testnet: true,
-    wagmiChain: monadTestnet,
+    wagmiChain: monadEvmChain,
     // Monad's staking precompile lives at this fixed system address.
     validatorContract: "0x0000000000000000000000000000000000001000",
     explorer: {
@@ -255,11 +269,11 @@ export const CHAINS: ChainConfig[] = [
     phase: "live",
     hasAdapter: true,
     symbol: "ATOM",
-    name: "Cosmos Hub Theta",
+    name: "Cosmos Hub Provider Testnet",
     type: "Cosmos Hub testnet",
     apy: 21.0,
     apyRange: "17-22%",
-    unbonding: "1 day",
+    unbonding: "21 days",
     ledgerApp: "Cosmos",
     color: "#6f7390",
     minStake: 1,
@@ -270,15 +284,13 @@ export const CHAINS: ChainConfig[] = [
   {
     id: "celestia",
     phase: "live",
-    // Watcher live (Cosmos-shape tx_search on mocha); staking UI pending
-    // the Keplr suggest-chain flow.
-    hasAdapter: false,
+    hasAdapter: true,
     symbol: "TIA",
     name: "Celestia Mocha",
     type: "Cosmos SDK data-availability testnet",
     apy: 10.0,
     apyRange: "9-12%",
-    unbonding: "21 days",
+    unbonding: "~14 days",
     ledgerApp: "Cosmos",
     color: "#7b2bf9",
     minStake: 1,
@@ -289,13 +301,13 @@ export const CHAINS: ChainConfig[] = [
   {
     id: "osmosis",
     phase: "live",
-    hasAdapter: false,
+    hasAdapter: true,
     symbol: "OSMO",
     name: "Osmosis Testnet",
     type: "Cosmos SDK DeFi testnet",
     apy: 12.0,
     apyRange: "10-14%",
-    unbonding: "14 days",
+    unbonding: "5 days",
     ledgerApp: "Cosmos",
     color: "#6f4fe0",
     minStake: 1,
@@ -306,56 +318,64 @@ export const CHAINS: ChainConfig[] = [
   {
     id: "aptos",
     phase: "live",
-    hasAdapter: false,
+    hasAdapter: true,
     symbol: "APT",
     name: "Aptos Testnet",
     type: "Move-based L1 testnet",
     apy: 7.0,
     apyRange: "6-8%",
-    unbonding: "~14 days (unlock + withdraw phases)",
+    unbonding: "Pool lockup; withdraw when eligible",
     ledgerApp: "Aptos",
     color: "#1a1a1a",
-    minStake: 1,
+    minStake: 11,
     validators: 60,
     tvl: "testnet",
     testnet: true,
+    explorer: {
+      name: "Aptos Explorer",
+      tx: (hash) => `https://explorer.aptoslabs.com/txn/${hash}?network=testnet`,
+    },
   },
   {
     id: "polkadot",
     phase: "live",
-    hasAdapter: false,
+    hasAdapter: true,
     symbol: "WND",
     name: "Polkadot Westend",
-    type: "Substrate nominator testnet",
+    type: "Asset Hub nomination-pool testnet",
     apy: 12.0,
     apyRange: "10-14%",
-    unbonding: "28 days",
+    unbonding: "2 eras (Westend Asset Hub)",
     ledgerApp: "Polkadot",
     color: "#e6007a",
-    minStake: 0.01,
+    minStake: 0.1,
     validators: 100,
     tvl: "testnet",
     testnet: true,
+    explorer: {
+      name: "Westend Asset Hub Subscan",
+      tx: (hash) => `https://assethub-westend.subscan.io/extrinsic/${hash}`,
+    },
   },
   {
     id: "bnb",
     phase: "live",
-    // Watcher live (StakeHub Delegated logs on Chapel); staking UI needs
-    // the payable delegate() flow.
-    hasAdapter: false,
+    // Payable StakeHub delegate, share-based undelegate and claim are backed
+    // by chain/validator-bound Canton requests and settlement event watchers.
+    hasAdapter: true,
     symbol: "tBNB",
     name: "BNB Chain Chapel",
     type: "PoSA EVM testnet",
     apy: 5.0,
     apyRange: "4-6%",
-    unbonding: "7 days",
+    unbonding: "~3 days",
     ledgerApp: "Ethereum",
     color: "#f0b90b",
-    minStake: 0.01,
+    minStake: 1,
     validators: 45,
     tvl: "testnet",
     testnet: true,
-    wagmiChain: bscTestnet,
+    wagmiChain: bnbEvmChain,
     validatorContract: "0x0000000000000000000000000000000000002002",
     explorer: {
       name: "BscScan (Chapel)",
@@ -365,7 +385,7 @@ export const CHAINS: ChainConfig[] = [
   {
     id: "solana",
     phase: "live",
-    hasAdapter: false,
+    hasAdapter: true,
     symbol: "SOL",
     name: "Solana Testnet",
     type: "Stake-account PoS testnet",
@@ -374,10 +394,14 @@ export const CHAINS: ChainConfig[] = [
     unbonding: "~2 days (epoch boundary)",
     ledgerApp: "Solana",
     color: "#14f195",
-    minStake: 0.01,
+    minStake: 1,
     validators: 200,
     tvl: "testnet",
     testnet: true,
+    explorer: {
+      name: "Solana Explorer",
+      tx: (hash) => `https://explorer.solana.com/tx/${hash}?cluster=testnet`,
+    },
   },
   {
     id: "sui",
@@ -388,7 +412,7 @@ export const CHAINS: ChainConfig[] = [
     type: "Move-based L1 testnet",
     apy: 3.5,
     apyRange: "3-4%",
-    unbonding: "1 epoch (~24h)",
+    unbonding: "Immediate withdrawal",
     ledgerApp: "Sui",
     color: "#4ca2ff",
     minStake: 1,
@@ -449,15 +473,31 @@ if (isMainnet) {
     const n = mainnetName[c.id];
     if (n) c.name = n;
   }
+  const bnb = CHAINS.find((c) => c.id === "bnb");
+  if (bnb) {
+    bnb.symbol = "BNB";
+    bnb.unbonding = "7 days";
+  }
+  const cosmos = CHAINS.find((c) => c.id === "cosmos");
+  if (cosmos) cosmos.unbonding = "21 days";
+  const osmosis = CHAINS.find((c) => c.id === "osmosis");
+  if (osmosis) osmosis.unbonding = "14 days";
+  const polkadot = CHAINS.find((c) => c.id === "polkadot");
+  if (polkadot) {
+    polkadot.symbol = "DOT";
+    polkadot.type = "Asset Hub nomination pools";
+    polkadot.unbonding = "28 eras";
+    polkadot.minStake = 1;
+  }
   const mainnetExplorer: Partial<Record<ChainConfig["id"], { name: string; tx: (h: string) => string }>> = {
     polygon: { name: "Etherscan", tx: (h) => `https://etherscan.io/tx/${h}` },
-    monad: { name: "Monad Explorer", tx: (h) => `https://monadexplorer.com/tx/${h}` },
+    monad: { name: "MonadVision", tx: (h) => `https://monadvision.com/tx/${h}` },
     cosmos: { name: "Mintscan", tx: (h) => `https://www.mintscan.io/cosmos/tx/${h}` },
     celestia: { name: "Mintscan", tx: (h) => `https://www.mintscan.io/celestia/tx/${h}` },
     osmosis: { name: "Mintscan", tx: (h) => `https://www.mintscan.io/osmosis/tx/${h}` },
     sui: { name: "SuiScan", tx: (h) => `https://suiscan.xyz/mainnet/tx/${h}` },
     aptos: { name: "Aptos Explorer", tx: (h) => `https://explorer.aptoslabs.com/txn/${h}?network=mainnet` },
-    polkadot: { name: "Polkascan", tx: (h) => `https://polkascan.io/polkadot/transaction/${h}` },
+    polkadot: { name: "Polkadot Asset Hub Subscan", tx: (h) => `https://assethub-polkadot.subscan.io/extrinsic/${h}` },
     bnb: { name: "BscScan", tx: (h) => `https://bscscan.com/tx/${h}` },
     solana: { name: "Solscan", tx: (h) => `https://solscan.io/tx/${h}` },
   };
@@ -481,28 +521,35 @@ export const chainById = (id: string) => CHAINS.find((chain) => chain.id === id)
 export const polygonChain = () => chainById("polygon")!;
 
 /**
- * Best-effort chain detection from a stake's `evmAddress` field. The
- * Daml StakingPosition template doesn't yet carry an explicit `chain`
- * field (would require a DAR redeploy), so we infer from the address
- * format:
+ * Best-effort chain detection when the Postgres chainMeta mirror and the
+ * local stake-time hint are unavailable. The Daml StakingPosition template
+ * does not carry a chain field, so address shape alone is ambiguous:
  *
- *   - bech32 starting with `cosmos1`        → Cosmos Hub theta-testnet
+ *   - bech32 starting with `cosmos1`        → Cosmos Hub provider testnet
+ *   - bech32 starting with `celestia1`      → Celestia
+ *   - bech32 starting with `osmo1`          → Osmosis
+ *   - base58 SS58, 47–49 characters         → Polkadot
+ *   - base58 public key, 32–44 characters   → Solana
  *   - 0x followed by 64 hex chars           → Sui (32-byte address)
  *   - 0x followed by 40 hex chars           → an EVM chain. Defaults to
  *     "polygon" since we can't disambiguate Polygon vs Monad
- *     from the address alone. Pass `evmHint` (e.g. the chain saved in
+ *     from the address alone. Pass `chainHint` (e.g. the chain saved in
  *     localStorage at stake time) to override.
  */
 export function chainFromAddress(
   address: string | undefined | null,
-  evmHint?: ChainConfig["id"],
+  chainHint?: ChainConfig["id"],
 ): ChainConfig {
   if (!address) return polygonChain();
+  if (chainHint) return chainById(chainHint) ?? polygonChain();
   if (address.startsWith("cosmos1")) return chainById("cosmos") ?? polygonChain();
+  if (address.startsWith("celestia1")) return chainById("celestia") ?? polygonChain();
+  if (address.startsWith("osmo1")) return chainById("osmosis") ?? polygonChain();
+  if (/^[1-9A-HJ-NP-Za-km-z]{47,49}$/.test(address)) return chainById("polkadot") ?? polygonChain();
+  if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address)) return chainById("solana") ?? polygonChain();
   if (/^0x[a-fA-F0-9]{64}$/.test(address))
     return chainById("sui") ?? polygonChain();
   if (/^0x[a-fA-F0-9]{40}$/.test(address)) {
-    if (evmHint) return chainById(evmHint) ?? polygonChain();
     return polygonChain();
   }
   return polygonChain();
@@ -531,9 +578,8 @@ if (process.env.NODE_ENV !== "production") {
       );
     }
 
-    if (chain.phase === "live" && !chain.hasAdapter) {
-      console.warn(`[chains] live chain ${chain.id} is missing a chain adapter`);
-    }
+    // A live watcher is not enough to expose staking. hasAdapter=false is
+    // intentional until its transaction and lifecycle path is verified.
     if (chain.id === "polygon") {
       if (chain.phase !== "live") {
         console.warn("[chains] polygon should remain live");
@@ -547,8 +593,8 @@ if (process.env.NODE_ENV !== "production") {
         );
       }
     }
-    if (chain.id !== "polygon" && chain.wagmiChain) {
-      console.warn(`[chains] non-polygon chain ${chain.id} unexpectedly has wagmi config`);
+    if (chain.wagmiChain && !["polygon", "monad", "bnb"].includes(chain.id)) {
+      console.warn(`[chains] non-EVM chain ${chain.id} unexpectedly has wagmi config`);
     }
   }
 }

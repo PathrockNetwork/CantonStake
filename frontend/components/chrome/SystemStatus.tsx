@@ -1,8 +1,8 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { fetchChainStats, fetchWatcherStatus, type ChainStat } from "@/lib/api";
-import { CHAINS } from "@/lib/chains";
+import { fetchCantonReadiness, fetchChainStats, fetchWatcherStatus, type ChainStat, type WatcherStatus } from "@/lib/api";
+import { CHAINS, liveChains } from "@/lib/chains";
 import { networkMode } from "@/lib/network";
 import { tokens } from "@/lib/tokens";
 
@@ -13,10 +13,12 @@ const CHAIN_COLOR: Record<string, string> = Object.fromEntries(
   CHAINS.map((c) => [c.id, c.color]),
 );
 
-function statusFor(stat: ChainStat | undefined): {
+function statusFor(stat: ChainStat | undefined, watcher: WatcherStatus | undefined): {
   label: string;
   color: string;
 } {
+  if (watcher?.status === "unreachable") return { label: "● RPC UNREACHABLE", color: tokens.warning };
+  if (!watcher || watcher.status === "unknown") return { label: "○ WATCHER UNKNOWN", color: tokens.ink[400] };
   if (!stat) return { label: "● —", color: tokens.ink[400] };
   if (stat.source === "live")
     return { label: `● LIVE · ${stat.validatorCount} val`, color: tokens.neon };
@@ -38,6 +40,14 @@ export function SystemStatus() {
   });
   const backendMode = watchers?.networkMode;
 
+  const readiness = useQuery({
+    queryKey: ["canton-readiness"],
+    queryFn: fetchCantonReadiness,
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+    retry: 1,
+  });
+
   const { data } = useQuery({
     queryKey: ["chain-stats-system-status"],
     queryFn: () => fetchChainStats(),
@@ -48,8 +58,9 @@ export function SystemStatus() {
   const byChain = new Map<string, ChainStat>();
   for (const c of data?.chains ?? []) byChain.set(c.chain, c);
 
-  // Layout: one row per supported chain + a Canton row at the top
-  const chains = ["polygon"] as const;
+  // Only chains enabled in this deployment belong in the runtime panel.
+  const chains = liveChains();
+  const cantonReady = readiness.data?.status === "ready" && !readiness.isError;
 
   return (
     <div
@@ -96,15 +107,17 @@ export function SystemStatus() {
         }}
       >
         <span className="mono" style={{ color: tokens.ink[300] }}>
-          Canton participant
+          Canton ledger API
         </span>
-        <span className="mono" style={{ color: tokens.neon }}>
-          ● OK
+        <span className="mono" style={{ color: cantonReady ? tokens.neon : tokens.warning }}>
+          {cantonReady ? "● REACHABLE" : readiness.isLoading ? "○ CHECKING" : "● UNAVAILABLE"}
         </span>
 
-        {chains.map((id) => {
+        {chains.map((chain) => {
+          const id = chain.id;
           const stat = byChain.get(id);
-          const status = statusFor(stat);
+          const watcher = watchers?.find((item) => item.chain === id || item.chain.startsWith(`${id}-`));
+          const status = statusFor(stat, watcher);
           const apy = stat?.apyPctEstimate;
           return (
             <ChainRow

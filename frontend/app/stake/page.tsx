@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   useAccount,
+  useBalance,
   useReadContract,
   useChainId,
   useSendTransaction,
@@ -11,11 +12,13 @@ import {
   useWaitForTransactionReceipt,
 } from "wagmi";
 import {
+  getAccount,
   sendTransaction as sendTransactionCore,
   waitForTransactionReceipt,
 } from "@wagmi/core";
-import { erc20Abi, formatUnits, parseEther } from "viem";
+import { erc20Abi, formatUnits, parseEther, parseUnits } from "viem";
 import { polygonAmoy } from "wagmi/chains";
+import { PublicKey } from "@solana/web3.js";
 import { IconArrowRight } from "@/components/icons";
 import { Banner } from "@/components/primitives/Banner";
 import { Btn } from "@/components/primitives/Btn";
@@ -41,16 +44,28 @@ import {
 import { wagmiConfig } from "@/lib/wagmi";
 import { adapterFor, type Validator } from "@/lib/chains/index";
 import { stakeAmountWei } from "@/lib/stake-input";
+import { assertEvmWalletBinding } from "@/lib/wallet-binding";
+import { evmWalletChainParameters } from "@/lib/evm-wallet-chain";
+import { createExclusiveAction } from "@/lib/exclusive-action";
+import { successfulEvmSettlementHash } from "@/lib/evm-settlement";
 import { shortId } from "@/lib/account-view";
 import { useWalletPicker } from "@/components/WalletPickerProvider";
 import { AccountEmpty, AccountIcon, AccountPanel, ChainBadge, SplitPanel, StatusBadge } from "@/components/account/AccountUI";
 import { fetchStakingParams } from "@/lib/chains/polygon";
 import { fmt, fmtUsd } from "@/lib/format";
 import { useCantonWallet } from "@/lib/canton";
-import { useCosmosWallet, cosmosChainId } from "@/lib/cosmos/use-cosmos-wallet";
+import { useCosmosWallet } from "@/lib/cosmos/use-cosmos-wallet";
+import { cosmosNetworks, isCosmosChainKey, type CosmosChainKey } from "@/lib/cosmos/networks";
 import { useSuiWallet } from "@/lib/sui/use-sui-wallet";
+import { useAptosWallet } from "@/lib/aptos/use-aptos-wallet";
+import { useSolanaWallet } from "@/lib/solana/use-solana-wallet";
+import { usePolkadotWallet } from "@/lib/polkadot/use-polkadot-wallet";
+import { polkadotApi, polkadotNetwork } from "@/lib/polkadot/network";
+import { fetchPolkadotPools } from "@/lib/chains/polkadot";
+import { aptosView } from "@/lib/aptos/network";
+import { aptosNetwork } from "@/lib/aptos/network";
 import { usePrices } from "@/lib/prices";
-import { isMainnet } from "@/lib/network";
+import { isMainnet, networkMode } from "@/lib/network";
 import { recordPositionMeta } from "@/lib/position-chain-map";
 import { tokens } from "@/lib/tokens";
 
@@ -74,9 +89,9 @@ import { tokens } from "@/lib/tokens";
  *   05 FeaturedAppActivityMarker      → animation only; no on-chain signal
  *                                       to listen for at this layer
  *
- * Stages 4 and 5 are visual simulations bolted on top of the real
- * confirmation event — the actual Daml accept + marker emission happen
- * server-side in the orchestrator and aren't observable from the browser.
+ * Stage 4 follows successful native settlement. Stage 5 waits for the
+ * exact settled transaction hash on an indexed Bonded Canton position;
+ * a timer or a returned reverted receipt cannot advance it.
  *
  * If the wagmi write fails (rejected, wrong network, RPC error), step
  * resets and an error banner replaces the wrong-network banner.
@@ -99,10 +114,10 @@ const CHAIN_STAKE_METHOD: Record<ChainConfig["id"], string> = {
   celestia: "MsgDelegate",
   osmosis: "MsgDelegate",
   sui: "0x3::sui_system::request_add_stake",
-  aptos: "0x1::stake::add_stake",
+  aptos: "0x1::delegation_pool::add_stake",
   polkadot: "nominationPools.bond()",
   bnb: "StakeHub.delegate()",
-  solana: "Stake.delegate()",
+  solana: "Stake.createAccount() + delegate()",
 };
 
 const CHAIN_CONFIRM_EVENT: Record<ChainConfig["id"], string> = {
@@ -112,10 +127,10 @@ const CHAIN_CONFIRM_EVENT: Record<ChainConfig["id"], string> = {
   celestia: "tx committed",
   osmosis: "tx committed",
   sui: "tx finalized",
-  aptos: "AddStakeEvent",
+  aptos: "AddStake",
   polkadot: "Bonded",
   bnb: "Delegated",
-  solana: "delegateStake",
+  solana: "delegate",
 };
 
 const CHAIN_KIND: Record<ChainConfig["id"], ChainKind> = {
@@ -159,9 +174,9 @@ function buildStages(chain: ChainConfig): Stage[] {
       tag: "info",
     },
     {
-      code: "05 FeaturedAppActivityMarker",
-      detail: "Bond marker emitted · split=75/25",
-      kind: "MARKER",
+      code: "05 Canton position indexed",
+      detail: "Bonded position verified against the settled transaction",
+      kind: "CANTON",
       tag: "success",
     },
   ];
@@ -172,8 +187,8 @@ function buildCtaLabels(chain: ChainConfig): string[] {
     `Bond {amount} ${chain.symbol}`,
     "Awaiting wallet signature…",
     `Confirming ${chain.name} tx…`,
-    "Emitting Canton marker…",
-    "Bonded · marker emitted",
+    "Recording Canton position…",
+    "Bonded · Canton position indexed",
   ];
 }
 
@@ -203,8 +218,8 @@ const FUNDING_HINTS: Record<ChainConfig["id"], React.ReactNode> = {
   ),
   cosmos: (
     <>
-      Get theta-testnet ATOM from{" "}
-      <a href="https://faucet.theta-testnet.polypore.xyz" target="_blank" rel="noreferrer">the Polypore faucet</a>.
+      Get provider-testnet ATOM from{" "}
+      <a href="https://faucet.polypore.xyz" target="_blank" rel="noreferrer">the Polypore faucet</a>.
     </>
   ),
   sui: (
@@ -258,28 +273,47 @@ export default function StakePage() {
   const { partyId, isConnected: loopConnected } = useCantonWallet();
   const { openPicker } = useWalletPicker();
 
-  const cosmos = useCosmosWallet();
+  const cosmosHub = useCosmosWallet("cosmos");
+  const celestia = useCosmosWallet("celestia");
+  const osmosis = useCosmosWallet("osmosis");
   const sui = useSuiWallet();
+  const aptos = useAptosWallet();
+  const solana = useSolanaWallet();
+  const polkadot = usePolkadotWallet();
+  const { data: chainStats } = useQuery({
+    queryKey: ["chain-stats"],
+    queryFn: () => fetchChainStats(),
+    refetchInterval: 5 * 60_000,
+  });
 
   const chains = liveChains();
   const [selectedChainId, setSelectedChainId] = useState<ChainConfig["id"]>(
-    "polygon",
+    chains[0]?.id ?? "polygon",
   );
-  const selectedChain = chains.find((c) => c.id === selectedChainId) ?? polygonChain();
+  const selectedChain = chains.find((c) => c.id === selectedChainId) ?? chains[0] ?? polygonChain();
   // Adapter-less chains (newly added networks) have a live settlement
   // watcher but no in-app staking flow yet — the CTA must say so instead
   // of dead-ending in a wallet prompt that can never finish.
-  const stakingUiReady = selectedChain.hasAdapter !== false;
+  const stakingUiReady = chains.some((c) => c.id === selectedChain.id) && selectedChain.hasAdapter !== false &&
+    !!chainStats?.chains.some((c) => c.chain === selectedChain.id);
   const adapter = stakingUiReady ? adapterFor(selectedChain.id) : null;
   // Non-null wherever staking flows run (guarded by stakingUiReady checks).
   const chainAdapter = adapter!;
   const isEvmStakingReady = stakingUiReady && !!selectedChain.wagmiChain;
-  const isCosmosChain = selectedChain.id === "cosmos";
+  const isCosmosChain = isCosmosChainKey(selectedChain.id);
+  const cosmosWallets = { cosmos: cosmosHub, celestia, osmosis };
+  const cosmos = isCosmosChain ? cosmosWallets[selectedChain.id as CosmosChainKey] : cosmosHub;
   const isSuiChain = selectedChain.id === "sui";
+  const isAptosChain = selectedChain.id === "aptos";
+  const isSolanaChain = selectedChain.id === "solana";
+  const isPolkadotChain = selectedChain.id === "polkadot";
   const isWalletReadyForChain =
     (stakingUiReady && !!selectedChain.wagmiChain && isConnected) ||
-    (isCosmosChain && cosmos.isConnected) ||
-    (isSuiChain && sui.isConnected);
+    (stakingUiReady && isCosmosChain && cosmos.isConnected) ||
+    (stakingUiReady && isSuiChain && sui.isConnected) ||
+    (stakingUiReady && isAptosChain && aptos.isConnected) ||
+    (stakingUiReady && isSolanaChain && solana.isConnected) ||
+    (stakingUiReady && isPolkadotChain && polkadot.isConnected);
   const polygon = polygonChain();
   const polygonId = polygon.wagmiChain!.id;
   const wrongNetwork =
@@ -291,6 +325,7 @@ export default function StakePage() {
   const [validatorSort, setValidatorSort] = useState("rank");
   const [reviewOpen, setReviewOpen] = useState(false);
   const [preparing, setPreparing] = useState(false);
+  const runStakeAction = useRef(createExclusiveAction()).current;
   const reviewRef = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const dialog = reviewRef.current;
@@ -307,6 +342,16 @@ export default function StakePage() {
   const [validatorName, setValidatorName] = useState<string | null>(null);
   const [validatorAddr, setValidatorAddr] = useState<string | null>(null);
   const stage5PollingStartedRef = useRef(false);
+  const [evmSubmission, setEvmSubmission] = useState<{
+    chain: ChainConfig["id"];
+    chainId: number;
+    wallet: string;
+  } | null>(null);
+  const [nativeSettlement, setNativeSettlement] = useState<{
+    chain: CosmosChainKey | "sui" | "aptos" | "solana" | "polkadot";
+    wallet: string;
+    txHash: string;
+  } | null>(null);
 
   // Live prices + chain stats so the form's APY/CC numbers and USD
   // estimates aren't hardcoded.
@@ -322,17 +367,12 @@ export default function StakePage() {
       case "osmosis": return prices?.osmoUsd ?? 0;
       case "sui": return prices?.suiUsd ?? 0;
       case "aptos": return prices?.aptUsd ?? 0;
-      case "polkadot": return prices?.dotUsd ?? 0;
+      case "polkadot": return isMainnet ? prices?.dotUsd ?? 0 : 0;
       case "bnb": return prices?.bnbUsd ?? 0;
       case "solana": return prices?.solUsd ?? 0;
       default: return prices?.polUsd ?? 0;
     }
   })();
-  const { data: chainStats } = useQuery({
-    queryKey: ["chain-stats"],
-    queryFn: () => fetchChainStats(),
-    refetchInterval: 5 * 60_000,
-  });
   // Live Polygon unbonding parameters. The withdrawal delay is a checkpoint
   // COUNT, not a duration — the wall-clock figure is measured from the real
   // checkpoint cadence, so it is fetched rather than hardcoded.
@@ -354,7 +394,10 @@ export default function StakePage() {
     (watcherStatus ?? []).map((w) => [w.chain as ChainConfig["id"], w]),
   );
   const selectedWatcher = watcherByChain.get(selectedChain.id);
-  const selectedChainOffline = selectedWatcher?.status === "unreachable";
+  const selectedChainOffline = selectedWatcher?.status !== "ok";
+  const backendModeKnown = watcherStatus?.networkMode === "testnet" || watcherStatus?.networkMode === "mainnet";
+  const backendModeMismatch = backendModeKnown && watcherStatus?.networkMode !== networkMode;
+  const backendModeUnsafe = !backendModeKnown || backendModeMismatch;
 
   // Per-validator buyVoucher floor for the selected top validator, live from
   // the backend registry (the same fetch that refreshes the ValidatorShare
@@ -364,8 +407,20 @@ export default function StakePage() {
     selectedChain.id === "polygon" && validatorAddr
       ? validatorMinAmounts.get(validatorAddr.toLowerCase()) ?? null
       : null;
+  const { data: aptosLockupSecs } = useQuery({
+    queryKey: ["aptos-pool-lockup", validatorAddr],
+    queryFn: async () => {
+      const [secs] = await aptosView("0x1::stake::get_lockup_secs", [validatorAddr!]);
+      return BigInt(String(secs));
+    },
+    enabled: selectedChain.id === "aptos" && !!validatorAddr,
+    refetchInterval: 60_000,
+  });
 
   const unbondingLabel = (() => {
+    if (selectedChain.id === "aptos" && aptosLockupSecs) {
+      return `Current pool lockup until ${new Date(Number(aptosLockupSecs) * 1000).toLocaleString()}; native eligibility governs withdrawal`;
+    }
     if (selectedChain.id !== "polygon") return selectedChain.unbonding;
     const eta = polygonParams?.unbondingEtaSeconds;
     if (!polygonParams) return selectedChain.unbonding;
@@ -379,6 +434,10 @@ export default function StakePage() {
 
   const stats = chainStats?.chains.find((c) => c.chain === selectedChain.id);
   const nativeApy = stats?.apyPctEstimate ?? null;
+  const validatorApr = (validator: Validator): number =>
+    isCosmosChain && stats && Number.isFinite(stats.baseYieldPct)
+      ? Math.max(0, stats.baseYieldPct * (1 - validator.commission / 100))
+      : validator.apr;
 
   useEffect(() => {
     let cancelled = false;
@@ -386,9 +445,7 @@ export default function StakePage() {
     setValidatorAddr(null);
     setValidators([]);
     setValidatorLoadError(null);
-    // Watcher-only chains (hasAdapter: false) have no validator rows to
-    // load — chainAdapter is the `!`-asserted null there, so guard before
-    // the call instead of crashing the page (TypeError on getValidators).
+    // An unavailable or walled adapter has no validator rows to load.
     if (!adapter) return;
     void adapter.getValidators().then((vs) => {
       if (!cancelled) { setValidators(vs); if (!vs.length) setValidatorLoadError("No eligible validators are currently available."); }
@@ -406,23 +463,35 @@ export default function StakePage() {
   const {
     data: hash,
     isPending: sendPending,
-    sendTransaction,
+    sendTransactionAsync,
     error: sendError,
     reset: resetSend,
   } = useSendTransaction();
   const {
     isLoading: confirming,
-    isSuccess: confirmed,
-  } = useWaitForTransactionReceipt({ hash });
+    data: evmReceipt,
+  } = useWaitForTransactionReceipt({
+    hash,
+    chainId: evmSubmission?.chainId,
+    query: { enabled: !!hash && !!evmSubmission },
+    onReplaced: ({ reason }) => {
+      if (reason !== "repriced") {
+        setError("The wallet cancelled or replaced the staking call. Review the replacement transaction before retrying.");
+        setEvmSubmission(null);
+        setStep(0);
+        setShowSpark(false);
+      }
+    },
+  });
+  const settledEvmHash = successfulEvmSettlementHash(evmReceipt);
+  const confirmed = !!evmSubmission && !!settledEvmHash;
 
   // Promote simulation step when wagmi state advances
   useEffect(() => {
+    if (!evmSubmission || selectedChain.id !== evmSubmission.chain) return;
     if (sendPending && step < 2) advance(2);
-  }, [sendPending, step]);
+  }, [sendPending, step, evmSubmission, selectedChain.id]);
 
-  // Snapshot the user's current marker count BEFORE staking so the
-  // post-stake poller can detect the increment.
-  const [markerBaseline, setMarkerBaseline] = useState<number | null>(null);
   const currentStepRef = useRef(step);
 
   // Keep the ref in sync with step
@@ -431,6 +500,7 @@ export default function StakePage() {
   }, [step]);
 
   useEffect(() => {
+    if (!evmSubmission || selectedChain.id !== evmSubmission.chain) return;
     const currentStep = currentStepRef.current;
     if (hash && !confirming && !confirmed && currentStep < 2) advance(2);
     if (confirming && currentStep < 3) advance(3);
@@ -443,24 +513,24 @@ export default function StakePage() {
       // StakingRequest from Pending → Bonded. Nothing to do here — the
       // stage-5 poller below waits for that to land.
 
-      // Stage 5 — wait for the orchestrator to emit a real marker.
-      // Only recorded marker activity completes this stage. A delayed
-      // watcher must never turn a confirmed native transaction into a
-      // claimed Canton confirmation merely because a timer elapsed.
-      if (!address) return;
+      // Stage 5 — wait for the exact settled tx to appear on a Bonded
+      // Canton position. Marker counters do not increment on the CIP-0104
+      // path, and a timer alone cannot prove the chain→Canton transition.
+      const settledHash = settledEvmHash;
+      if (!settledHash) return;
       let cancelled = false;
       let timeoutId: number | undefined;
 
       const tick = async () => {
         if (cancelled || currentStepRef.current >= 5) return;
         try {
-          const positions = await fetchPositions(address);
-          const total = positions.reduce(
-            (s, p) => s + (p.argument.markersEmitted ?? 0),
-            0,
+          const positions = await fetchPositions(evmSubmission.wallet);
+          const bonded = positions.some((p) =>
+            p.argument.status === "Bonded" &&
+            p.chainMeta?.chain === evmSubmission.chain &&
+            p.chainMeta.evmTxHash?.toLowerCase() === settledHash.toLowerCase(),
           );
-          const baseline = markerBaseline ?? 0;
-          if (total > baseline) {
+          if (bonded) {
             cancelled = true;
             advance(5);
             setShowSpark(true);
@@ -479,7 +549,49 @@ export default function StakePage() {
         if (timeoutId !== undefined) window.clearTimeout(timeoutId);
       };
     }
-  }, [hash, confirming, confirmed, address, markerBaseline]);
+  }, [hash, confirming, confirmed, settledEvmHash, evmSubmission, selectedChain.id]);
+
+  useEffect(() => {
+    if (evmSubmission && evmReceipt?.status === "reverted") {
+      setError("The staking transaction reverted. No bonded position was created; check the transaction before retrying.");
+      setStep(0);
+      setShowSpark(false);
+    }
+  }, [evmReceipt, evmSubmission]);
+
+  useEffect(() => {
+    if (!nativeSettlement || selectedChain.id !== nativeSettlement.chain) return;
+    let cancelled = false;
+    let timeoutId: number | undefined;
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const positions = await fetchPositions(nativeSettlement.wallet);
+        const bonded = positions.some((position) =>
+          position.argument.status === "Bonded" &&
+          position.chainMeta?.chain === nativeSettlement.chain &&
+          (nativeSettlement.chain === "sui" || nativeSettlement.chain === "solana"
+            ? position.chainMeta.evmTxHash === nativeSettlement.txHash
+            : position.chainMeta.evmTxHash?.toLowerCase() === nativeSettlement.txHash.toLowerCase()),
+        );
+        if (bonded) {
+          cancelled = true;
+          advance(5);
+          setShowSpark(true);
+          window.setTimeout(() => setShowSpark(false), 900);
+          return;
+        }
+      } catch {
+        // The watcher or API may lag the wallet broadcast; retry below.
+      }
+      timeoutId = window.setTimeout(tick, 2_000);
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    };
+  }, [nativeSettlement, selectedChain.id]);
 
   useEffect(() => {
     if (sendError) {
@@ -517,6 +629,12 @@ export default function StakePage() {
 
   async function handleStake() {
     if (step > 0 && step < 5) return;
+    if (backendModeUnsafe) {
+      setError(backendModeMismatch
+        ? `This page is built for ${networkMode}, but the staking backend is on ${watcherStatus?.networkMode}. Open the matching deployment before staking.`
+        : "Cannot verify the staking backend's network mode yet. Wait for the connection and try again.");
+      return;
+    }
     if (!stakingUiReady) {
       setError(
         `${selectedChain.name}: settlement watcher is live, but the in-app staking flow lands next. Positions on this chain currently settle from native wallets.`,
@@ -525,7 +643,7 @@ export default function StakePage() {
     }
     if (selectedChainOffline) {
       setError(
-        `${selectedChain.name} is offline — the settlement watcher cannot reach this chain right now.`,
+        `${selectedChain.name} is not ready — its settlement watcher has not completed a successful scan.`,
       );
       return;
     }
@@ -533,29 +651,55 @@ export default function StakePage() {
       setError("Connect Loop wallet first.");
       return;
     }
+    if (amountIssue) {
+      setError(amountIssue);
+      return;
+    }
 
     // Pick the right wallet flow per chain.
+    setEvmSubmission(null);
     if (isCosmosChain) {
       if (!cosmos.isConnected || !cosmos.address) {
         setError(
-          "Connect Keplr (or Leap) to stake ATOM on theta-testnet.",
+          `Connect Keplr (or Leap) to stake ${selectedChain.symbol} on ${selectedChain.name}.`,
         );
         return;
       }
-      void handleCosmosStake();
+      await handleCosmosStake();
       return;
     }
     if (isSuiChain) {
       if (!sui.isConnected || !sui.address) {
-        setError("Connect a Sui wallet to stake SUI on testnet.");
+        setError(`Connect a Sui wallet to stake SUI on ${networkMode}.`);
         return;
       }
-      void handleSuiStake();
+      await handleSuiStake();
+      return;
+    }
+    if (isAptosChain) {
+      if (!aptos.isConnected || !aptos.address) {
+        setError("Connect an Aptos wallet to stake APT on this network.");
+        return;
+      }
+      await handleAptosStake();
+      return;
+    }
+    if (isSolanaChain) {
+      if (!solana.isConnected || !solana.address) {
+        setError("Connect a Solana wallet to stake SOL on this network.");
+        return;
+      }
+      await handleSolanaStake();
+      return;
+    }
+    if (isPolkadotChain) {
+      if (!polkadot.address) { setError("Connect a Polkadot Asset Hub wallet first."); return; }
+      await handlePolkadotStake();
       return;
     }
     if (!isEvmStakingReady) {
       setError(
-        `${selectedChain.name} staking isn't wired in this build. Pick Polygon or Monad Testnet.`,
+        `${selectedChain.name} staking isn't wired in this build. Choose an enabled EVM staking network.`,
       );
       return;
     }
@@ -565,6 +709,10 @@ export default function StakePage() {
     }
 
     if (stakeAmountWei(amount) === null) { setError("Enter a positive amount with no more than 18 decimal places."); return; }
+    if (selectedChain.id === "bnb" && parseEther(amount) < parseEther(String(selectedChain.minStake))) {
+      setError(`Minimum stake: ${selectedChain.minStake} ${selectedChain.symbol}.`);
+      return;
+    }
 
     // buyVoucher reverts below the validator's on-chain minAmount. Failing
     // fast here gives a readable message instead of a reverted wallet tx.
@@ -581,21 +729,9 @@ export default function StakePage() {
     setStep(0);
     setShowSpark(false);
     setError(null);
+    setNativeSettlement(null);
     resetSend();
     stage5PollingStartedRef.current = false;
-
-    // Snapshot baseline marker count so the post-stake poller can detect
-    // the increment caused by THIS stake.
-    try {
-      const existing = await fetchPositions(address);
-      const baseline = existing.reduce(
-        (s, p) => s + (p.argument.markersEmitted ?? 0),
-        0,
-      );
-      setMarkerBaseline(baseline);
-    } catch {
-      setMarkerBaseline(0);
-    }
 
     try {
       // Revalidate the reviewed selection before creating a request.
@@ -606,17 +742,6 @@ export default function StakePage() {
           `No ${selectedChain.name} validator is available for staking.`,
         );
       }
-
-      // Stage 01 — Canton request created (real backend call)
-      advance(1);
-      await createStakingRequest({
-        evmAddress: address,
-        amountPol: amount,
-        delegator: partyId,
-        chain: selectedChain.id,
-        validator: validator.address,
-      });
-      recordPositionMeta(address, amount, selectedChain.id, validator.address);
 
       // Switch network if needed
       const wagmiChain = selectedChain.wagmiChain;
@@ -632,19 +757,7 @@ export default function StakePage() {
           if (provider?.request && rpcUrls?.[0]) {
             await provider.request({
               method: 'wallet_addEthereumChain',
-              params: [{
-                chainId: `0x${targetChainId.toString(16)}`,
-                chainName: selectedChain.name,
-                nativeCurrency: {
-                  name: selectedChain.symbol,
-                  symbol: selectedChain.symbol,
-                  decimals: 18,
-                },
-                rpcUrls: [rpcUrls[0]],
-                blockExplorerUrls: selectedChain.explorer
-                  ? [selectedChain.explorer.tx('')]
-                  : undefined,
-              }],
+              params: [evmWalletChainParameters(wagmiChain)],
             });
           }
         } catch {
@@ -687,13 +800,21 @@ export default function StakePage() {
           tag: "idle",
         });
         try {
+          assertEvmWalletBinding(getAccount(wagmiConfig), address, targetChainId);
           const approveHash = await sendTransactionCore(wagmiConfig, {
+            account: address,
+            chainId: targetChainId,
             to: approval.to,
             data: approval.data,
             value: 0n,
             ...(approval.gas ? { gas: approval.gas } : {}),
           });
-          await waitForTransactionReceipt(wagmiConfig, { hash: approveHash });
+          const approvalReceipt = await waitForTransactionReceipt(wagmiConfig, { hash: approveHash, chainId: targetChainId });
+          if (approvalReceipt.status !== "success") throw new Error("The staking-token approval reverted; no staking request was created.");
+          const stillNeedsApproval = await chainAdapter.buildApprovalTx?.({
+            validator: validator.address, amount: amountWei, delegator: address,
+          });
+          if (stillNeedsApproval) throw new Error("The confirmed approval does not cover this stake amount; no staking request was created.");
           logAux({
             code: "01b Approval",
             detail: `Allowance confirmed · ${approveHash.slice(0, 10)}…`,
@@ -716,12 +837,32 @@ export default function StakePage() {
         );
       }
 
-      // Don't pass chainId - let it use the current chain after switch.
+      // All read-only validation, network switching and any ERC-20 approval
+      // have succeeded. Create the Canton intent immediately before the
+      // staking transaction, so a rejected preflight does not strand a
+      // Pending request on the ledger.
+      assertEvmWalletBinding(getAccount(wagmiConfig), address, targetChainId);
+      advance(1);
+      await createStakingRequest({
+        evmAddress: address,
+        amountPol: amount,
+        delegator: partyId,
+        chain: selectedChain.id,
+        validator: validator.address,
+      });
+      recordPositionMeta(address, amount, selectedChain.id, validator.address);
+
+      // Bind the send to the reviewed chain and owner even if the wallet
+      // changes while the Canton intent is being registered.
+      assertEvmWalletBinding(getAccount(wagmiConfig), address, targetChainId);
       // The fixed 30/100 gwei floor is a Bor requirement (Amoy rejects lower
       // priority fees). On the L1 settlement chain it would just overpay, so
       // let the wallet estimate there.
       const isBorChain = targetChainId === polygonAmoy.id;
-      sendTransaction({
+      setEvmSubmission({ chain: selectedChain.id, chainId: targetChainId, wallet: address });
+      await sendTransactionAsync({
+        account: address,
+        chainId: targetChainId,
         to: tx.to,
         data: tx.data,
         value: tx.value ?? 0n,
@@ -748,10 +889,16 @@ export default function StakePage() {
     }
   }
 
-  // Cosmos staking flow — register on Canton, sign a MsgDelegate via Keplr,
-  // broadcast to theta-testnet. The backend's cosmos watcher decodes the
-  // settled MsgDelegate and accepts the StakingRequest on Canton; we just
-  // wait for the broadcast to confirm. The EVM-tx-confirmation stages 2/3
+  const confirmStake = () => runStakeAction(async () => {
+    setReviewOpen(false);
+    setPreparing(true);
+    try { await handleStake(); }
+    finally { setPreparing(false); }
+  });
+
+  // Cosmos-family staking flow — register on Canton, sign a MsgDelegate via Keplr,
+  // broadcast to the selected chain. The backend watcher decodes the
+  // settled MsgDelegate and accepts the StakingRequest on Canton. Stages 2/3
   // are reused: stage 2 = "signing in Keplr", stage 3 = "broadcast
   // confirmed".
   async function handleCosmosStake() {
@@ -762,26 +909,27 @@ export default function StakePage() {
     setStep(0);
     setShowSpark(false);
     setError(null);
+    setNativeSettlement(null);
 
     try {
-      const [validator] = await chainAdapter.getValidators();
-      if (!validator) throw new Error("No Cosmos validator available.");
+      // Validate native precision before creating an irreversible Canton
+      // request; floating-point conversion can silently round micro-denoms away.
+      const amountUatom = parseUnits(amount, 6);
+      if (amountUatom <= 0n) throw new Error(`Enter a positive ${selectedChain.symbol} amount.`);
+      const validator = (await chainAdapter.getValidators()).find(item => item.address === validatorAddr);
+      if (!validator) throw new Error(`Selected ${selectedChain.name} validator is no longer available. Choose another.`);
 
       advance(1);
       await createStakingRequest({
-        evmAddress: cosmos.address, // bech32; backend skips EVM regex for cosmos
+        evmAddress: cosmos.address, // bech32; backend validates the selected chain
         amountPol: amount,
         delegator: partyId,
-        chain: "cosmos",
+        chain: selectedChain.id,
         validator: validator.address,
       });
-      recordPositionMeta(cosmos.address, amount, "cosmos", validator.address);
+      recordPositionMeta(cosmos.address, amount, selectedChain.id, validator.address);
 
       advance(2);
-      // amount is in ATOM; convert to uatom (1e6).
-      const amountUatom = BigInt(
-        Math.floor(parseFloat(amount || "0") * 1_000_000),
-      );
       const tx = await chainAdapter.buildDelegateTx({
         validator: validator.address,
         amount: amountUatom,
@@ -797,20 +945,17 @@ export default function StakePage() {
       });
       advance(3);
 
-      // The cosmos watcher accepts the StakingRequest once it decodes this
-      // settled MsgDelegate — no client-side accept call exists (or is
-      // needed) anymore.
+      // Wallet broadcast is not Canton acceptance. The poller advances only
+      // when this exact tx is attached to an indexed Bonded position.
       advance(4);
-      advance(5);
-      setShowSpark(true);
-      window.setTimeout(() => setShowSpark(false), 900);
+      setNativeSettlement({ chain: selectedChain.id as CosmosChainKey, wallet: cosmos.address, txHash: result.txHash });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setStep(0);
     }
   }
 
-  // Sui staking flow — request_add_stake via @mysten/dapp-kit. Same
+  // Sui staking flow — request_add_stake via @mysten/dapp-kit-react. Same
   // shape as cosmos: register on Canton, sign+execute; the sui watcher
   // accepts from the decoded on-chain event.
   async function handleSuiStake() {
@@ -821,10 +966,14 @@ export default function StakePage() {
     setStep(0);
     setShowSpark(false);
     setError(null);
+    setNativeSettlement(null);
 
     try {
-      const [validator] = await chainAdapter.getValidators();
-      if (!validator) throw new Error("No Sui validator available.");
+      const amountMist = parseUnits(amount, 9);
+      if (amountMist <= 0n) throw new Error("Enter a positive SUI amount.");
+      const validator = (await chainAdapter.getValidators()).find(item => item.address === validatorAddr);
+      if (!validator) throw new Error("Selected Sui validator is no longer available. Choose another.");
+      await sui.assertNetwork();
 
       advance(1);
       await createStakingRequest({
@@ -837,24 +986,121 @@ export default function StakePage() {
       recordPositionMeta(sui.address, amount, "sui", validator.address);
 
       advance(2);
-      const amountMist = BigInt(
-        Math.floor(parseFloat(amount || "0") * 1_000_000_000),
-      );
       const result = await sui.delegate({
         validator: validator.address,
         amountMist,
+        expectedWallet: sui.address,
       });
       advance(3);
 
-      // The sui watcher accepts the StakingRequest from the decoded
-      // StakeRequest event — no client-side accept call exists anymore.
+      // The Sui digest is case-sensitive; wait for the same digest in the
+      // Canton position's verified on-chain proof.
       advance(4);
-      advance(5);
-      setShowSpark(true);
-      window.setTimeout(() => setShowSpark(false), 900);
+      setNativeSettlement({ chain: "sui", wallet: sui.address, txHash: result.digest });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setStep(0);
+    }
+  }
+
+  async function handleAptosStake() {
+    if (!partyId || !aptos.address) return;
+    setLog([]);
+    setApproving(false);
+    setStep(0);
+    setShowSpark(false);
+    setError(null);
+    setNativeSettlement(null);
+
+    try {
+      const amountOcta = parseUnits(amount, 8);
+      if (amountOcta <= 0n) throw new Error("Enter a positive APT amount.");
+      const validator = (await chainAdapter.getValidators()).find(item => item.address.toLowerCase() === validatorAddr?.toLowerCase());
+      if (!validator) throw new Error("Selected Aptos delegation pool is no longer active. Choose another.");
+      await aptos.assertNetwork();
+
+      advance(1);
+      await createStakingRequest({
+        evmAddress: aptos.address,
+        amountPol: amount,
+        delegator: partyId,
+        chain: "aptos",
+        validator: validator.address,
+      });
+      recordPositionMeta(aptos.address, amount, "aptos", validator.address);
+
+      advance(2);
+      const tx = await chainAdapter.buildDelegateTx({ validator: validator.address, amount: amountOcta, delegator: aptos.address });
+      const result = await aptos.signAndSubmit(tx, aptos.address);
+      advance(3);
+      advance(4);
+      setNativeSettlement({ chain: "aptos", wallet: aptos.address, txHash: result.hash });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      setStep(0);
+    }
+  }
+
+  async function handleSolanaStake() {
+    if (!partyId || !solana.address) return;
+    const walletAddress = solana.address;
+    setLog([]);
+    setApproving(false);
+    setStep(0);
+    setShowSpark(false);
+    setError(null);
+    setNativeSettlement(null);
+    try {
+      const amountLamports = parseUnits(amount, 9);
+      const validator = (await chainAdapter.getValidators()).find((item) => item.address === validatorAddr);
+      if (!validator) throw new Error("Selected Solana vote account is no longer active. Choose another.");
+      const prepared = await solana.prepareStake(amountLamports);
+      const tx = await chainAdapter.buildDelegateTx({ validator: validator.address, amount: amountLamports, delegator: walletAddress });
+      if (tx.kind !== "solana" || tx.action !== "stake") throw new Error("Invalid Solana stake transaction plan.");
+
+      advance(1);
+      const request = await createStakingRequest({
+        evmAddress: walletAddress,
+        amountPol: amount,
+        delegator: partyId,
+        chain: "solana",
+        validator: validator.address,
+        stakeAccountAddress: prepared.stakeAccount.publicKey.toBase58(),
+      });
+      if (!request.stakeRentLamports) throw new Error("Canton request did not return Solana stake-account rent.");
+      recordPositionMeta(walletAddress, amount, "solana", validator.address);
+
+      advance(2);
+      const result = await solana.stake(validator.address, amountLamports, BigInt(request.stakeRentLamports), prepared.stakeAccount, walletAddress);
+      advance(3);
+      advance(4);
+      setNativeSettlement({ chain: "solana", wallet: walletAddress, txHash: result.signature });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      setStep(0);
+    }
+  }
+
+  async function handlePolkadotStake() {
+    if (!partyId || !polkadot.address) return;
+    const walletAddress = polkadot.address;
+    setLog([]); setApproving(false); setStep(0); setShowSpark(false); setError(null); setNativeSettlement(null);
+    try {
+      const amountPlanck = parseUnits(amount, polkadotNetwork.decimals);
+      const validator = (await chainAdapter.getValidators()).find((item) => item.address === validatorAddr);
+      if (!validator) throw new Error("Selected nomination pool is no longer open. Choose another.");
+      const tx = await chainAdapter.buildDelegateTx({ validator: validator.address, amount: amountPlanck, delegator: walletAddress });
+      if (tx.kind !== "substrate" || tx.method !== "nominationPools.join") throw new Error("Invalid Polkadot pool-join plan.");
+      advance(1);
+      await createStakingRequest({ evmAddress: walletAddress, amountPol: amount, delegator: partyId,
+        chain: "polkadot", validator: validator.address });
+      recordPositionMeta(walletAddress, amount, "polkadot", validator.address);
+      advance(2);
+      const result = await polkadot.stake(Number(validator.address.slice(5)), amountPlanck);
+      advance(3); advance(4);
+      setNativeSettlement({ chain: "polkadot", wallet: walletAddress, txHash: result.hash });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause)); setStep(0);
     }
   }
 
@@ -866,15 +1112,123 @@ export default function StakePage() {
   const amountNum = parseFloat(amount || "0");
   const usdValue = amountNum * chainPriceUsd;
   const selectedValidator = validators.find(validator => validator.address === validatorAddr);
-  const sortedValidators = [...validators].sort((a, b) => validatorSort === "apr" ? b.apr - a.apr : validatorSort === "fee" ? a.commission - b.commission : 0);
-  const balance = useReadContract({ address: stakeTokenAddress, abi: erc20Abi, functionName: "balanceOf", args: address ? [address] : undefined,
+  const sortedValidators = [...validators].sort((a, b) => validatorSort === "apr" ? validatorApr(b) - validatorApr(a) : validatorSort === "fee" ? a.commission - b.commission : 0);
+  const tokenBalance = useReadContract({ address: stakeTokenAddress, abi: erc20Abi, functionName: "balanceOf", args: address ? [address] : undefined,
     chainId: selectedChain.wagmiChain?.id, query: { enabled: !!address && selectedChain.id === "polygon", refetchInterval: 30_000 } });
+  const nativeBalance = useBalance({
+    address,
+    chainId: selectedChain.wagmiChain?.id,
+    query: { enabled: !!address && selectedChain.id !== "polygon" && !!selectedChain.wagmiChain, refetchInterval: 30_000 },
+  });
+  const cosmosBalance = useQuery({
+    queryKey: ["cosmos-balance", selectedChain.id, cosmos.address],
+    queryFn: async () => {
+      if (!isCosmosChain || !cosmos.address) return 0n;
+      const network = cosmosNetworks[selectedChain.id as CosmosChainKey];
+      const { readCosmosBalance } = await import("@/lib/cosmos/staking-queries");
+      return readCosmosBalance(network, cosmos.address);
+    },
+    enabled: isCosmosChain && !!cosmos.address,
+    refetchInterval: 30_000,
+  });
+  const aptosBalance = useQuery({
+    queryKey: ["aptos-balance", aptos.address],
+    queryFn: async () => {
+      if (!aptos.address) return 0n;
+      const [amount] = await aptosView("0x1::coin::balance", [aptos.address], ["0x1::aptos_coin::AptosCoin"]);
+      return BigInt(String(amount ?? "0"));
+    },
+    enabled: isAptosChain && !!aptos.address,
+    refetchInterval: 30_000,
+  });
+  const solanaParams = useQuery({
+    queryKey: ["solana-stake-params", selectedChain.id],
+    queryFn: async () => {
+      await solana.assertNetwork();
+      const [minimum, rent] = await Promise.all([
+        solana.connection.getStakeMinimumDelegation({ commitment: "finalized" }),
+        solana.connection.getMinimumBalanceForRentExemption(200),
+      ]);
+      return { minimumLamports: BigInt(minimum.value), rentLamports: BigInt(rent) };
+    },
+    enabled: isSolanaChain && solana.isConnected,
+    refetchInterval: 60_000,
+  });
+  const solanaBalance = useQuery({
+    queryKey: ["solana-balance", solana.address],
+    queryFn: async () => BigInt(await solana.connection.getBalance(new PublicKey(solana.address!), "finalized")),
+    enabled: isSolanaChain && !!solana.address,
+    refetchInterval: 30_000,
+  });
+  const polkadotParams = useQuery({
+    queryKey: ["polkadot-pool-params", selectedChain.id],
+    queryFn: fetchPolkadotPools,
+    enabled: isPolkadotChain,
+    refetchInterval: 60_000,
+  });
+  const polkadotBalance = useQuery({
+    queryKey: ["polkadot-balance", polkadot.address],
+    queryFn: async () => {
+      const api = await polkadotApi();
+      const account = (await api.query.system.account(polkadot.address!)).toJSON() as { data?: { free?: string | number } };
+      return BigInt(String(account.data?.free ?? 0));
+    },
+    enabled: isPolkadotChain && !!polkadot.address,
+    refetchInterval: 30_000,
+  });
+  const balanceWei = selectedChain.id === "polygon" ? tokenBalance.data : nativeBalance.data?.value;
+  const balanceFailed = selectedChain.id === "polygon" ? tokenBalance.isError : nativeBalance.isError;
   const amountWei = stakeAmountWei(amount);
+  const cosmosAmount = isCosmosChain && /^\d+(?:\.\d{0,6})?$/.test(amount) ? parseUnits(amount, 6) : null;
+  const aptosAmount = isAptosChain && /^\d+(?:\.\d{0,8})?$/.test(amount) ? parseUnits(amount, 8) : null;
+  const solanaAmount = isSolanaChain && /^\d+(?:\.\d{0,9})?$/.test(amount) ? parseUnits(amount, 9) : null;
+  const polkadotAmount = isPolkadotChain && /^\d+(?:\.\d{0,10})?$/.test(amount) ? parseUnits(amount, polkadotNetwork.decimals) : null;
+  const cosmosFeeReserve = isCosmosChain ? BigInt(Math.ceil(200_000 * cosmosNetworks[selectedChain.id as CosmosChainKey].gasPrice)) : 0n;
   const amountIssue = amountWei === null ? "Enter a positive amount (up to 18 decimal places)."
+    : (amount.split(".")[1] ?? "").replace(/0+$/, "").length > 10 ? "Canton staking supports at most 10 nonzero decimal places."
+    : isCosmosChain && !/^\d+(?:\.\d{0,6})?$/.test(amount) ? `${selectedChain.symbol} supports at most 6 decimal places.`
+    : selectedChain.id === "sui" && !/^\d+(?:\.\d{0,9})?$/.test(amount) ? "SUI supports at most 9 decimal places."
+    : isAptosChain && !/^\d+(?:\.\d{0,8})?$/.test(amount) ? "APT supports at most 8 decimal places."
+    : isSolanaChain && !/^\d+(?:\.\d{0,9})?$/.test(amount) ? "SOL supports at most 9 decimal places."
+    : isPolkadotChain && !/^\d+(?:\.\d{0,10})?$/.test(amount) ? `${polkadotNetwork.symbol} supports at most 10 decimal places in Canton staking.`
     : validatorMinWei !== null && amountWei < validatorMinWei ? `Minimum stake: ${formatUnits(validatorMinWei, 18)} ${selectedChain.symbol}.`
-    : balance.data !== undefined && amountWei > balance.data ? "Amount exceeds your token balance." : null;
+    : selectedChain.id === "bnb" && amountWei < parseEther(String(selectedChain.minStake)) ? `Minimum stake: ${selectedChain.minStake} ${selectedChain.symbol}.`
+    : isAptosChain && aptosAmount !== null && aptosAmount < parseUnits(String(selectedChain.minStake), 8) ? `Minimum stake: ${selectedChain.minStake} APT (the pool requires at least 10 APT credited after its entry fee).`
+    : isSolanaChain && solana.isConnected && solanaParams.isError ? "Solana staking minimum and rent are unavailable."
+    : isSolanaChain && solana.isConnected && !solanaParams.data ? "Loading Solana staking minimum and rent…"
+    : isSolanaChain && solanaAmount !== null && solanaAmount < (solanaParams.data?.minimumLamports ?? parseUnits(String(selectedChain.minStake), 9)) ? `Minimum stake: ${formatUnits(solanaParams.data?.minimumLamports ?? parseUnits(String(selectedChain.minStake), 9), 9)} SOL.`
+    : isCosmosChain && cosmosAmount !== null && cosmosBalance.data !== undefined && cosmosAmount + cosmosFeeReserve > cosmosBalance.data ? `Leave at least ${formatUnits(cosmosFeeReserve, 6)} ${selectedChain.symbol} for network fees.`
+    : isAptosChain && aptosAmount !== null && aptosBalance.data !== undefined && aptosAmount + 1_000_000n > aptosBalance.data ? "Leave at least 0.01 APT for network fees."
+    : isSolanaChain && solanaAmount !== null && solanaBalance.data !== undefined && solanaParams.data !== undefined && solanaAmount + solanaParams.data.rentLamports + 10_000n > solanaBalance.data ? "Leave enough SOL for stake-account rent and the transaction fee."
+    : isPolkadotChain && polkadotParams.isError ? "Polkadot pool minimum is unavailable."
+    : isPolkadotChain && !polkadotParams.data ? "Loading Polkadot nomination pools…"
+    : isPolkadotChain && polkadotAmount !== null && polkadotAmount < BigInt(polkadotParams.data?.minJoinPlanck ?? "0") ? `Minimum pool join: ${formatUnits(BigInt(polkadotParams.data!.minJoinPlanck), polkadotNetwork.decimals)} ${polkadotNetwork.symbol}.`
+    : isPolkadotChain && polkadotAmount !== null && polkadotBalance.data !== undefined && polkadotAmount >= polkadotBalance.data ? `Leave ${polkadotNetwork.symbol} for network fees and the existential deposit.`
+    : balanceWei !== undefined && amountWei > balanceWei ? "Amount exceeds your wallet balance."
+    : selectedChain.id !== "polygon" && !!selectedChain.wagmiChain && balanceWei !== undefined && amountWei === balanceWei ? "Leave some native token for gas." : null;
   const busy = preparing || (step > 0 && step < 5);
   const walletsReady = loopConnected && !!partyId && isWalletReadyForChain;
+  const balanceLabel = isCosmosChain
+    ? cosmos.address
+      ? cosmosBalance.data !== undefined ? `Balance: ${fmt(Number(formatUnits(cosmosBalance.data, 6)), 4)} ${selectedChain.symbol}` : cosmosBalance.isError ? "Balance unavailable" : "Loading balance…"
+      : "Connect wallet for balance"
+    : isAptosChain
+      ? aptos.address
+        ? aptosBalance.data !== undefined ? `Balance: ${fmt(Number(formatUnits(aptosBalance.data, 8)), 4)} APT` : aptosBalance.isError ? "Balance unavailable" : "Loading balance…"
+        : "Connect wallet for balance"
+    : isSolanaChain
+      ? solana.address
+        ? solanaBalance.data !== undefined ? `Balance: ${fmt(Number(formatUnits(solanaBalance.data, 9)), 4)} SOL` : solanaBalance.isError ? "Balance unavailable" : "Loading balance…"
+        : "Connect wallet for balance"
+    : isPolkadotChain
+      ? polkadot.address
+        ? polkadotBalance.data !== undefined ? `Balance: ${fmt(Number(formatUnits(polkadotBalance.data, polkadotNetwork.decimals)), 4)} ${polkadotNetwork.symbol}` : polkadotBalance.isError ? "Balance unavailable" : "Loading balance…"
+        : "Connect wallet for balance"
+    : isSuiChain
+      ? sui.address ? "SUI balance shown in your wallet" : "Connect wallet for balance"
+      : address
+        ? balanceWei !== undefined ? `Balance: ${fmt(Number(formatUnits(balanceWei, 18)), 4)} ${selectedChain.symbol}` : balanceFailed ? "Balance unavailable" : "Loading balance…"
+        : "Connect wallet for balance";
   const formStage = !validatorAddr ? 2 : amountIssue ? 3 : 4;
 
   return (
@@ -934,7 +1288,7 @@ export default function StakePage() {
         <Banner
           tone="warn"
           kind="KEPLR NOT CONNECTED"
-          message="Cosmos staking requires Keplr (or Leap). Click the chip in the top-right to connect."
+          message={`${selectedChain.name} staking requires Keplr (or Leap). Click the chip in the top-right to connect.`}
         />
       )}
       {!error && isSuiChain && !sui.isConnected && (
@@ -944,20 +1298,34 @@ export default function StakePage() {
           message="Sui staking requires Slush, Suiet, or any Sui wallet extension. Click the chip in the top-right to connect."
         />
       )}
-      {(isCosmosChain || isSuiChain) && (
-        <Banner
-          tone="warn"
-          kind="COMING SOON"
-          message={`${selectedChain.name} staking is coming soon. We're currently finalizing the integration. Stay tuned!`}
-        />
+      {!error && isAptosChain && !aptos.isConnected && (
+        <Banner tone="warn" kind="APTOS WALLET NOT CONNECTED" message="Aptos staking requires Petra or another Aptos-compatible wallet. Click the wallet chip to connect." />
+      )}
+      {!error && isAptosChain && aptos.isConnected && aptos.network?.chainId !== aptosNetwork.chainId && (
+        <Banner tone="warn" kind="WRONG APTOS NETWORK" message={`Switch your Aptos wallet to ${aptosNetwork.name} before staking.`} />
+      )}
+      {!error && isSolanaChain && !solana.isConnected && (
+        <Banner tone="warn" kind="SOLANA WALLET NOT CONNECTED" message="Solana staking requires Phantom, Solflare, or another Solana wallet. Connect it from the wallet chip." />
+      )}
+      {!error && isPolkadotChain && !polkadot.isConnected && (
+        <Banner tone="warn" kind="POLKADOT WALLET NOT CONNECTED" message="Polkadot nomination pools run on Asset Hub. Connect Talisman, SubWallet, or Polkadot.js from the wallet chip." />
+      )}
+      {isPolkadotChain && (
+        <Banner tone="warn" kind="NOMINATION POOL" message={isMainnet
+          ? "Stake DOT held on Polkadot Asset Hub, not the relay chain. You join a pool, not an individual validator; estimated yield is not pool-specific."
+          : "Stake WND held on Westend Asset Hub, not the relay chain. WND is a testnet token with no cash value; pool yield is only an estimate."} />
       )}
 
       <nav className="stake-stepper account-stake-stepper" aria-label="Staking workflow">
-        {[["01", "Select chain", "stake-chain"], ["02", "Choose token", "stake-token"], ["03", "Pick validator", "stake-validator"], ["04", "Enter amount", "stake-amount"], ["05", "Review & sign", "stake-review"]].map(([number, label, target], index) => <a href={`#${target}`} key={number} className={`stake-stepper__item${index <= formStage ? " stake-stepper__item--active" : ""}`} aria-current={index === formStage ? "step" : undefined}><span>{number}</span><div><strong>{label}</strong><small>{index < formStage ? "Ready" : index === formStage ? "Current step" : "Up next"}</small></div></a>)}
+        {[["01", "Select chain", "stake-chain"], ["02", "Choose token", "stake-token"], ["03", isPolkadotChain ? "Pick pool" : "Pick validator", "stake-validator"], ["04", "Enter amount", "stake-amount"], ["05", "Review & sign", "stake-review"]].map(([number, label, target], index) => <a href={`#${target}`} key={number} className={`stake-stepper__item${index <= formStage ? " stake-stepper__item--active" : ""}`} aria-current={index === formStage ? "step" : undefined}><span>{number}</span><div><strong>{label}</strong><small>{index < formStage ? "Ready" : index === formStage ? "Current step" : "Up next"}</small></div></a>)}
       </nav>
       <div className="account-stake-workspace">
         <AccountPanel title="01 · Select chain" icon="link" description="Choose a supported chain." id="stake-chain">
-          <div className="account-chain-options">{chains.map(chain => <button key={chain.id} className="account-chain-option" aria-pressed={selectedChain.id === chain.id} disabled={busy || watcherByChain.get(chain.id)?.status === "unreachable" || chain.hasAdapter === false} onClick={() => { setSelectedChainId(chain.id); setStep(0); setReviewOpen(false); }}><ChainBadge symbol={chain.symbol} label={chain.id === "polygon" ? "Polygon PoS" : chain.name} /><StatusBadge status={watcherByChain.get(chain.id)?.status === "unreachable" ? "Offline" : "Supported"} /></button>)}</div>
+          <div className="account-chain-options">{chains.map(chain => {
+            const enabled = !!chainStats?.chains.some((c) => c.chain === chain.id);
+            const offline = watcherByChain.get(chain.id)?.status !== "ok";
+            return <button key={chain.id} className="account-chain-option" aria-pressed={selectedChain.id === chain.id} disabled={busy || offline || !enabled || chain.hasAdapter === false} onClick={() => { setSelectedChainId(chain.id); setStep(0); setReviewOpen(false); }}><ChainBadge symbol={chain.symbol} label={chain.id === "polygon" ? "Polygon PoS" : chain.name} /><StatusBadge status={!enabled ? "Not enabled" : offline ? "Offline" : chain.hasAdapter === false ? "Coming soon" : "Supported"} /></button>;
+          })}</div>
           <p className="account-muted">{selectedChain.type}</p><p className="account-muted">More chains coming soon.</p>
           <dl className="account-definition"><div><dt>Settlement</dt><dd>{selectedChain.wagmiChain?.name ?? selectedChain.name}</dd></div><div><dt>Unbond period</dt><dd>{unbondingLabel}</dd></div></dl>
         </AccountPanel>
@@ -967,24 +1335,24 @@ export default function StakePage() {
           <dl className="account-definition"><div><dt>Token standard</dt><dd>{selectedChain.id === "polygon" ? "ERC-20" : selectedChain.symbol}</dd></div><div><dt>Current price</dt><dd>{fmtUsd(chainPriceUsd, 4)}</dd></div><div><dt>Price source</dt><dd>{prices?.source.pol === "coingecko" ? "Market price" : "Reference price"}</dd></div><div><dt>Staking network</dt><dd>{selectedChain.wagmiChain?.name ?? selectedChain.name}</dd></div></dl>
           {selectedChain.id === "polygon" && <a className="account-button" href={`${isMainnet ? "https://etherscan.io" : "https://sepolia.etherscan.io"}/token/${stakeTokenAddress}`} target="_blank" rel="noreferrer">View token ↗</a>}
         </AccountPanel>
-        <AccountPanel title="03 · Pick validator" icon="shield" description="Select a validator to delegate to." id="stake-validator">
-          <label><span className="sr-only">Sort validators</span><select className="account-field" aria-label="Sort validators" value={validatorSort} onChange={event => setValidatorSort(event.target.value)} disabled={busy}><option value="rank">Recommended order</option><option value="fee">Lowest commission</option></select></label>
+        <AccountPanel title={isPolkadotChain ? "03 · Pick pool" : "03 · Pick validator"} icon="shield" description={isPolkadotChain ? "Select an open Asset Hub nomination pool." : "Select a validator to delegate to."} id="stake-validator">
+          <label><span className="sr-only">Sort validators</span><select className="account-field" aria-label="Sort validators" value={validatorSort} onChange={event => setValidatorSort(event.target.value)} disabled={busy}><option value="rank">{isPolkadotChain ? "Largest pools" : "Recommended order"}</option><option value="fee">Lowest commission</option></select></label>
           <div className="account-validator-options" role="group" aria-label="Available validators">{sortedValidators.map((validator, i) => <button key={validator.address} className="account-validator-option" aria-pressed={validatorAddr === validator.address} disabled={busy} onClick={() => { setValidatorAddr(validator.address); setValidatorName(validator.name); }}>
-            <span className="account-validator-avatar" aria-hidden="true">{validator.name.slice(0, 1)}</span><span><strong>{validator.name}</strong><small>{shortId(validator.address)}</small><small>{Number.isFinite(validator.uptime) ? `${validator.uptime.toFixed(1)}% uptime` : "Validator"}</small></span><span><b>{validator.apr > 0 ? `${validator.apr.toFixed(1)}%` : "—"}</b><small>Est. APR</small><small>{validator.commission}% fee</small></span><span className="account-validator-check" aria-hidden="true">{validatorAddr === validator.address ? "✓" : "○"}</span>
+            <span className="account-validator-avatar" aria-hidden="true">{validator.name.slice(0, 1)}</span><span><strong>{validator.name}</strong><small>{shortId(validator.address)}</small><small>{Number.isFinite(validator.uptime) ? `${validator.uptime.toFixed(1)}% uptime` : isPolkadotChain ? "Nomination pool" : "Validator"}</small></span><span><b>{validatorApr(validator) > 0 ? `${validatorApr(validator).toFixed(1)}%` : "—"}</b><small>Est. APR</small><small>{validator.commission}% fee</small></span><span className="account-validator-check" aria-hidden="true">{validatorAddr === validator.address ? "✓" : "○"}</span>
           </button>)}</div>
           {!validators.length && <AccountEmpty>{validatorLoadError || "Loading available validators…"}</AccountEmpty>}
-          <p className="account-muted">Commission is set by each validator. A dash means measured validator APR is unavailable.</p>
+          <p className="account-muted">{isPolkadotChain ? "Pool commission is live. A dash means pool-specific APR is unavailable; pool size is not a yield recommendation." : "Commission is set by each validator. A dash means measured validator APR is unavailable."}</p>
         </AccountPanel>
         <div className="account-stack">
           <AccountPanel title="04 · Enter amount" icon="wallet" description={`Set the amount of ${selectedChain.symbol} to stake.`} id="stake-amount">
-            <div className="account-amount-balance"><span>{address ? balance.data !== undefined ? `Balance: ${fmt(Number(formatUnits(balance.data, 18)), 4)} POL` : balance.isError ? "Balance unavailable" : "Loading balance…" : "Connect wallet for balance"}</span><button className="account-button" disabled={busy || balance.data === undefined || selectedChain.id !== "polygon"} onClick={() => setAmount(formatUnits(balance.data!, 18))}>Max</button></div>
+            <div className="account-amount-balance"><span>{balanceLabel}</span><button className="account-button" disabled={busy || tokenBalance.data === undefined || selectedChain.id !== "polygon"} onClick={() => setAmount(formatUnits(tokenBalance.data!, 18))}>Max</button></div>
             <label className="account-stake-amount"><span className="sr-only">Stake amount</span><input aria-label="Stake amount" inputMode="decimal" value={amount} onChange={event => setAmount(event.target.value)} disabled={busy} /><span>{selectedChain.symbol}</span></label>
-            <p className="account-muted">≈ {Number.isFinite(usdValue) ? fmtUsd(usdValue, 2) : "—"} USD · estimated</p>
+            <p className="account-muted">{isPolkadotChain && !isMainnet ? "WND is a testnet token with no USD value." : `≈ ${Number.isFinite(usdValue) ? fmtUsd(usdValue, 2) : "—"} USD · estimated`}</p>
             {amountIssue && <p role="status" className="account-amount-warning">{amountIssue}</p>}
             {!isMainnet && <details className="account-funding"><summary>Need testnet funds?</summary><p>{FUNDING_HINTS[selectedChain.id]}</p></details>}
           </AccountPanel>
           <AccountPanel title="05 · Review rewards" icon="activity" description="Native yield and Canton allocations." id="stake-review">
-            <div className="account-dual-rewards"><div className="account-yield-card"><span aria-hidden="true"><AccountIcon name="stack" /></span><div><small>NATIVE VALIDATOR YIELD</small><strong>{selectedValidator?.apr ? `${selectedValidator.apr.toFixed(1)}%` : nativeApy !== null ? `${nativeApy.toFixed(1)}%` : "—"}</strong><small>Estimated APR</small></div></div><div className="account-yield-card account-yield-card--cc"><span aria-hidden="true"><AccountIcon name="coin" /></span><div><small>CANTON COIN REWARDS</small><strong>Per round</strong><small>Based on actual attribution</small></div></div></div>
+            <div className="account-dual-rewards"><div className="account-yield-card"><span aria-hidden="true"><AccountIcon name="stack" /></span><div><small>NATIVE VALIDATOR YIELD</small><strong>{selectedValidator && validatorApr(selectedValidator) > 0 ? `${validatorApr(selectedValidator).toFixed(1)}%` : nativeApy !== null ? `${nativeApy.toFixed(1)}%` : "—"}</strong><small>Estimated APR</small></div></div><div className="account-yield-card account-yield-card--cc"><span aria-hidden="true"><AccountIcon name="coin" /></span><div><small>CANTON COIN REWARDS</small><strong>Per round</strong><small>Based on actual attribution</small></div></div></div>
           </AccountPanel>
           <SplitPanel compact />
         </div>
@@ -994,7 +1362,8 @@ export default function StakePage() {
           <div className="account-transaction-flow"><div><AccountIcon name="wallet" /><strong>1. Approve & sign</strong><p>Approve the staking token if needed, then sign the delegation.</p></div><div><AccountIcon name="clock" /><strong>2. Wait for confirmation</strong><p>The native-chain watcher observes the confirmed staking event.</p></div><div><AccountIcon name="cube" /><strong>3. Record on Canton</strong><p>Your position and lifecycle activity are recorded on-ledger.</p></div></div>
         </AccountPanel>
         <div className="account-stake-submit">
-          <button className="account-button account-button--primary" disabled={busy || selectedChainOffline || !stakingUiReady || (walletsReady && (!!amountIssue || !validatorAddr))} onClick={() => { if (!walletsReady) openPicker(); else setReviewOpen(true); }}>{busy ? ctaLabel : selectedChainOffline ? "Staking watcher unavailable" : !walletsReady ? "Connect wallets to stake" : step === 5 ? "Review another stake →" : "Review & stake →"}</button>
+          <button className="account-button account-button--primary" disabled={busy || backendModeUnsafe || selectedChainOffline || !stakingUiReady || (walletsReady && (!!amountIssue || !validatorAddr))} onClick={() => { if (!walletsReady) openPicker(); else setReviewOpen(true); }}>{busy ? ctaLabel : backendModeMismatch ? "Network mode mismatch" : backendModeUnsafe ? "Checking network mode" : selectedChainOffline ? "Staking watcher unavailable" : !walletsReady ? "Connect wallets to stake" : step === 5 ? "Review another stake →" : "Review & stake →"}</button>
+          {backendModeMismatch && <p role="alert" className="account-amount-warning">This page is built for {networkMode}, but the staking backend is on {watcherStatus?.networkMode}. Open the matching deployment before staking.</p>}
           <p className="account-muted">Your wallet signs. You retain custody.</p>
           {hash && selectedChain.explorer && <a className="account-text-link" href={selectedChain.explorer.tx(hash)} target="_blank" rel="noreferrer">View transaction ↗</a>}
         </div>
@@ -1177,9 +1546,9 @@ export default function StakePage() {
       <dialog ref={reviewRef} className="account-stake-review" onCancel={() => setReviewOpen(false)} onClose={() => setReviewOpen(false)} aria-labelledby="stake-review-heading">
         <header><h2 id="stake-review-heading">Review your stake</h2><button className="account-button" aria-label="Close stake review" onClick={() => setReviewOpen(false)}>×</button></header>
         <dl className="account-definition"><div><dt>Amount</dt><dd>{amount} {selectedChain.symbol}</dd></div><div><dt>Estimated value</dt><dd>{fmtUsd(usdValue, 2)}</dd></div><div><dt>Settlement network</dt><dd>{selectedChain.wagmiChain?.name ?? selectedChain.name}</dd></div><div><dt>Validator</dt><dd>{validatorName}<small className="mono">{validatorAddr}</small></dd></div><div><dt>Unbond period</dt><dd>{unbondingLabel}</dd></div><div><dt>CC beneficiary split</dt><dd>75% delegator / 25% treasury</dd></div></dl>
-        <p className="account-muted">Your wallet will ask you to approve POL if needed, then sign the staking transaction. Network fees are shown by your wallet.</p>
+        <p className="account-muted">{selectedChain.id === "polygon" ? "Your wallet will ask you to approve POL if needed, then sign the staking transaction." : `Your wallet will ask you to sign the ${selectedChain.symbol} staking transaction.`} Network fees are shown by your wallet.</p>
         {isMainnet && <p className="account-amount-warning">Mainnet transaction · real funds</p>}
-        <footer><button className="account-button" onClick={() => setReviewOpen(false)}>Back</button><button className="account-button account-button--primary" disabled={!walletsReady || !!amountIssue || !validatorAddr || busy || selectedChainOffline} onClick={() => { setReviewOpen(false); setPreparing(true); void handleStake().finally(() => setPreparing(false)); }}>Confirm & open wallet →</button></footer>
+        <footer><button className="account-button" onClick={() => setReviewOpen(false)}>Back</button><button className="account-button account-button--primary" disabled={!walletsReady || !!amountIssue || !validatorAddr || busy || backendModeUnsafe || selectedChainOffline} onClick={() => { void confirmStake(); }}>Confirm & open wallet →</button></footer>
       </dialog>
     </div>
   );

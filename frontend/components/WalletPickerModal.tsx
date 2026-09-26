@@ -6,7 +6,13 @@ import { Btn } from "@/components/primitives/Btn";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { useCantonWallet } from "@/lib/canton";
 import { tokens } from "@/lib/tokens";
-import { polygonSettlementChain } from "@/lib/chains";
+import { isChainEnabled, polygonSettlementChain } from "@/lib/chains";
+import { useCosmosWallet } from "@/lib/cosmos/use-cosmos-wallet";
+import { type CosmosChainKey } from "@/lib/cosmos/networks";
+import { useSuiWallet } from "@/lib/sui/use-sui-wallet";
+import { useAptosWallet } from "@/lib/aptos/use-aptos-wallet";
+import { useSolanaWallet } from "@/lib/solana/use-solana-wallet";
+import { usePolkadotWallet } from "@/lib/polkadot/use-polkadot-wallet";
 
 interface Props {
   open: boolean;
@@ -35,6 +41,13 @@ export function WalletPickerModal({ open, onClose }: Props) {
   const { connectors, connectAsync, status: connectStatus, error } = useConnect();
   const { isConnected, address, connector: activeConnector } = useAccount();
   const { disconnect } = useDisconnect();
+  const cosmos = useCosmosWallet("cosmos");
+  const celestia = useCosmosWallet("celestia");
+  const osmosis = useCosmosWallet("osmosis");
+  const sui = useSuiWallet();
+  const aptos = useAptosWallet();
+  const solana = useSolanaWallet();
+  const polkadot = usePolkadotWallet();
   const {
     isConnected: loopConnected,
     partyId,
@@ -87,7 +100,12 @@ export function WalletPickerModal({ open, onClose }: Props) {
 
   if (!open) return null;
 
-  const fullyConnected = isConnected && loopConnected;
+  const fullyConnected = loopConnected && (isConnected || cosmos.isConnected || celestia.isConnected || osmosis.isConnected || sui.isConnected || aptos.isConnected || solana.isConnected || polkadot.isConnected);
+  const nativeWallets: Array<{ id: CosmosChainKey; label: string; wallet: typeof cosmos }> = [
+    { id: "cosmos", label: "Cosmos Hub", wallet: cosmos },
+    { id: "celestia", label: "Celestia", wallet: celestia },
+    { id: "osmosis", label: "Osmosis", wallet: osmosis },
+  ];
 
   return (
     <div
@@ -141,7 +159,7 @@ export function WalletPickerModal({ open, onClose }: Props) {
               className="display"
               style={{ fontSize: 22, margin: "4px 0 0", color: tokens.ink[100] }}
             >
-              CantonStake uses two identities.
+              Connect your wallets.
             </h2>
             <p
               id="wallet-dialog-description"
@@ -153,9 +171,8 @@ export function WalletPickerModal({ open, onClose }: Props) {
                 lineHeight: 1.6,
               }}
             >
-              Loop for your Canton party + CC rewards. EVM for Polygon staking
-              signatures. Both stay self-custodial — keys never leave your
-              wallet.
+              Loop identifies your Canton party and CC rewards. Connect the
+              native wallet for the network you stake on. Keys stay in your wallet.
             </p>
           </div>
           <button
@@ -355,6 +372,104 @@ export function WalletPickerModal({ open, onClose }: Props) {
             </div>
           ) : null}
         </div>
+
+        {nativeWallets.filter(({ id }) => isChainEnabled(id)).length > 0 && (
+          <div style={{ marginTop: 22 }}>
+            <SectionLabel>3. Cosmos-family wallets</SectionLabel>
+            {nativeWallets.filter(({ id }) => isChainEnabled(id)).map(({ id, label, wallet }) => (
+              <div key={id} style={{ marginTop: 8 }}>
+                <div style={{ padding: 14, border: `1px solid ${tokens.hairline}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div className="mono" style={{ fontSize: 12 }}>{label} · Keplr / Leap</div>
+                    <div className="mono" style={{ fontSize: 10, color: tokens.ink[400], overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {wallet.address ?? "Not connected"}
+                    </div>
+                  </div>
+                  {wallet.isConnected ? (
+                    <Btn size="sm" variant="ghost" onClick={wallet.disconnect}>Disconnect</Btn>
+                  ) : (
+                    <Btn size="sm" onClick={() => void wallet.connect()} disabled={wallet.isConnecting}>
+                      {wallet.isConnecting ? "Opening…" : "Connect"}
+                    </Btn>
+                  )}
+                </div>
+                {wallet.error && <div role="alert" className="mono" style={{ fontSize: 10, color: tokens.danger, marginTop: 6 }}>{wallet.error}</div>}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {isChainEnabled("sui") && (
+          <div style={{ marginTop: 22 }}>
+            <SectionLabel>4. Sui wallet</SectionLabel>
+            <div style={{ marginTop: 8, padding: 14, border: `1px solid ${tokens.hairline}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+              <div style={{ minWidth: 0 }}>
+                <div className="mono" style={{ fontSize: 12 }}>Sui · Slush / Suiet</div>
+                <div className="mono" style={{ fontSize: 10, color: tokens.ink[400], overflow: "hidden", textOverflow: "ellipsis" }}>{sui.address ?? "Not connected"}</div>
+              </div>
+              {sui.isConnected ? (
+                <Btn size="sm" variant="ghost" onClick={sui.disconnect}>Disconnect</Btn>
+              ) : (
+                <Btn size="sm" onClick={() => void sui.connect()} disabled={sui.isConnecting}>{sui.isConnecting ? "Opening…" : "Connect"}</Btn>
+              )}
+            </div>
+            {sui.error && <div role="alert" className="mono" style={{ fontSize: 10, color: tokens.danger, marginTop: 6 }}>{sui.error}</div>}
+          </div>
+        )}
+
+        {isChainEnabled("aptos") && (
+          <div style={{ marginTop: 22 }}>
+            <SectionLabel>5. Aptos wallet</SectionLabel>
+            {aptos.isConnected ? (
+              <div style={{ marginTop: 8, padding: 14, border: `1px solid ${tokens.hairline}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                <div style={{ minWidth: 0 }}><div className="mono" style={{ fontSize: 12 }}>{aptos.name ?? "Aptos wallet"}</div><div className="mono" style={{ fontSize: 10, color: tokens.ink[400], overflow: "hidden", textOverflow: "ellipsis" }}>{aptos.address}</div></div>
+                <Btn size="sm" variant="ghost" onClick={aptos.disconnect}>Disconnect</Btn>
+              </div>
+            ) : aptos.wallets.length > 0 ? aptos.wallets.map((wallet) => (
+              <div key={wallet.name} style={{ marginTop: 8, padding: 14, border: `1px solid ${tokens.hairline}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                <span className="mono" style={{ fontSize: 12 }}>{wallet.name}</span>
+                <Btn size="sm" onClick={() => aptos.connect(wallet.name)} disabled={aptos.isConnecting}>Connect</Btn>
+              </div>
+            )) : <p className="mono" style={{ fontSize: 10, color: tokens.ink[400] }}>Install Petra or another Aptos-compatible wallet to stake APT.</p>}
+            {aptos.error && <div role="alert" className="mono" style={{ fontSize: 10, color: tokens.danger, marginTop: 6 }}>{aptos.error}</div>}
+          </div>
+        )}
+
+        {isChainEnabled("solana") && (
+          <div style={{ marginTop: 22 }}>
+            <SectionLabel>6. Solana wallet</SectionLabel>
+            {solana.isConnected ? (
+              <div style={{ marginTop: 8, padding: 14, border: `1px solid ${tokens.hairline}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                <div style={{ minWidth: 0 }}><div className="mono" style={{ fontSize: 12 }}>{solana.name ?? "Solana wallet"}</div><div className="mono" style={{ fontSize: 10, color: tokens.ink[400], overflow: "hidden", textOverflow: "ellipsis" }}>{solana.address}</div></div>
+                <Btn size="sm" variant="ghost" onClick={() => void solana.disconnect()}>Disconnect</Btn>
+              </div>
+            ) : solana.wallets.length > 0 ? solana.wallets.map((wallet) => (
+              <div key={wallet.name} style={{ marginTop: 8, padding: 14, border: `1px solid ${tokens.hairline}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                <span className="mono" style={{ fontSize: 12 }}>{wallet.name}</span>
+                <Btn size="sm" onClick={() => solana.connect(wallet.name)} disabled={solana.isConnecting}>Connect</Btn>
+              </div>
+            )) : <p className="mono" style={{ fontSize: 10, color: tokens.ink[400] }}>Install Phantom, Solflare, or another Solana Wallet Standard wallet.</p>}
+            {solana.error && <div role="alert" className="mono" style={{ fontSize: 10, color: tokens.danger, marginTop: 6 }}>{solana.error}</div>}
+          </div>
+        )}
+
+        {isChainEnabled("polkadot") && (
+          <div style={{ marginTop: 22 }}>
+            <SectionLabel>7. Polkadot wallet</SectionLabel>
+            {polkadot.isConnected ? (
+              <div style={{ marginTop: 8, padding: 14, border: `1px solid ${tokens.hairline}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                <div style={{ minWidth: 0 }}><div className="mono" style={{ fontSize: 12 }}>Asset Hub account</div><div className="mono" style={{ fontSize: 10, color: tokens.ink[400], overflow: "hidden", textOverflow: "ellipsis" }}>{polkadot.address}</div></div>
+                <Btn size="sm" variant="ghost" onClick={polkadot.disconnect}>Disconnect</Btn>
+              </div>
+            ) : polkadot.accounts.length > 0 ? polkadot.accounts.map((account) => (
+              <div key={`${account.source}:${account.address}`} style={{ marginTop: 8, padding: 14, border: `1px solid ${tokens.hairline}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                <div style={{ minWidth: 0 }}><div className="mono" style={{ fontSize: 12 }}>{account.name}</div><div className="mono" style={{ fontSize: 10, color: tokens.ink[400], overflow: "hidden", textOverflow: "ellipsis" }}>{account.address}</div></div>
+                <Btn size="sm" onClick={() => void polkadot.connect(account.address).catch(() => undefined)}>Connect</Btn>
+              </div>
+            )) : <Btn size="sm" onClick={() => void polkadot.discover().catch(() => undefined)} disabled={polkadot.isConnecting}>{polkadot.isConnecting ? "Opening…" : "Find Polkadot wallets"}</Btn>}
+            {polkadot.error && <div role="alert" className="mono" style={{ fontSize: 10, color: tokens.danger, marginTop: 6 }}>{polkadot.error}</div>}
+          </div>
+        )}
 
         {fullyConnected ? (
           <div style={{ marginTop: 22 }}>

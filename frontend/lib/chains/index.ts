@@ -1,14 +1,24 @@
 import type { IChainAdapter } from "./types";
-import { cosmosAdapter } from "./cosmos";
+import { bnbAdapter } from "./bnb";
+import { aptosAdapter } from "./aptos";
+import { cosmosAdapter, celestiaAdapter, osmosisAdapter } from "./cosmos";
 import { monadAdapter } from "./monad";
 import { polygonAdapter } from "./polygon";
 import { suiAdapter } from "./sui";
+import { solanaAdapter } from "./solana";
+import { polkadotAdapter } from "./polkadot";
 
 const ADAPTERS: Record<string, IChainAdapter> = {
   polygon: polygonAdapter,
   monad: monadAdapter,
   cosmos: cosmosAdapter,
+  celestia: celestiaAdapter,
+  osmosis: osmosisAdapter,
   sui: suiAdapter,
+  bnb: bnbAdapter,
+  aptos: aptosAdapter,
+  solana: solanaAdapter,
+  polkadot: polkadotAdapter,
 };
 
 export function adapterFor(chainId: string): IChainAdapter {
