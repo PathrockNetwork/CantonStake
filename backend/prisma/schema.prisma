@@ -108,6 +108,9 @@ model StakingIntent {
   requestContractId String   @id
   chain             String
   validatorAddress  String?
+  stakeAccountAddress String? @unique
+  stakeRentLamports String?
+  userId            String?
   evmAddress        String
   amountPol         String
   acceptedTxHash    String?
