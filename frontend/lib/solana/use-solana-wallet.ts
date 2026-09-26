@@ -1,0 +1,115 @@
+"use client";
+
+import { useConnection, useWallet } from "@solana/wallet-adapter-react";
+import { type WalletName } from "@solana/wallet-adapter-base";
+import { Authorized, Keypair, PublicKey, StakeProgram, Transaction } from "@solana/web3.js";
+import { useCallback, useState } from "react";
+import { assertSolanaGenesis } from "./network";
+import { readSolanaStakeActivation } from "./stake-activation";
+
+const TRANSACTION_FEE_RESERVE = 10_000n;
+
+export function useSolanaWallet() {
+  const wallet = useWallet();
+  const { connection } = useConnection();
+  const [error, setError] = useState<string | null>(null);
+  const address = wallet.publicKey?.toBase58() ?? null;
+
+  const assertNetwork = useCallback(async () => {
+    if (!wallet.connected || !wallet.publicKey) throw new Error("Connect a Solana wallet first.");
+    assertSolanaGenesis(await connection.getGenesisHash());
+  }, [wallet.connected, wallet.publicKey, connection]);
+
+  const connect = useCallback((name: string) => {
+    setError(null);
+    const selected = wallet.wallets.find((item) => item.adapter.name === name);
+    if (!selected) { setError("Solana wallet is no longer available."); return; }
+    if (wallet.wallet?.adapter.name === name) void wallet.connect().catch((cause) => setError(String(cause)));
+    else wallet.select(name as WalletName);
+  }, [wallet]);
+
+  const send = useCallback(async (tx: Transaction, signers: Keypair[] = []) => {
+    await assertNetwork();
+    tx.feePayer = wallet.publicKey!;
+    const latest = await connection.getLatestBlockhash("finalized");
+    tx.recentBlockhash = latest.blockhash;
+    const signature = await wallet.sendTransaction(tx, connection, { signers, preflightCommitment: "confirmed" });
+    const result = await connection.confirmTransaction({ signature, ...latest }, "finalized");
+    if (result.value.err) throw new Error(`Solana transaction failed: ${JSON.stringify(result.value.err)}`);
+    return { signature };
+  }, [assertNetwork, wallet, connection]);
+
+  const prepareStake = useCallback(async (amountLamports: bigint) => {
+    await assertNetwork();
+    if (amountLamports > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("SOL stake amount exceeds the supported lamport range.");
+    const [minimum, rent, balance] = await Promise.all([
+      connection.getStakeMinimumDelegation({ commitment: "finalized" }),
+      connection.getMinimumBalanceForRentExemption(StakeProgram.space),
+      connection.getBalance(wallet.publicKey!, "finalized"),
+    ]);
+    if (amountLamports < BigInt(minimum.value)) throw new Error(`Minimum Solana delegation: ${minimum.value / 1e9} SOL.`);
+    if (BigInt(balance) < amountLamports + BigInt(rent) + TRANSACTION_FEE_RESERVE) {
+      throw new Error("Leave enough SOL for stake-account rent and the transaction fee.");
+    }
+    return { stakeAccount: Keypair.generate(), rentLamports: BigInt(rent) };
+  }, [assertNetwork, connection, wallet.publicKey]);
+
+  const stake = useCallback(async (voteAddress: string, amountLamports: bigint, rentLamports: bigint, stakeAccount: Keypair, expectedWallet: string) => {
+    await assertNetwork();
+    const owner = wallet.publicKey!;
+    if (owner.toBase58() !== expectedWallet) throw new Error("Solana wallet changed after the Canton request; reconnect the original wallet before signing.");
+    const lamports = amountLamports + rentLamports;
+    if (lamports > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Stake-account funding exceeds the supported lamport range.");
+    const create = StakeProgram.createAccount({
+      fromPubkey: owner,
+      stakePubkey: stakeAccount.publicKey,
+      authorized: new Authorized(owner, owner),
+      lamports: Number(lamports),
+    });
+    const delegate = StakeProgram.delegate({
+      stakePubkey: stakeAccount.publicKey,
+      authorizedPubkey: owner,
+      votePubkey: new PublicKey(voteAddress),
+    });
+    return send(new Transaction().add(...create.instructions, ...delegate.instructions), [stakeAccount]);
+  }, [assertNetwork, wallet.publicKey, send]);
+
+  const assertAuthority = useCallback(async (stakeAccount: string, type: "staker" | "withdrawer") => {
+    await assertNetwork();
+    const info = await connection.getParsedAccountInfo(new PublicKey(stakeAccount), "finalized");
+    if (!info.value || !info.value.owner.equals(StakeProgram.programId) || !("parsed" in info.value.data)) {
+      throw new Error("Solana stake account is missing or invalid.");
+    }
+    const data = info.value.data.parsed as { info?: { meta?: { authorized?: { staker?: string; withdrawer?: string } } } };
+    if (data.info?.meta?.authorized?.[type] !== address) throw new Error(`Connected wallet is not this stake account's ${type} authority.`);
+    return info.value;
+  }, [assertNetwork, connection, address]);
+
+  const deactivate = useCallback(async (stakeAccount: string) => {
+    await assertAuthority(stakeAccount, "staker");
+    const tx = StakeProgram.deactivate({ stakePubkey: new PublicKey(stakeAccount), authorizedPubkey: wallet.publicKey! });
+    return send(tx);
+  }, [assertAuthority, wallet.publicKey, send]);
+
+  const withdraw = useCallback(async (stakeAccount: string) => {
+    const info = await assertAuthority(stakeAccount, "withdrawer");
+    const activation = await readSolanaStakeActivation(new PublicKey(stakeAccount));
+    if (activation.state !== "inactive") throw new Error("Solana stake is still activating, active, or cooling down.");
+    if (info.lamports <= 0 || !Number.isSafeInteger(info.lamports)) throw new Error("Stake-account balance is not safely withdrawable.");
+    const tx = StakeProgram.withdraw({
+      stakePubkey: new PublicKey(stakeAccount),
+      authorizedPubkey: wallet.publicKey!,
+      toPubkey: wallet.publicKey!,
+      lamports: info.lamports,
+    });
+    return send(tx);
+  }, [assertAuthority, connection, wallet.publicKey, send]);
+
+  return {
+    address, isConnected: wallet.connected && !!address, isConnecting: wallet.connecting,
+    name: wallet.wallet?.adapter.name ?? null,
+    wallets: wallet.wallets.map((item) => ({ name: item.adapter.name })),
+    error, connect, disconnect: wallet.disconnect, assertNetwork, prepareStake, stake, deactivate, withdraw,
+    connection,
+  };
+}
