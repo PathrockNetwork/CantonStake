@@ -1,9 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Validator } from "cosmjs-types/cosmos/staking/v1beta1/staking";
-import { collectBondedValidators } from "../src/services/cosmos-validator-catalog.js";
+import { collectBondedValidators, cosmosCommissionPercent } from "../src/services/cosmos-validator-catalog.js";
 import { assertCosmosChainIdentity } from "../src/services/native-network.js";
 import { config } from "../src/config.js";
+
+test("Cosmos protobuf commissions decode 18-decimal atomics into percentages", () => {
+  for (const [raw, pct] of [
+    ["0", 0], ["1", 1e-16], ["50000000000000000", 5],
+    ["100000000000000000", 10], ["200000000000000000", 20],
+    ["123456789000000000", 12.3456789], ["1000000000000000000", 100],
+  ] as const) {
+    assert.equal(cosmosCommissionPercent(raw), pct);
+    const netApr = 21 * (1 - cosmosCommissionPercent(raw) / 100);
+    assert.ok(netApr >= 0 && netApr <= 21);
+  }
+});
+
+test("Cosmos protobuf commission rejects missing, REST-formatted, and invalid rates", () => {
+  for (const raw of [undefined, "", "0.05", "-1", "NaN", "Infinity", "1e17", " 0", "1000000000000000001"]) {
+    assert.throws(() => cosmosCommissionPercent(raw), /commission/i);
+  }
+});
 
 test("Cosmos-family catalogs reject validators from the other network mode", () => {
   const ids = config.networkMode === "mainnet"

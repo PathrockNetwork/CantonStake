@@ -1,7 +1,9 @@
+import { rpcUrls } from "./rpc-registry.js";
 /** Read-only BSC StakeHub registry, shared by testnet and mainnet scoring. */
 import { createPublicClient, formatEther, http, parseAbi, type Address } from "viem";
 import { config } from "../config.js";
 import { assertEvmRpcChainId } from "./evm-network.js";
+import { mapInBatches } from "./batched-map.js";
 
 export const BNB_STAKE_HUB = "0x0000000000000000000000000000000000002002" as Address;
 
@@ -21,9 +23,9 @@ const client = createPublicClient({
     id: config.networkMode === "mainnet" ? 56 : 97,
     name: config.networkMode === "mainnet" ? "BNB Smart Chain" : "BNB Smart Chain Testnet",
     nativeCurrency: { name: "BNB", symbol: "BNB", decimals: 18 },
-    rpcUrls: { default: { http: [config.bnbRpcUrl] } },
+    rpcUrls: { default: { http: [rpcUrls["bnb"]] } },
   },
-  transport: http(config.bnbRpcUrl),
+  transport: http(rpcUrls["bnb"], { timeout: 16_000, retryCount: 0 }),
 });
 export const bnbStakingClient = client;
 
@@ -53,7 +55,9 @@ export async function listBnbValidators(): Promise<BnbValidator[]> {
     total = count;
     if (operators.length === 0 || operators.length !== credits.length) break;
 
-    const page = await Promise.all(operators.map(async (operator, i) => {
+    // Each validator needs four reads; bound the page to sixteen in flight
+    // instead of competing with watchers using up to two hundred requests.
+    const page = await mapInBatches(operators, 4, async (operator, i) => {
       const credit = credits[i]!;
       const [basic, commission, description, pooled] = await Promise.allSettled([
         client.readContract({ address: BNB_STAKE_HUB, abi: stakeHubAbi, functionName: "getValidatorBasicInfo", args: [operator] }),
@@ -76,7 +80,7 @@ export async function listBnbValidators(): Promise<BnbValidator[]> {
         jailed,
         totalStaked: pooled.status === "fulfilled" ? Number(formatEther(pooled.value)) : 0,
       } satisfies BnbValidator;
-    }));
+    });
     out.push(...page);
     offset += BigInt(operators.length);
   }

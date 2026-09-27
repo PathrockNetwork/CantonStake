@@ -51,7 +51,6 @@
 import IORedis from "ioredis";
 import {
   createPublicClient,
-  fallback,
   http,
   keccak256,
   parseAbi,
@@ -61,6 +60,7 @@ import {
 } from "viem";
 import { mainnet, sepolia } from "viem/chains";
 import { config } from "../config.js";
+import { rpcUrls } from "./rpc-registry.js";
 import { assertEvmRpcChainId } from "./evm-network.js";
 
 // --- Chain + client -------------------------------------------------------
@@ -85,20 +85,12 @@ export const settlementChainDef = settlementChain();
  * L1 client for everything staking-related. Note this is deliberately NOT the
  * Bor/Amoy client — Bor only carries POL balances and explorer links.
  *
- * Mainnet runs two free endpoints through viem's fallback transport because
- * neither is reliable alone: mevblocker occasionally stalls eth_getLogs past
- * the 10 s timeout, publicnode intermittently rejects even 50-block windows
- * as "archive" (see config.stakeSettlementRpcUrl for the full probe log).
- * A failed or timed-out request on the primary retries on the fallback.
+ * The shared gateway checks every endpoint's identity and retries bounded
+ * read failures without changing the block height or request parameters.
  */
-const settlementTransports = [http(config.stakeSettlementRpcUrl)];
-if (config.stakeSettlementFallbackRpcUrl) {
-  settlementTransports.push(http(config.stakeSettlementFallbackRpcUrl));
-}
-
 export const settlementClient: PublicClient = createPublicClient({
   chain: settlementChainDef,
-  transport: fallback(settlementTransports),
+  transport: http(rpcUrls.settlement, { timeout: 16_000, retryCount: 0 }),
 }) as PublicClient;
 
 export const stakeManagerAddress = config.stakeManagerAddress as Address;

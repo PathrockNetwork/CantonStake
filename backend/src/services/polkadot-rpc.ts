@@ -1,3 +1,4 @@
+import { rpcUrls } from "./rpc-registry.js";
 import { ApiPromise, HttpProvider } from "@polkadot/api";
 import { config } from "../config.js";
 
@@ -12,7 +13,7 @@ let apiPromise: Promise<ApiPromise> | null = null;
 export async function polkadotApi(): Promise<ApiPromise> {
   if (!apiPromise) {
     apiPromise = (async () => {
-      const api = await ApiPromise.create({ provider: new HttpProvider(config.polkadotRpcUrl), noInitWarn: true });
+      const api = await ApiPromise.create({ provider: new HttpProvider(rpcUrls["polkadot"]), noInitWarn: true });
       await api.isReady;
       const expected = POLKADOT_ASSET_HUB[config.networkMode];
       if (api.genesisHash.toHex() !== expected.genesis ||

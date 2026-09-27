@@ -1,4 +1,5 @@
 import { config } from "../config.js";
+import { rpcUrls } from "./rpc-registry.js";
 
 export const SOLANA_GENESIS = {
   testnet: "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY",
@@ -8,7 +9,7 @@ export const SOLANA_STAKE_PROGRAM = "Stake11111111111111111111111111111111111111
 export const SOLANA_STAKE_ACCOUNT_SPACE = 200;
 
 export async function solanaRpc<T>(method: string, params: unknown[] = []): Promise<T> {
-  const response = await fetch(config.solanaRpcUrl, {
+  const response = await fetch(rpcUrls.solana, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),

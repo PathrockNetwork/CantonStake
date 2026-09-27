@@ -1,3 +1,4 @@
+import { rpcUrls } from "./rpc-registry.js";
 /**
  * Validator quality scoring — free-source data layer for the validator
  * picker UI, slashing alerts, and (eventually) auto-compound's validator
@@ -44,9 +45,11 @@ import { diffAndAlert } from "./slashing-monitor.js";
 import { listBnbValidators } from "./bnb-staking.js";
 import { listMonadValidators } from "./monad-staking.js";
 import { listPolkadotPoolScoreRows } from "./polkadot-pool-scores.js";
-import { listCosmosBondedValidators } from "./cosmos-validator-catalog.js";
+import { cosmosCommissionPercent, listCosmosBondedValidators } from "./cosmos-validator-catalog.js";
+import { expiredEmptyValidatorCatalog, validatorCacheTtlSeconds } from "./validator-cache-policy.js";
 import { assertAptosChainId, assertSuiChainIdentifier } from "./native-network.js";
 import { assertSolanaNetwork } from "./solana-rpc.js";
+import { createSingleFlight } from "./single-flight.js";
 
 // --- Types ---
 
@@ -99,7 +102,9 @@ const redis = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
 const REDIS_PREFIX = `vscore:${config.networkMode}:`;
 
 function cacheKey(chain: SupportedChain): string {
-  return `${REDIS_PREFIX}${chain}`;
+  // Do not serve pre-fix Cosmos snapshots with 10^18-inflated commissions.
+  const revision = ["cosmos", "celestia", "osmosis"].includes(chain) ? ":commission-v2" : "";
+  return `${REDIS_PREFIX}${chain}${revision}`;
 }
 
 async function readCache(
@@ -108,7 +113,8 @@ async function readCache(
   try {
     const raw = await redis.get(cacheKey(chain));
     if (!raw) return null;
-    return JSON.parse(raw) as ChainScoreSnapshot;
+    const snapshot = JSON.parse(raw) as ChainScoreSnapshot;
+    return expiredEmptyValidatorCatalog(snapshot) ? null : snapshot;
   } catch (err) {
     console.warn(`[validator-scoring] redis read failed ${chain}:`, err);
     return null;
@@ -121,7 +127,7 @@ async function writeCache(snapshot: ChainScoreSnapshot): Promise<void> {
       cacheKey(snapshot.chain),
       JSON.stringify(snapshot),
       "EX",
-      config.validatorScoringTtlSec
+      validatorCacheTtlSeconds(snapshot.validators.length, config.validatorScoringTtlSec)
     );
   } catch (err) {
     console.warn(`[validator-scoring] redis write failed ${snapshot.chain}:`, err);
@@ -280,7 +286,7 @@ async function fetchCosmosChain(
     chain,
     address: v.operatorAddress,
     name: v.description?.moniker || v.operatorAddress.slice(0, 14),
-    commissionPct: Number(v.commission?.commissionRates?.rate ?? "0.05") * 100,
+    commissionPct: cosmosCommissionPercent(v.commission?.commissionRates?.rate),
     uptimePct: 99.0,            // x/staking doesn't ship uptime; would need signing info per validator
     jailed: v.jailed,
     slashCount: 0,
@@ -291,15 +297,15 @@ async function fetchCosmosChain(
 
 function fetchCosmos(): Promise<ScoredValidator[]> {
   // Cosmos Hub provider testnet or mainnet, selected by the shared mode.
-  return fetchCosmosChain("cosmos", config.cosmosRpcUrl, 6);
+  return fetchCosmosChain("cosmos", rpcUrls["cosmos"], 6);
 }
 
 function fetchCelestia(): Promise<ScoredValidator[]> {
-  return fetchCosmosChain("celestia", config.celestiaRpcUrl, 6);
+  return fetchCosmosChain("celestia", rpcUrls["celestia"], 6);
 }
 
 function fetchOsmosis(): Promise<ScoredValidator[]> {
-  return fetchCosmosChain("osmosis", config.osmosisRpcUrl, 6);
+  return fetchCosmosChain("osmosis", rpcUrls["osmosis"], 6);
 }
 
 // --- Aptos: only active validators that expose a real delegation pool.
@@ -307,18 +313,18 @@ function fetchOsmosis(): Promise<ScoredValidator[]> {
 // targets; the indexer's pool-balance table identifies the native pools. ---
 
 async function fetchAptos(): Promise<ScoredValidator[]> {
-  const ledger = await fetchJson<{ chain_id?: number }>(`${config.aptosRestUrl.replace(/\/$/, "")}/v1`);
+  const ledger = await fetchJson<{ chain_id?: number }>(`${rpcUrls["aptos"].replace(/\/$/, "")}/v1`);
   assertAptosChainId(ledger?.chain_id);
   const body = await fetchJson<{ data?: { active_validators?: Array<{
     addr?: string;
     voting_power?: string;
   }> } }>(
-    `${config.aptosRestUrl.replace(/\/$/, "")}/v1/accounts/0x1/resource/0x1::stake::ValidatorSet`
+    `${rpcUrls["aptos"].replace(/\/$/, "")}/v1/accounts/0x1/resource/0x1::stake::ValidatorSet`
   );
   const validators = body?.data?.active_validators;
   if (!Array.isArray(validators)) return [];
   const active = new Set(validators.map((v) => v.addr?.toLowerCase()).filter(Boolean));
-  const response = await fetch(config.aptosIndexerUrl, {
+  const response = await fetch(rpcUrls["aptos-indexer"], {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query: `{ ledger_infos(limit: 1) { chain_id } current_delegated_staking_pool_balances(where: {total_coins: {_gt: "0"}}, order_by: {total_coins: desc}, limit: 500) { staking_pool_address operator_commission_percentage total_coins } }` }),
@@ -359,7 +365,7 @@ async function fetchSolana(): Promise<ScoredValidator[]> {
         activatedStake: string;
       }>;
     };
-  }>(config.solanaRpcUrl, {
+  }>(rpcUrls["solana"], {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -428,7 +434,7 @@ async function fetchSui(): Promise<ScoredValidator[]> {
         pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
       } } } };
       errors?: Array<{ message?: string }>;
-    } | null = await fetchJson(config.suiGraphqlUrl, {
+    } | null = await fetchJson(rpcUrls["sui"], {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -483,7 +489,15 @@ const FETCHERS: Record<SupportedChain, () => Promise<ScoredValidator[]>> = {
   solana: fetchSolana,
 };
 
-export async function refreshChain(
+const refreshOnce = createSingleFlight<SupportedChain, ChainScoreSnapshot>();
+
+export function refreshChain(chain: SupportedChain): Promise<ChainScoreSnapshot> {
+  // HTTP cache misses and the scheduled job can coincide. Share the read so
+  // each caller does not independently fan out against the same public RPC.
+  return refreshOnce(chain, () => refreshChainSnapshot(chain));
+}
+
+async function refreshChainSnapshot(
   chain: SupportedChain
 ): Promise<ChainScoreSnapshot> {
   const warnings: string[] = [];

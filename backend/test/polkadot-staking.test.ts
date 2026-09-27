@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { decodePolkadotPoolAction, type PolkadotPoolExtrinsic } from "../src/services/polkadot-staking.js";
+import { decodePolkadotPoolAction, isPolkadotLifecycleEvent, type PolkadotPoolExtrinsic } from "../src/services/polkadot-staking.js";
 
 const wallet = "5GF4poPj97U3JgThX7KHYvSwVbG3SNYWRugHvk8eJoedErFN";
 const binding = { wallet, poolId: 224, amountPlanck: 100_000_000_000n };
@@ -9,6 +9,17 @@ const base: PolkadotPoolExtrinsic = {
   hash: `0x${"a".repeat(64)}`, signer: wallet, section: "nominationPools", method: "join", success: true,
   events: [{ section: "nominationPools", method: "Bonded", data: [wallet, "224", "100000000000", "true"] }],
 };
+
+test("lifecycle filtering excludes reward compounds, not joins or exits", () => {
+  const bonded = base.events[0]!;
+  assert.equal(isPolkadotLifecycleEvent(bonded), true);
+  assert.equal(isPolkadotLifecycleEvent({ ...bonded, data: [wallet, "224", "100", "false"] }), false);
+  assert.equal(isPolkadotLifecycleEvent({ ...bonded, data: [wallet, "224", "100"] }), false);
+  assert.equal(isPolkadotLifecycleEvent({ ...bonded, method: "PaidOut" }), false);
+  assert.equal(isPolkadotLifecycleEvent({ ...bonded, section: "balances" }), false);
+  assert.equal(isPolkadotLifecycleEvent({ ...bonded, method: "Unbonded" }), true);
+  assert.equal(isPolkadotLifecycleEvent({ ...bonded, method: "Withdrawn" }), true);
+});
 
 test("accepts only an exact wallet/pool/amount join", () => {
   assert.equal(decodePolkadotPoolAction(base, binding, 123, at)?.kind, "join");

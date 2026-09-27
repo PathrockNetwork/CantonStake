@@ -1,3 +1,4 @@
+import { rpcUrls } from "../services/rpc-registry.js";
 /**
  * Live chain catalog stats — derives APY / TVL / validator count from the
  * cached `validator-scoring` snapshots so the frontend's chain catalog
@@ -84,7 +85,7 @@ interface CosmosYield {
 }
 
 async function fetchCosmosBaseYield(): Promise<CosmosYield | null> {
-  const { inflation, bonded, notBonded } = await readCosmosInflationAndPool(config.cosmosRpcUrl);
+  const { inflation, bonded, notBonded } = await readCosmosInflationAndPool(rpcUrls["cosmos"]);
   if (!Number.isFinite(inflation) || !Number.isFinite(bonded) || !Number.isFinite(notBonded)) {
     return null;
   }

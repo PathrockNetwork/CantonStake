@@ -269,7 +269,9 @@ export const config = {
   // 2026-08-16). utia has 6 decimals like uatom.
   celestiaRpcUrl: modeDefault("CELESTIA_RPC_URL",
     "https://rpc-mocha.pops.one",        // mocha testnet
-    "https://celestia-rpc.polkachu.com"  // mainnet
+    // Verified historical finalize_block_events, required for unbond release.
+    // Some synced mainnet nodes discard these responses entirely.
+    "https://celestia.rpc.kjnodes.com"  // mainnet
   ),
   celestiaRestUrl: modeDefault("CELESTIA_REST_URL",
     "https://api-mocha.pops.one",        // mocha testnet

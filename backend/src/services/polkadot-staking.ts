@@ -23,6 +23,14 @@ export type PolkadotPoolAction = {
   timestamp: Date;
 };
 
+/** Reward compounding emits Bonded(newMember=false), not a new position. */
+export function isPolkadotLifecycleEvent(event: { section: string; method: string; data: string[] }): boolean {
+  return event.section === "nominationPools" && (
+    (event.method === "Bonded" && event.data[3] === "true") ||
+    event.method === "Unbonded" || event.method === "Withdrawn"
+  );
+}
+
 function positive(value: string | undefined): bigint | null {
   if (!value || !/^\d+$/.test(value)) return null;
   const parsed = BigInt(value);

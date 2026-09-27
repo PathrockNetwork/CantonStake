@@ -1,7 +1,10 @@
+import { rpcUrls } from "./rpc-registry.js";
 /** Validator IDs and staking data from Monad's 0x1000 precompile. */
 import { createPublicClient, formatEther, http, parseAbi, type Address } from "viem";
 import { config } from "../config.js";
 import { assertEvmRpcChainId } from "./evm-network.js";
+import { mapInBatches } from "./batched-map.js";
+import { setTimeout as delay } from "node:timers/promises";
 
 const STAKING = "0x0000000000000000000000000000000000001000" as Address;
 const abi = parseAbi([
@@ -14,9 +17,9 @@ const client = createPublicClient({
     id: config.networkMode === "mainnet" ? 143 : 10143,
     name: config.networkMode === "mainnet" ? "Monad" : "Monad Testnet",
     nativeCurrency: { name: "MON", symbol: "MON", decimals: 18 },
-    rpcUrls: { default: { http: [config.monadRpcUrl] } },
+    rpcUrls: { default: { http: [rpcUrls["monad"]] } },
   },
-  transport: http(config.monadRpcUrl),
+  transport: http(rpcUrls["monad"], { timeout: 16_000, retryCount: 0 }),
 });
 export const monadStakingClient = client;
 
@@ -51,7 +54,9 @@ export async function listMonadValidators(): Promise<MonadValidator[]> {
       functionName: "getExecutionValidatorSet",
       args: [startIndex],
     }));
-  return Promise.all(ids.map(async (id) => {
+  // A mainnet validator set can exceed the gateway's 64 in-flight limit.
+  // Leave capacity for settlement watchers and wallet reads during refresh.
+  return mapInBatches(ids, 4, async (id) => {
     const state = await client.readContract({
       address: STAKING,
       abi,
@@ -63,5 +68,5 @@ export async function listMonadValidators(): Promise<MonadValidator[]> {
       commissionPct: Number(state[4]) / 1e16,
       totalStaked: Number(formatEther(state[2])),
     } satisfies MonadValidator;
-  }));
+  }, () => delay(400)); // Under 10 reads/s, leaving headroom on public 15–25 rps RPCs.
 }

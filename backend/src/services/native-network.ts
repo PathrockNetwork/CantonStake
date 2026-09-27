@@ -1,3 +1,4 @@
+import { rpcUrls } from "./rpc-registry.js";
 import { config } from "../config.js";
 
 export type CosmosChain = "cosmos" | "celestia" | "osmosis";
@@ -34,10 +35,10 @@ export function assertCosmosChainIdentity(
 }
 
 export async function assertCosmosRpcNetwork(chain: CosmosChain): Promise<void> {
-  const url = chain === "cosmos" ? config.cosmosRpcUrl
-    : chain === "celestia" ? config.celestiaRpcUrl : config.osmosisRpcUrl;
+  const url = chain === "cosmos" ? rpcUrls["cosmos"]
+    : chain === "celestia" ? rpcUrls["celestia"] : rpcUrls["osmosis"];
   const response = await fetch(`${url.replace(/\/$/, "")}/status`, {
-    signal: AbortSignal.timeout(5_000),
+    signal: AbortSignal.timeout(16_000),
   });
   if (!response.ok) throw new Error(`${chain} RPC status returned ${response.status}`);
   const body = await response.json() as {
@@ -47,11 +48,11 @@ export async function assertCosmosRpcNetwork(chain: CosmosChain): Promise<void> 
 }
 
 export async function assertSuiGraphqlNetwork(): Promise<void> {
-  const response = await fetch(config.suiGraphqlUrl, {
+  const response = await fetch(rpcUrls["sui"], {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query: "{ chainIdentifier }" }),
-    signal: AbortSignal.timeout(5_000),
+    signal: AbortSignal.timeout(16_000),
   });
   if (!response.ok) throw new Error(`Sui GraphQL returned ${response.status}`);
   const body = await response.json() as {

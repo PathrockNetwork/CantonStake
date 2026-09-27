@@ -1,3 +1,4 @@
+import { rpcUrls } from "./services/rpc-registry.js";
 /**
  * Multichain event watchers: polls each chain's staking events and
  * translates them into Canton Daml choices.
@@ -59,7 +60,7 @@ import { normalizeWalletAddress, sameWalletAddress } from "./services/wallet-add
 import { assertSolanaNetwork, solanaRpc, SOLANA_GENESIS } from "./services/solana-rpc.js";
 import { decodeSolanaStakeAction, type ParsedSolanaTransaction, type SolanaStakeAction, type SolanaStakeBinding } from "./services/solana-staking.js";
 import { polkadotApi, POLKADOT_ASSET_HUB, polkadotPoolKey } from "./services/polkadot-rpc.js";
-import { decodePolkadotPoolAction, type PolkadotPoolAction, type PolkadotPoolBinding } from "./services/polkadot-staking.js";
+import { decodePolkadotPoolAction, isPolkadotLifecycleEvent, type PolkadotPoolAction, type PolkadotPoolBinding } from "./services/polkadot-staking.js";
 import { decodeAddress, encodeAddress } from "@polkadot/util-crypto";
 import { verifiedSuiStakingSender } from "./services/sui-staking-sender.js";
 import { matchesUnbondProofForRecovery } from "./services/lifecycle-recovery.js";
@@ -139,7 +140,7 @@ async function watchPolygon(): Promise<void> {
 
   console.log(
     `[polygon-watcher] watching StakingInfo ${stakingLoggerAddress} on chain ` +
-      `${config.stakeSettlementChainId} (${config.stakeSettlementRpcUrl})`
+      `${config.stakeSettlementChainId} (${rpcUrls["settlement"]})`
   );
 
   const getMintLogsBatched = async (
@@ -338,10 +339,10 @@ const monadClient = createPublicClient({
     name: config.networkMode === "mainnet" ? "Monad" : "Monad Testnet",
     nativeCurrency: { name: "MON", symbol: "MON", decimals: 18 },
     rpcUrls: {
-      default: { http: [config.monadRpcUrl] },
+      default: { http: [rpcUrls["monad"]] },
     },
   },
-  transport: http(config.monadRpcUrl),
+  transport: http(rpcUrls["monad"], { timeout: 16_000, retryCount: 0 }),
 });
 
 const MONAD_STAKING_PRECOMPILE: Address = "0x0000000000000000000000000000000000001000" as Address;
@@ -772,7 +773,7 @@ async function handleAptosWithdraw(action: AptosDelegationAction, base: string):
 async function watchAptos(): Promise<void> {
   const POLL_MS = 12_000;
   const PAGE = 50;
-  const base = config.aptosRestUrl.replace(/\/$/, "");
+  const base = rpcUrls["aptos"].replace(/\/$/, "");
   const poll = async () => {
     const info = await aptosGetJson<{ chain_id?: number }>(base, "");
     const expected = config.networkMode === "mainnet" ? 1 : 2;
@@ -1060,10 +1061,10 @@ async function watchSolana(): Promise<void> {
 async function watchPolkadot(): Promise<void> {
   const POLL_MS = 15_000;
   const { ApiPromise, HttpProvider } = await import("@polkadot/api");
-  const provider = new HttpProvider(config.polkadotRpcUrl);
+  const provider = new HttpProvider(rpcUrls["polkadot"]);
   const api = await ApiPromise.create({ provider, noInitWarn: true });
   await api.isReady;
-  console.log(`[polkadot-watcher] connected to ${config.polkadotRpcUrl}`);
+  console.log(`[polkadot-watcher] connected to ${rpcUrls["polkadot"]}`);
 
   let lastProcessed: number | undefined;
 
@@ -1275,11 +1276,6 @@ async function watchPolkadotAssetHub(): Promise<void> {
     if (!Number.isSafeInteger(last) || last > height) throw new Error(`Invalid Polkadot watcher cursor ${cursor.lastScannedBlock}`);
     for (let blockNumber = last + 1; blockNumber <= Math.min(height, last + 100); blockNumber++) {
       const hash = await api.rpc.chain.getBlockHash(blockNumber);
-      const block = await api.rpc.chain.getBlock(hash);
-      if (!block.block.extrinsics.some((extrinsic) => extrinsic.isSigned && extrinsic.method.section === "nominationPools")) {
-        await prisma.watcherCursor.update({ where: { key: cursorKey }, data: { lastScannedBlock: String(blockNumber) } });
-        continue;
-      }
       const at = await api.at(hash);
       const [rawRecords, rawTime] = await Promise.all([at.query.system.events(), at.query.timestamp.now()]);
       const timestamp = new Date(Number(rawTime.toString()));
@@ -1288,48 +1284,68 @@ async function watchPolkadotAssetHub(): Promise<void> {
         phase: { isApplyExtrinsic: boolean; asApplyExtrinsic: { toNumber(): number } };
         event: { section: string; method: string; data: { toArray(): Array<{ toString(): string }> } };
       }>;
-      for (const [index, extrinsic] of block.block.extrinsics.entries()) {
-        if (!extrinsic.isSigned || extrinsic.method.section !== "nominationPools") continue;
+      // Inspect authoritative events before decoding extrinsics. Unrelated
+      // mainnet v5 reward-compounding batches cannot be decoded as SignedBlock
+      // by this SDK, but must not stop observation of our v4 wallet flow.
+      const indices = [...new Set(records.filter((record) => record.phase.isApplyExtrinsic &&
+        isPolkadotLifecycleEvent({ section: record.event.section, method: record.event.method,
+          data: record.event.data.toArray().map((value) => value.toString()) }))
+        .map((record) => record.phase.asApplyExtrinsic.toNumber()))];
+      const rawBlock = indices.length ? await api.rpc.chain.getBlock.raw(hash) as unknown as {
+        block?: { header?: { parentHash?: string }; extrinsics?: string[] };
+      } : null;
+      for (const index of indices) {
         const events = records.filter((record) => record.phase.isApplyExtrinsic && record.phase.asApplyExtrinsic.toNumber() === index)
           .map((record) => ({ section: record.event.section, method: record.event.method,
             data: record.event.data.toArray().map((value) => value.toString()) }));
-        const poolEvent = events.find((event) => event.section === "nominationPools" &&
-          ["Bonded", "Unbonded", "Withdrawn"].includes(event.method));
-        if (!poolEvent) continue;
-        const wallet = canonicalPolkadotAddress(poolEvent.data[0] ?? "");
-        const signer = canonicalPolkadotAddress(extrinsic.signer.toString());
-        const poolId = Number(poolEvent.data[1]);
-        if (!wallet || !signer || !Number.isSafeInteger(poolId) || poolId <= 0) continue;
-        const key = polkadotPoolKey(poolId);
-        const encoded = { hash: extrinsic.hash.toHex(), signer, section: extrinsic.method.section,
-          method: extrinsic.method.method, success: events.some((event) => event.section === "system" && event.method === "ExtrinsicSuccess"), events };
-        const [intents, mirrors] = await Promise.all([
-          prisma.stakingIntent.findMany({ where: { chain: "polkadot", evmAddress: wallet,
-            validatorAddress: key, acceptedAt: null } }),
-          prisma.stakingPosition.findMany({ where: { chain: "polkadot", evmAddress: wallet,
-            validatorShare: key, status: { in: ["Bonded", "Unbonding"] } } }),
-        ]);
-        const bindings: Array<{ binding: PolkadotPoolBinding; createdAt?: Date; status?: string }> = [
-          ...intents.map((intent) => ({ binding: { wallet, poolId,
-            amountPlanck: parseUnits(intent.amountPol, POLKADOT_ASSET_HUB[config.networkMode].decimals) }, createdAt: intent.createdAt })),
-          ...mirrors.map((mirror) => ({ binding: { wallet, poolId,
-            amountPlanck: parseUnits(mirror.amountPol, POLKADOT_ASSET_HUB[config.networkMode].decimals) }, status: mirror.status })),
-        ];
-        for (const candidate of bindings) {
-          const action = decodePolkadotPoolAction(encoded, candidate.binding, blockNumber, timestamp);
-          if (!action) continue;
-          const state = (await at.query.nominationPools.poolMembers(wallet)).toJSON() as { poolId?: number; points?: string | number; unbondingEras?: Record<string, unknown> } | null;
-          if (action.kind === "join" && candidate.createdAt && candidate.createdAt <= timestamp) {
-            await handleStakeEvent({ evmAddress: wallet, amount: toStakeUnits(action.amountPlanck, POLKADOT_ASSET_HUB[config.networkMode].decimals),
-              txHash: action.txHash, blockNumber, chain: "polkadot", validatorShare: key, validatorAddress: key });
-          } else if (action.kind === "unbond" && candidate.status === "Bonded" && state?.poolId === poolId &&
-                     BigInt(String(state.points ?? 0)) === 0n && Object.keys(state.unbondingEras ?? {}).length > 0) {
-            await handlePolkadotUnbond(action);
-          } else if (action.kind === "withdraw" && candidate.status === "Unbonding") {
-            // MemberRemoved in this exact successful extrinsic is the
-            // authoritative full-exit proof. A later join in the same block
-            // may recreate membership, so block-end state is not a gate.
-            await handlePolkadotWithdraw(action);
+        for (const poolEvent of events.filter(isPolkadotLifecycleEvent)) {
+          const wallet = canonicalPolkadotAddress(poolEvent.data[0] ?? "");
+          const poolId = Number(poolEvent.data[1]);
+          if (!wallet || !Number.isSafeInteger(poolId) || poolId <= 0) continue;
+          const key = polkadotPoolKey(poolId);
+          const [intents, mirrors] = await Promise.all([
+            prisma.stakingIntent.findMany({ where: { chain: "polkadot", evmAddress: wallet,
+              validatorAddress: key, acceptedAt: null } }),
+            prisma.stakingPosition.findMany({ where: { chain: "polkadot", evmAddress: wallet,
+              validatorShare: key, status: { in: ["Bonded", "Unbonding"] } } }),
+          ]);
+          const bindings: Array<{ binding: PolkadotPoolBinding; createdAt?: Date; status?: string }> = [
+            ...intents.map((intent) => ({ binding: { wallet, poolId,
+              amountPlanck: parseUnits(intent.amountPol, POLKADOT_ASSET_HUB[config.networkMode].decimals) }, createdAt: intent.createdAt })),
+            ...mirrors.map((mirror) => ({ binding: { wallet, poolId,
+              amountPlanck: parseUnits(mirror.amountPol, POLKADOT_ASSET_HUB[config.networkMode].decimals) }, status: mirror.status })),
+          ];
+          if (bindings.length === 0) continue;
+          const hex = rawBlock?.block?.extrinsics?.[index];
+          const parentHash = rawBlock?.block?.header?.parentHash;
+          if (!hex || !/^0x[0-9a-f]+$/i.test(hex) || !parentHash || !/^0x[0-9a-f]{64}$/i.test(parentHash)) {
+            throw new Error(`Polkadot tracked extrinsic ${blockNumber}:${index} is unavailable`);
+          }
+          // Use the execution runtime (parent metadata). A decode error for a
+          // tracked transition still fails closed and preserves the cursor.
+          const parent = await api.at(parentHash);
+          const extrinsic = parent.registry.createType("Extrinsic", hex);
+          if (!extrinsic.isSigned || extrinsic.method.section !== "nominationPools") continue;
+          const signer = canonicalPolkadotAddress(extrinsic.signer.toString());
+          if (!signer) continue;
+          const encoded = { hash: extrinsic.hash.toHex(), signer, section: extrinsic.method.section,
+            method: extrinsic.method.method, success: events.some((event) => event.section === "system" && event.method === "ExtrinsicSuccess"), events };
+          for (const candidate of bindings) {
+            const action = decodePolkadotPoolAction(encoded, candidate.binding, blockNumber, timestamp);
+            if (!action) continue;
+            const state = (await at.query.nominationPools.poolMembers(wallet)).toJSON() as { poolId?: number; points?: string | number; unbondingEras?: Record<string, unknown> } | null;
+            if (action.kind === "join" && candidate.createdAt && candidate.createdAt <= timestamp) {
+              await handleStakeEvent({ evmAddress: wallet, amount: toStakeUnits(action.amountPlanck, POLKADOT_ASSET_HUB[config.networkMode].decimals),
+                txHash: action.txHash, blockNumber, chain: "polkadot", validatorShare: key, validatorAddress: key });
+            } else if (action.kind === "unbond" && candidate.status === "Bonded" && state?.poolId === poolId &&
+                       BigInt(String(state.points ?? 0)) === 0n && Object.keys(state.unbondingEras ?? {}).length > 0) {
+              await handlePolkadotUnbond(action);
+            } else if (action.kind === "withdraw" && candidate.status === "Unbonding") {
+              // MemberRemoved in this exact successful extrinsic is the
+              // authoritative full-exit proof. A later join in the same block
+              // may recreate membership, so block-end state is not a gate.
+              await handlePolkadotWithdraw(action);
+            }
           }
         }
       }
@@ -1377,9 +1393,9 @@ const bnbClient = createPublicClient({
     id: config.networkMode === "mainnet" ? 56 : 97,
     name: config.networkMode === "mainnet" ? "BNB Smart Chain" : "BNB Smart Chain Chapel",
     nativeCurrency: { name: "BNB", symbol: "BNB", decimals: 18 },
-    rpcUrls: { default: { http: [config.bnbRpcUrl] } },
+    rpcUrls: { default: { http: [rpcUrls["bnb"]] } },
   },
-  transport: http(config.bnbRpcUrl),
+  transport: http(rpcUrls["bnb"], { timeout: 16_000, retryCount: 0 }),
 });
 
 async function findBnbPosition(
@@ -1689,21 +1705,21 @@ interface CosmosNetwork {
 const COSMOS_NETWORKS: CosmosNetwork[] = [
   {
     chain: "cosmos",
-    rpcUrl: config.cosmosRpcUrl,
+    rpcUrl: rpcUrls["cosmos"],
     expectedChainId: config.networkMode === "mainnet" ? "cosmoshub-4" : "provider",
     bondDenom: "uatom",
     pollMs: 10_000,
   },
   {
     chain: "celestia",
-    rpcUrl: config.celestiaRpcUrl,
+    rpcUrl: rpcUrls["celestia"],
     expectedChainId: config.networkMode === "mainnet" ? "celestia" : "mocha-5",
     bondDenom: "utia",
     pollMs: 10_000,
   },
   {
     chain: "osmosis",
-    rpcUrl: config.osmosisRpcUrl,
+    rpcUrl: rpcUrls["osmosis"],
     expectedChainId: config.networkMode === "mainnet" ? "osmosis-1" : "osmo-test-5",
     bondDenom: "uosmo",
     pollMs: 10_000,
@@ -2022,7 +2038,7 @@ interface SuiStakeEvent {
 }
 
 async function suiGraphql<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
-  const res = await fetch(config.suiGraphqlUrl, {
+  const res = await fetch(rpcUrls["sui"], {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, variables }),

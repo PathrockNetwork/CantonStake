@@ -1,3 +1,4 @@
+import { rpcUrls } from "./services/rpc-registry.js";
 /**
  * Fastify HTTP server exposing a thin API for the frontend.
  *
@@ -54,6 +55,7 @@ import polygonRoutes from "./routes/polygon.js";
 import polkadotRoutes from "./routes/polkadot.js";
 import readinessRoutes from "./routes/readiness.js";
 import loopProxyRoutes from "./routes/loop-proxy.js";
+import rpcRoutes from "./routes/rpc.js";
 import { normalizeWalletAddress, sameWalletAddress } from "./services/wallet-address.js";
 import { assertSolanaNetwork, solanaRpc, SOLANA_STAKE_ACCOUNT_SPACE } from "./services/solana-rpc.js";
 import { polkadotApi, POLKADOT_ASSET_HUB, parsePolkadotPoolKey } from "./services/polkadot-rpc.js";
@@ -69,7 +71,7 @@ import { parseAptosDelegationStake } from "./services/aptos-lifecycle.js";
 
 const publicClient = createPublicClient({
   chain: polygonAmoy,
-  transport: http(config.amoyRpcUrl),
+  transport: http(rpcUrls["polygon"], { timeout: 16_000, retryCount: 0 }),
 });
 
 const validatorShareAbi = [
@@ -622,7 +624,7 @@ app.post<{ Body: CreateRequestBody }>("/api/requests", async (req, reply) => {
     const knownDelegator = config.cantonDelegatorParty;
 
     if (chain === "aptos") {
-      const base = config.aptosRestUrl.replace(/\/$/, "");
+      const base = rpcUrls["aptos"].replace(/\/$/, "");
       const [ledgerResponse, accountResponse, feeResponse, stakeResponse] = await Promise.all([
         fetch(`${base}/v1`),
         fetch(`${base}/v1/accounts/${evmAddress}`),
@@ -939,6 +941,7 @@ app.post("/api/admin/rounds/trigger", async (req, reply) => {
 
 // --- Sweep routes ---
 await app.register(readinessRoutes);
+await app.register(rpcRoutes);
 await app.register(sweepRoutes);
 await app.register(rewardHistoryRoutes);
 
