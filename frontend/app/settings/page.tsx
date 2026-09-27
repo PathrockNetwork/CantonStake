@@ -111,7 +111,25 @@ export default function SettingsPage() {
         {section === "wallets" && <>{wallets}<PrivacyPanel /></>}
         {section === "notifications" && <div className="account-existing-settings">{user ? <NotificationsCard userId={user.id} qc={qc} /> : requiresUser}</div>}
         {section === "privacy" && <><PrivacyPanel /><div className="account-existing-settings"><AutoCompoundCard userId={user?.id} canRevoke={canEdit} /></div></>}
-        {section === "preferences" && <AccountPanel title="Display preferences" icon="settings" description="Saved in this browser for the account pages."><fieldset className="account-preference"><legend>Information density</legend><div className="account-tabs">{["comfortable", "compact"].map(value => <button key={value} type="button" aria-pressed={density === value} onClick={() => setDisplayDensity(value)}>{value === "comfortable" ? "Comfortable" : "Compact"}</button>)}</div></fieldset><dl className="account-definition"><div><dt>Color theme</dt><dd>Canton dark</dd></div><div><dt>Animation</dt><dd>Respects system reduced-motion preference</dd></div></dl><p className="account-muted">The homepage globe also has its own play and pause control.</p></AccountPanel>}
+        {section === "preferences" && (
+          <AccountPanel title="Display preferences" icon="settings" description="Saved in this browser for the account pages.">
+            <fieldset className="account-preference">
+              <legend>Information density</legend>
+              <div className="account-tabs">
+                {["comfortable", "compact"].map(value => (
+                  <button key={value} type="button" aria-pressed={density === value} onClick={() => setDisplayDensity(value)}>
+                    {value === "comfortable" ? "Comfortable" : "Compact"}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+            <dl className="account-definition">
+              <div><dt>Color theme</dt><dd>Canton dark</dd></div>
+              <div><dt>Animation</dt><dd>Respects system reduced-motion preference</dd></div>
+            </dl>
+            <p className="account-muted">The homepage globe animation respects your system motion preference.</p>
+          </AccountPanel>
+        )}
         {section === "integrations" && <><AccountPanel title="Connected services" icon="link"><dl className="account-definition"><div><dt>Loop Wallet</dt><dd><StatusBadge status={loopConnected ? "Connected" : "Disconnected"} /></dd></div><div><dt>EVM wallet</dt><dd><StatusBadge status={isConnected ? "Connected" : "Disconnected"} /></dd></div><div><dt>Enabled staking chains</dt><dd>{liveChains().map(chain => chain.name).join(", ") || "None enabled"}</dd></div></dl><button className="account-button" onClick={openPicker}>Manage wallets</button></AccountPanel><AccountPanel title="Reward automation" icon="activity"><p className="account-muted">Check auto-compound availability and saved permits under Privacy & security, and delivery channels under Notifications.</p><div className="account-quick-actions"><button className="account-button" onClick={() => selectSection("privacy")}>Automation status</button><button className="account-button" onClick={() => selectSection("notifications")}>Alert channels</button></div></AccountPanel></>}
       </div>
     </div>

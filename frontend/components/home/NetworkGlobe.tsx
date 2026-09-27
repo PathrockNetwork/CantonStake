@@ -10,14 +10,14 @@ export function NetworkGlobe() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<GlobeRenderer | null>(null);
   const [ready, setReady] = useState(false);
-  const [motionRequested, setMotionRequested] = useState(false);
+  const [motionAllowed, setMotionAllowed] = useState(false);
   const [inView, setInView] = useState(false);
   const [pageVisible, setPageVisible] = useState(true);
-  const playing = ready && motionRequested && inView && pageVisible;
+  const playing = ready && motionAllowed && inView && pageVisible;
 
   useEffect(() => {
     const preference = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const syncPreference = () => setMotionRequested(!preference.matches);
+    const syncPreference = () => setMotionAllowed(!preference.matches);
     const syncVisibility = () => setPageVisible(document.visibilityState === "visible");
     syncPreference();
     syncVisibility();
@@ -77,13 +77,6 @@ export function NetworkGlobe() {
         </svg>
         <canvas ref={canvasRef} className="home-globe__canvas" width="620" height="620" />
       </div>
-      {ready && <button type="button" className="home-globe-toggle mono" onClick={() => setMotionRequested(!motionRequested)}
-        aria-label={playing ? "Pause globe animation" : "Play globe animation"}>
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-          {playing ? <path d="M4 2v8M8 2v8" stroke="currentColor" strokeWidth="1.5" /> : <path d="m4 2 6 4-6 4Z" stroke="currentColor" />}
-        </svg>
-        {playing ? "Pause animation" : "Play animation"}
-      </button>}
     </>
   );
 }
