@@ -38,20 +38,21 @@ export function useAptosWallet() {
     const submitted = await wallet.signAndSubmitTransaction({
       data: { function: tx.function, typeArguments: [], functionArguments: tx.args },
     });
-    for (let attempt = 0; attempt < 45; attempt++) {
-      const response = await fetch(`${aptosNetwork.rest}/v1/transactions/by_hash/${submitted.hash}`);
-      if (response.ok) {
+    const deadline = Date.now() + 90_000;
+    while (Date.now() < deadline) {
+      const response = await fetch(`${aptosNetwork.rest}/v1/transactions/by_hash/${submitted.hash}`).catch(() => null);
+      if (response?.ok) {
         const receipt = await response.json() as { type?: string; success?: boolean; vm_status?: string };
         if (receipt.type !== "pending_transaction") {
           if (receipt.success !== true) throw new Error(`Aptos transaction failed: ${receipt.vm_status ?? "unknown VM error"}`);
           return { hash: submitted.hash };
         }
-      } else if (response.status !== 404) {
-        throw new Error(`Aptos transaction lookup returned ${response.status}`);
+      } else if (response && ![404, 408, 429, 502, 503, 504].includes(response.status)) {
+        throw new Error(`Aptos transaction ${submitted.hash} was submitted but lookup returned ${response.status}. Check the explorer before retrying.`);
       }
       await new Promise((resolve) => setTimeout(resolve, 1_000));
     }
-    throw new Error(`Aptos transaction ${submitted.hash} was submitted but not confirmed within 45 seconds. Check the explorer before retrying.`);
+    throw new Error(`Aptos transaction ${submitted.hash} was submitted but not confirmed within 90 seconds. Check the explorer before retrying.`);
   }, [wallet, assertNetwork]);
 
   return {

@@ -3,6 +3,7 @@
 import { http, createConfig } from "wagmi";
 import { coinbaseWallet, injected, safe, walletConnect } from "wagmi/connectors";
 import { bnbEvmChain, monadEvmChain, polygonNativeChain, polygonSettlementChain } from "@/lib/chains";
+import { rpcEndpoint } from "./rpc";
 
 const projectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || "";
 
@@ -42,18 +43,10 @@ export const wagmiConfig = createConfig({
       : []),
   ],
   transports: {
-    [polygonSettlementChain.id]: http(
-      process.env.NEXT_PUBLIC_SETTLEMENT_RPC_URL ||
-        polygonSettlementChain.rpcUrls.default.http[0],
-    ),
-    [polygonNativeChain.id]: http(
-      process.env.NEXT_PUBLIC_AMOY_RPC_URL ||
-        (polygonNativeChain.id === 137
-          ? "https://polygon-bor-rpc.publicnode.com"
-          : "https://polygon-amoy-bor-rpc.publicnode.com"),
-    ),
-    [monadEvmChain.id]: http(process.env.NEXT_PUBLIC_MONAD_RPC_URL || monadEvmChain.rpcUrls.default.http[0]),
-    [bnbEvmChain.id]: http(process.env.NEXT_PUBLIC_BNB_RPC_URL || bnbEvmChain.rpcUrls.default.http[0]),
+    [polygonSettlementChain.id]: http(rpcEndpoint("settlement"), { timeout: 16_000, retryCount: 0 }),
+    [polygonNativeChain.id]: http(rpcEndpoint("polygon"), { timeout: 16_000, retryCount: 0 }),
+    [monadEvmChain.id]: http(rpcEndpoint("monad"), { timeout: 16_000, retryCount: 0 }),
+    [bnbEvmChain.id]: http(rpcEndpoint("bnb"), { timeout: 16_000, retryCount: 0 }),
   },
   ssr: true,
 });

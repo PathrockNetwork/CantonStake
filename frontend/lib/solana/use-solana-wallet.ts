@@ -6,6 +6,7 @@ import { Authorized, Keypair, PublicKey, StakeProgram, Transaction } from "@sola
 import { useCallback, useState } from "react";
 import { assertSolanaGenesis } from "./network";
 import { readSolanaStakeActivation } from "./stake-activation";
+import { waitForSolanaFinality } from "./confirmation";
 
 const TRANSACTION_FEE_RESERVE = 10_000n;
 
@@ -34,8 +35,7 @@ export function useSolanaWallet() {
     const latest = await connection.getLatestBlockhash("finalized");
     tx.recentBlockhash = latest.blockhash;
     const signature = await wallet.sendTransaction(tx, connection, { signers, preflightCommitment: "confirmed" });
-    const result = await connection.confirmTransaction({ signature, ...latest }, "finalized");
-    if (result.value.err) throw new Error(`Solana transaction failed: ${JSON.stringify(result.value.err)}`);
+    await waitForSolanaFinality(connection, signature, latest.lastValidBlockHeight);
     return { signature };
   }, [assertNetwork, wallet, connection]);
 

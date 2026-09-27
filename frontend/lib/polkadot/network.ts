@@ -1,15 +1,16 @@
+import { rpcEndpoint } from "../rpc";
 import type { ApiPromise } from "@polkadot/api";
 
 export const polkadotNetwork = process.env.NEXT_PUBLIC_NETWORK_MODE === "mainnet"
   ? {
       name: "Polkadot Asset Hub", symbol: "DOT", decimals: 10, ss58: 0,
       genesis: "0x68d56f15f85d3136970ec16946040bc1752654e906147f7e43e9d539d7c3de2f",
-      rpc: process.env.NEXT_PUBLIC_POLKADOT_RPC_URL || "https://polkadot-asset-hub-rpc.polkadot.io",
+      rpc: rpcEndpoint("polkadot"),
     }
   : {
       name: "Westend Asset Hub", symbol: "WND", decimals: 12, ss58: 42,
       genesis: "0x67f9723393ef76214df0118c34bbbd3dbebc8ed46a10973a8c969d48fe7598c9",
-      rpc: process.env.NEXT_PUBLIC_POLKADOT_RPC_URL || "https://westend-asset-hub-rpc.polkadot.io",
+      rpc: rpcEndpoint("polkadot"),
     };
 
 let currentApi: Promise<ApiPromise> | null = null;

@@ -1,15 +1,16 @@
+import { rpcEndpoint } from "../rpc";
 export const aptosNetwork = process.env.NEXT_PUBLIC_NETWORK_MODE === "mainnet"
   ? {
       chainId: 1,
       name: "mainnet" as const,
-      rest: process.env.NEXT_PUBLIC_APTOS_REST || "https://fullnode.mainnet.aptoslabs.com",
-      indexer: process.env.NEXT_PUBLIC_APTOS_INDEXER || "https://api.mainnet.aptoslabs.com/v1/graphql",
+      rest: rpcEndpoint("aptos"),
+      indexer: rpcEndpoint("aptos-indexer"),
     }
   : {
       chainId: 2,
       name: "testnet" as const,
-      rest: process.env.NEXT_PUBLIC_APTOS_REST || "https://fullnode.testnet.aptoslabs.com",
-      indexer: process.env.NEXT_PUBLIC_APTOS_INDEXER || "https://api.testnet.aptoslabs.com/v1/graphql",
+      rest: rpcEndpoint("aptos"),
+      indexer: rpcEndpoint("aptos-indexer"),
     };
 
 export function assertAptosIndexerChainId(actual: number | string | null | undefined): void {

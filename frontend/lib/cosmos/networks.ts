@@ -1,3 +1,4 @@
+import { rpcEndpoint } from "../rpc";
 export type CosmosChainKey = "cosmos" | "celestia" | "osmosis";
 
 export interface CosmosNetwork {
@@ -21,8 +22,8 @@ export const cosmosNetworks: Record<CosmosChainKey, CosmosNetwork> = {
     key: "cosmos",
     chainId: process.env.NEXT_PUBLIC_COSMOS_CHAIN_ID || (mainnet ? "cosmoshub-4" : "provider"),
     chainName: process.env.NEXT_PUBLIC_COSMOS_CHAIN_NAME || (mainnet ? "Cosmos Hub" : "Cosmos Hub Provider Testnet"),
-    rpc: process.env.NEXT_PUBLIC_COSMOS_RPC || (mainnet ? "https://cosmos-rpc.polkachu.com" : "https://cosmoshub-testnet.rpc.kjnodes.com"),
-    rest: process.env.NEXT_PUBLIC_COSMOS_REST || (mainnet ? "https://cosmos-api.polkachu.com" : "https://cosmoshub-testnet.api.kjnodes.com"),
+    rpc: rpcEndpoint("cosmos"),
+    rest: rpcEndpoint("cosmos-rest"),
     prefix: "cosmos",
     symbol: process.env.NEXT_PUBLIC_COSMOS_COIN_DENOM || "ATOM",
     denom: process.env.NEXT_PUBLIC_COSMOS_COIN_MINIMAL_DENOM || "uatom",
@@ -34,10 +35,10 @@ export const cosmosNetworks: Record<CosmosChainKey, CosmosNetwork> = {
     key: "celestia",
     chainId: mainnet ? "celestia" : "mocha-5",
     chainName: mainnet ? "Celestia" : "Celestia Mocha-5",
-    // POPS serves Mocha but omits Access-Control-Allow-Origin; browser
-    // signing and reads use the CORS-enabled nodes.guru endpoints.
-    rpc: process.env.NEXT_PUBLIC_CELESTIA_RPC || (mainnet ? "https://celestia-rpc.polkachu.com" : "https://rpc-1.testnet.celestia.nodes.guru"),
-    rest: process.env.NEXT_PUBLIC_CELESTIA_REST || (mainnet ? "https://celestia-api.polkachu.com" : "https://api-1.testnet.celestia.nodes.guru"),
+    // Browser requests use the server's checked pool, including endpoints
+    // that do not themselves expose CORS headers.
+    rpc: rpcEndpoint("celestia"),
+    rest: rpcEndpoint("celestia-rest"),
     prefix: "celestia",
     symbol: "TIA",
     denom: "utia",
@@ -49,8 +50,8 @@ export const cosmosNetworks: Record<CosmosChainKey, CosmosNetwork> = {
     key: "osmosis",
     chainId: mainnet ? "osmosis-1" : "osmo-test-5",
     chainName: mainnet ? "Osmosis" : "Osmosis Testnet",
-    rpc: process.env.NEXT_PUBLIC_OSMOSIS_RPC || (mainnet ? "https://rpc.osmosis.zone" : "https://rpc.testnet.osmosis.zone"),
-    rest: process.env.NEXT_PUBLIC_OSMOSIS_REST || (mainnet ? "https://lcd.osmosis.zone" : "https://lcd.testnet.osmosis.zone"),
+    rpc: rpcEndpoint("osmosis"),
+    rest: rpcEndpoint("osmosis-rest"),
     prefix: "osmo",
     symbol: "OSMO",
     denom: "uosmo",
