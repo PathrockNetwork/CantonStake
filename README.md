@@ -85,7 +85,26 @@ verification is still outstanding; passing a build does not establish a
 production-ready staking route. The conservative deployment default enables
 only Polygon. Keep backend and frontend enabled-chain lists identical, use
 separate deployments/databases for each mode, and validate additional routes
-with funded wallets before enabling them.
+with funded testnet wallets before enabling them on mainnet.
+
+The testnet overlay explicitly enables all ten implemented adapters for testing:
+Polygon, Monad, Cosmos Hub, Celestia, Osmosis, Sui, Aptos, Polkadot, BNB Chain,
+and Solana. `ENABLED_CHAINS` and `NEXT_PUBLIC_ENABLED_CHAINS` must match. The
+searchable staking selector shows each network's RPC status and allows inspecting
+unavailable routes without signing. Staking requires a ready chain watcher and
+a same-mode Canton readiness check, including a fresh check before the wallet
+flow starts. This testnet rollout does not change mainnet's Polygon-only default
+or establish funded-wallet lifecycle verification for the additional routes.
+
+At the operator's explicit request on 2026-09-27, the existing mainnet Docker
+deployment also opted into all ten networks. Live catalogs, active watchers,
+and desktop/mobile network switching were checked during that rollout. This
+is not funded-wallet lifecycle certification: that testing and production
+Canton onboarding remain outstanding, and the app still connects to LocalNet.
+The source defaults remain Polygon-only; production requires matching explicit
+backend/frontend allowlists. For future GitHub deployments, set the repository's
+`NEXT_PUBLIC_ENABLED_CHAINS` build variable to the same list as the server's
+`.env`; the workflow rejects a mismatch rather than silently changing networks.
 
 ### Self-custodial by construction
 Native staking and exit transactions are signed by the user's wallet. CantonStake's backend observes verified chain events and records the corresponding Daml lifecycle through its app-provider party. The experimental auto-compound keeper is disabled; its permit storage is not yet a verified authorization boundary.
@@ -102,7 +121,7 @@ The `BeneficiarySplit` Daml template enforces `sum(weights) == 1.0` and routes C
 Backend service polls each chain's validator source on a 1-hour cron, normalises into a `ScoredValidator` shape, and caches by network mode in Redis. Cosmos Hub, Celestia, and Osmosis validators are read from a chain-ID-verified RPC across all pages; the Cosmos live yield estimate uses that same verified RPC. Composite score combines uptime, commission, slash history, and stake concentration, but uptime and slash history remain unmeasured estimates on chains that do not expose them. The scores drive the staking picker.
 
 ### Auto-compound keeper
-**Experimental and disabled by default.** `AUTO_COMPOUND_DISABLED=true` blocks both scheduled execution and the manual trigger. Permit storage and executor scaffolding exist, but signatures are not cryptographically verified and wallet-owned delegation authorization is incomplete. Do not enable it merely by provisioning keeper keys. Verified per-chain authorization and funded-wallet testing are required before this can safely compound a user's stake.
+**Experimental and unavailable.** `/api/autocompound/status` reports deployment availability independently of saved permits. `AUTO_COMPOUND_DISABLED=true` disables execution; setting it to `false` still cannot activate a route that has not completed authorization and lifecycle validation. No routes have passed that gate yet. New permit creation, scheduled jobs, and manual triggers are blocked, including previously queued jobs. Existing permits and run history remain readable, and saved permits can still be revoked. Settings shows the backend status without presenting stored permits as running automation. Verified per-chain authorization and funded-wallet testing are required before a route can be enabled.
 
 ### Slashing & reward alerts
 Slashing monitor diffs validator scores hourly and emits `validator.score_drop` / `validator.jailed` events. Notifications router fans out to Telegram, Resend (email), and Discord webhooks per the user's configured channels — soft-deletable, audit-logged, idempotent on `(alertId, channelId)`.
@@ -304,7 +323,7 @@ sequenceDiagram
 
 **Prerequisites**
 
-- Node.js 20+
+- Node.js 22+ (required by the Sui SDK; Docker uses Node 22)
 - Docker + Docker Compose
 - Canton CN Quickstart LocalNet (for local Canton ledger) — or remote DevNet credentials
 - Testnet tokens for whichever chain(s) you want to demo (faucet links below)
@@ -534,11 +553,12 @@ successful scan; neither case creates a Canton request.
 
 | Method | Path | Description | Auth |
 |---|---|---|---|
-| POST | `/api/autocompound/permits` | Create permit (chain, validator, sig, expiry) | none |
+| GET | `/api/autocompound/status` | Deployment availability and verified routes | none |
+| POST | `/api/autocompound/permits` | Create permit; currently blocked until a route is verified and enabled | none |
 | GET | `/api/autocompound/permits` | List permits for `?userId=` | none |
 | DELETE | `/api/autocompound/permits/:id` | Soft-disable permit | none |
 | GET | `/api/autocompound/permits/:id/runs` | Run history (last 50) | none |
-| POST | `/api/autocompound/trigger` | Manual tick | LOG_LEVEL=debug |
+| POST | `/api/autocompound/trigger` | Manual tick; currently unavailable; requires an enabled verified route | LOG_LEVEL=debug |
 
 ### Notifications
 
@@ -606,7 +626,7 @@ per-chain table and the known mainnet gaps.
 | `APTOS_REST_URL` / `APTOS_INDEXER_URL` | Aptos fullnode and delegated-pool indexer (mode-selected) | official Aptos endpoints |
 | `APTOS_REST_URL` | Aptos testnet fullnode REST | `https://fullnode.testnet.aptoslabs.com` |
 | `POLKADOT_RPC_URL` | Polkadot nomination-pool Asset Hub RPC (mode-selected) | `https://westend-asset-hub-rpc.polkadot.io` |
-| `NEXT_PUBLIC_POLKADOT_RPC_URL` | Browser-facing Asset Hub RPC (mode-selected) | `https://westend-asset-hub-rpc.polkadot.io` |
+| `RPC_FALLBACK_URLS` | Server-only ordered backup URL arrays by pool name; see RPC failover below | `{}` (mode-selected built-in backups) |
 | `BNB_RPC_URL` | BNB Chain Chapel RPC (StakeHub `0x…2002`) | publicnode |
 | `SOLANA_RPC_URL` | Solana testnet RPC | `https://api.testnet.solana.com` |
 | `SUI_KEEPER_PRIVATE_KEY` | Sui keeper private key | empty |
@@ -628,8 +648,6 @@ blank to use mode-selected defaults.
 | `NEXT_PUBLIC_REAL_VALIDATOR_SHARES` | JSON map `{validator: contract}` (build-time snapshot; the live registry comes from the backend) | `{}` |
 | `NEXT_PUBLIC_POLYGON_SETTLEMENT_CHAIN_ID` / `NEXT_PUBLIC_POLYGON_STAKE_MANAGER` / `NEXT_PUBLIC_POLYGON_STAKING_LOGGER` / `NEXT_PUBLIC_POLYGON_STAKE_TOKEN` | Polygon settlement overrides; chain ID must match the mode (11155111 testnet / 1 mainnet) | mode-selected |
 | `NEXT_PUBLIC_SHARE_SLIPPAGE_BPS` | Polygon ValidatorShare share-conversion slippage | `50` |
-| `NEXT_PUBLIC_SETTLEMENT_RPC_URL` / `NEXT_PUBLIC_AMOY_RPC_URL` | Browser-facing Ethereum settlement and Polygon PoS RPC overrides | mode-selected |
-| `NEXT_PUBLIC_MONAD_RPC_URL` / `NEXT_PUBLIC_BNB_RPC_URL` | Browser-facing Monad and BNB RPC overrides | mode-selected |
 | `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | WalletConnect Cloud project id | empty |
 | `NEXT_PUBLIC_LOOP_NETWORK` | `local` / `devnet` / `mainnet` | `devnet` |
 | `NEXT_PUBLIC_LOOP_SDK_ENABLED` | Real Loop SDK on/off | `true` |
@@ -637,18 +655,12 @@ blank to use mode-selected defaults.
 | `NEXT_PUBLIC_LOOP_API_URL` | Override the SDK's apiUrl | empty |
 | `NEXT_PUBLIC_LOOP_WALLET_URL` | Override the SDK's walletUrl | empty |
 | `NEXT_PUBLIC_CC_USD` | CC price fallback | `0.16` |
-| `NEXT_PUBLIC_SUI_GRAPHQL_URL` | Sui wallet GraphQL override | mode-selected |
 | `NEXT_PUBLIC_COSMOS_CHAIN_ID` | Cosmos chain id; an override must match the selected mode | `provider` (testnet) / `cosmoshub-4` (mainnet) |
 | `NEXT_PUBLIC_COSMOS_CHAIN_NAME` | Display name for Keplr suggest | mode-selected |
-| `NEXT_PUBLIC_COSMOS_RPC` | Browser-facing Cosmos RPC override | mode-selected |
-| `NEXT_PUBLIC_COSMOS_REST` | Browser-facing Cosmos REST override | mode-selected |
 | `NEXT_PUBLIC_COSMOS_COIN_DENOM` | Display denom | `ATOM` |
 | `NEXT_PUBLIC_COSMOS_COIN_MINIMAL_DENOM` | Base denom; incompatible overrides are rejected | `uatom` |
 | `NEXT_PUBLIC_COSMOS_COIN_DECIMALS` | Decimals; incompatible overrides are rejected | `6` |
 | `NEXT_PUBLIC_COSMOS_COIN_TYPE` | BIP-44 coin type | `118` |
-| `NEXT_PUBLIC_CELESTIA_RPC` / `NEXT_PUBLIC_CELESTIA_REST` | Browser-facing Celestia RPC/LCD overrides | CORS-enabled nodes.guru Mocha endpoints (mode-selected) |
-| `NEXT_PUBLIC_OSMOSIS_RPC` / `NEXT_PUBLIC_OSMOSIS_REST` | Browser-facing Osmosis RPC/LCD overrides | Official Osmosis endpoints (mode-selected) |
-| `NEXT_PUBLIC_APTOS_REST` / `NEXT_PUBLIC_APTOS_INDEXER` | Browser-facing Aptos fullnode/indexer overrides | Official Aptos endpoints (mode-selected) |
 | `NEXT_PUBLIC_REQUIRE_CONNECT_WALL` | Force /connect on landing | `false` |
 
 ---
@@ -673,7 +685,7 @@ blank to use mode-selected defaults.
 
 | Layer | Technology |
 |---|---|
-| Runtime | Node 20 |
+| Runtime | Node 22 |
 | HTTP | Fastify 5 with `@fastify/cors`, `@fastify/http-proxy` |
 | ORM | Prisma 5 |
 | Database | PostgreSQL 16 |
@@ -742,17 +754,106 @@ Native staking transactions use the user's wallet; the backend verifies settleme
 
 ## Deployment
 
+### RPC failover
+
+All app-owned chain clients (backend watchers/catalogs and browser SDK reads)
+use `/api/rpc/<testnet|mainnet>/<pool>`. Primary URLs are configured **only on
+the backend** with the existing `*_RPC_URL`, `*_REST_URL`, `APTOS_INDEXER_URL`
+and `SUI_GRAPHQL_URL` variables. Legacy `NEXT_PUBLIC_*` RPC/REST/indexer URL
+variables no longer select providers; move overrides to the corresponding
+backend setting. `NEXT_PUBLIC_BACKEND_URL` must reach the matching deployment.
+Wallet extensions can still use their own RPCs when signing/submitting; the
+app cannot change an extension's provider configuration.
+
+The gateway verifies each endpoint against the deployment's chain ID/genesis
+(and Cosmos RPC sync state), caches identity for 30 seconds, uses a 4-second
+per-exchange timeout and 14-second read budget, and cools failed providers down
+for 15–120 seconds before reconsidering them. Transport failures, malformed
+responses, rate limits and recognized provider errors trigger read failover.
+Contract reverts and normal missing-account responses are passed through.
+Original block heights, ledger versions, parameters and GraphQL cursors are
+never replaced by “latest”. All configured endpoints failing closes the flow.
+Chain-ID checks prevent configuration mistakes; they are not cryptographic
+proof that a third-party provider is honest.
+
+Writes may select a backup **before dispatch**, during the identity probe.
+Once dispatched, an ambiguous submission is not automatically sent again: the
+response tells the caller to check the transaction hash. Solana finality uses
+HTTP polling through the pool, without a second signature or transaction.
+Sui GraphQL submissions have a separate 80-second response timeout after the
+bounded identity preflight; its read requests still use fast failover. The
+gateway preserves the Sui SDK's client-protocol-version header.
+There is no WebSocket proxy, node-admin API, arbitrary destination URL or
+server-side account signing. Request sizes, batch sizes, response sizes and
+in-flight work are bounded; add edge authentication/rate limits appropriate
+to your paid-provider budget before opening this MVP publicly.
+
+`GET /api/rpc/status` is a passive status snapshot: selected endpoint number,
+hostname (no URL path/query/API key), cooldown, last successful request and
+failover count. An unused endpoint is `unchecked`, not verified healthy.
+Expired cooldowns report `retry_due` until a request succeeds; idle success
+observations become `stale` after 60 seconds.
+`redundancy` means more than one URL is configured, not independent operators
+or a currently healthy backup. Watcher health is separate: a watcher can fail
+while recording on Canton even when its chain RPC is healthy.
+
+Set `RPC_FALLBACK_URLS` to a JSON map of ordered backup arrays (maximum five
+total distinct URLs per pool). It replaces built-in backups for the named
+pool; the primary remains first. Example structure (replace these example
+hosts with your provider URLs; do not deploy these placeholders):
+
+```dotenv
+RPC_FALLBACK_URLS={"sui":["https://sui-provider.example/graphql"],"aptos-indexer":["https://aptos-provider.example/v1/graphql"]}
+```
+
+Available pool keys: `settlement`, `polygon`, `monad`, `bnb`, `cosmos`,
+`cosmos-rest`, `celestia`, `celestia-rest`, `osmosis`, `osmosis-rest`, `aptos`,
+`aptos-indexer`, `sui`, `solana`, `polkadot`. Keep separate maps in `.env` and
+`.env.testnet` (`RPC_FALLBACK_URLS={}` in the testnet overlay clears an inherited
+mainnet map). Backend recreation applies endpoint changes without rebuilding
+the browser bundle. A gateway-code rollout requires rebuilding both images.
+
+Built-in backups cover Polygon settlement/native RPC, Monad, BNB, Cosmos Hub,
+Celestia, Osmosis, Aptos REST, the Aptos mainnet indexer, Solana and Polkadot
+Asset Hub. Aptos REST/indexer's alternate hosts are both Aptos Labs; Osmosis
+testnet's defaults are both Osmosis.
+These help with endpoint failures but not necessarily an operator-wide outage.
+Celestia mainnet uses kjnodes first and itrocket as its first fallback: both
+served the historical finalization results required for unbond completion
+during the 2026-09-27 rollout. Publicnode remains a recent-history fallback.
+Monad validator reads are paced in four-item batches; BNB's four-read validator
+lookups are also bounded. Concurrent refreshes for one chain share a fetch so
+they do not multiply RPC load or starve settlement watchers.
+**Sui GraphQL and the Aptos testnet indexer require operator-supplied compatible
+backups**; they deliberately report no redundancy until configured. Do not use
+another network, obsolete Sui JSON-RPC, or a dead legacy alias as a backup.
+
+Endpoint references: [Monad networks](https://docs.monad.xyz/developer-essentials/network-information),
+[Cosmos Hub provider testnet](https://www.polkachu.com/testnets/cosmos),
+[Celestia Mocha](https://docs.celestia.org/operate/networks/mocha-testnet/),
+[Cosmos chain registry](https://github.com/cosmos/chain-registry),
+[Aptos networks](https://aptos.dev/network/nodes/networks),
+[Solana clusters](https://solana.com/docs/references/clusters),
+[Polkadot.js endpoints](https://github.com/polkadot-js/apps/tree/master/packages/apps-config/src/endpoints),
+[Sui providers](https://docs.sui.io/develop/accessing-data/rpc-providers).
+Public endpoints carry no production SLA; configure independent providers for
+production and verify their historical-state retention and method support.
+
 ### VPS via Docker Compose
+
+Production uses the existing `cantonstake` Compose project and `.env`; testnet
+uses a separate project and `.env.testnet`. Keep both databases and their named
+volumes intact. This is still a hackathon MVP, not a claim that every staking
+route is safe for public mainnet use: leave unverified chains and automation
+disabled.
 
 ```bash
 ssh root@your-vps
-cd /opt/cantonstake
-git pull
-export FRONTEND_IMAGE=ghcr.io/your-org/cantonstake-frontend:latest
-export BACKEND_IMAGE=ghcr.io/your-org/cantonstake-backend:latest
-docker compose pull
-docker compose up -d
-docker image prune -f
+cd /path/to/existing/cantonstake
+# Use the checked production workflow below. It pins images to the release
+# commit, checks network settings, backs up PostgreSQL before migrations,
+# and checks backend, frontend and Canton readiness after restarting.
+# Do not use `down -v` or prune the previous release's rollback images.
 ```
 
 ### Frontend → Vercel
@@ -784,11 +885,31 @@ fly deploy --remote-only
 ```bash
 # Workflow: .github/workflows/deploy.yml
 # Push to main → builds + pushes to ghcr.io/<owner>/cantonstake-{frontend,backend}
-# → SSHes into the VPS at SSH_HOST and runs docker compose pull && up -d.
+# → deploys the commit-tagged images to the existing production project.
 # Configure secrets: SSH_HOST, SSH_USER, SSH_PRIVATE_KEY, DEPLOY_PATH,
-# NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID; vars: NEXT_PUBLIC_BACKEND_URL etc.
+# NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID; optional SSH_PORT (default 22).
+# Required repository variables:
+#   NEXT_PUBLIC_NETWORK_MODE=mainnet
+#   NEXT_PUBLIC_LOOP_NETWORK=mainnet
+#   NEXT_PUBLIC_BACKEND_URL=<same public API URL as production .env>
+# Set NEXT_PUBLIC_ENABLED_CHAINS to the existing enabled chain list (default
+# polygon); both sides must match. Mirror custom NEXT_PUBLIC_* contract
+# settings into repository vars. Provider URLs/backups remain server-only.
+# The VPS requires Docker Compose, jq, the current docker-compose.yml, its
+# existing .env, and already-running PostgreSQL/Redis services. Authenticate
+# Docker to GHCR on the VPS if the packages are private.
 git push origin main
 ```
+
+The workflow stops before building if required configuration is missing, and
+before restarting if the server's mode, API URL or enabled chains disagree.
+Database dumps are retained with restricted permissions in `.deploy-backups/`;
+keep that directory out of version control and apply an operator-managed
+retention policy. A failed post-deploy check does **not** automatically undo
+database migrations: inspect the failure and migration compatibility before
+selecting previous image tags or restoring a backup. The workflow does not
+update the testnet stack, configure Canton MainNet access, or enable additional
+staking routes.
 
 ---
 
