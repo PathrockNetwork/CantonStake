@@ -6,58 +6,24 @@ import { useAccount } from "wagmi";
 import { Btn } from "@/components/primitives/Btn";
 import { Card } from "@/components/primitives/Card";
 import { Chip } from "@/components/primitives/Chip";
-import { EmptyState } from "@/components/primitives/EmptyState";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { PageMasthead } from "@/components/primitives/PageMasthead";
 import {
-  createAutoCompoundPermit,
-  disableAutoCompoundPermit,
   disableNotificationChannel,
   fetchUserByEvm,
   upsertUser,
-  listAutoCompoundPermits,
   listNotificationChannels,
   sendTestNotification,
   upsertNotificationChannel,
 } from "@/lib/api";
-import { CHAINS } from "@/lib/chains";
+import { liveChains } from "@/lib/chains";
+import { AutoCompoundCard } from "@/components/settings/AutoCompoundCard";
 import { tokens } from "@/lib/tokens";
 import { useCantonWallet } from "@/lib/canton";
 import { useWalletPicker } from "@/components/WalletPickerProvider";
 import { shortId } from "@/lib/account-view";
 import { AccountEmpty, AccountIcon, AccountLink, AccountPanel, PrivacyPanel, StatusBadge, WalletNotice } from "@/components/account/AccountUI";
 
-const CHAIN_NAME: Record<string, string> = Object.fromEntries(
-  CHAINS.map((c) => [c.id, c.name]),
-);
-
-type CompoundChain =
-  | "polygon"
-  | "monad"
-  | "cosmos"
-  | "celestia"
-  | "osmosis"
-  | "sui"
-  | "aptos"
-  | "polkadot"
-  | "bnb"
-  | "solana";
-
-const COMPOUND_CHAINS: readonly CompoundChain[] = ["polygon"];
-/* Additional keeper adapters remain in the codebase but are deliberately
-   not exposed until they complete production validation on both modes. */
-const DEFERRED_COMPOUND_CHAINS = [
-  "monad",
-  "cosmos",
-  "celestia",
-  "osmosis",
-  "sui",
-  "aptos",
-  "polkadot",
-  "bnb",
-  "solana",
-] as const;
-void DEFERRED_COMPOUND_CHAINS;
 
 const NOTIFY_KINDS = [
   { id: "telegram", label: "Telegram", placeholder: "@your_chat_id or numeric" },
@@ -144,289 +110,14 @@ export default function SettingsPage() {
         </>}
         {section === "wallets" && <>{wallets}<PrivacyPanel /></>}
         {section === "notifications" && <div className="account-existing-settings">{user ? <NotificationsCard userId={user.id} qc={qc} /> : requiresUser}</div>}
-        {section === "privacy" && <><PrivacyPanel /><div className="account-existing-settings">{user ? <AutoCompoundCard userId={user.id} qc={qc} /> : requiresUser}</div></>}
+        {section === "privacy" && <><PrivacyPanel /><div className="account-existing-settings"><AutoCompoundCard userId={user?.id} canRevoke={canEdit} /></div></>}
         {section === "preferences" && <AccountPanel title="Display preferences" icon="settings" description="Saved in this browser for the account pages."><fieldset className="account-preference"><legend>Information density</legend><div className="account-tabs">{["comfortable", "compact"].map(value => <button key={value} type="button" aria-pressed={density === value} onClick={() => setDisplayDensity(value)}>{value === "comfortable" ? "Comfortable" : "Compact"}</button>)}</div></fieldset><dl className="account-definition"><div><dt>Color theme</dt><dd>Canton dark</dd></div><div><dt>Animation</dt><dd>Respects system reduced-motion preference</dd></div></dl><p className="account-muted">The homepage globe also has its own play and pause control.</p></AccountPanel>}
-        {section === "integrations" && <><AccountPanel title="Connected services" icon="link"><dl className="account-definition"><div><dt>Loop Wallet</dt><dd><StatusBadge status={loopConnected ? "Connected" : "Disconnected"} /></dd></div><div><dt>EVM wallet</dt><dd><StatusBadge status={isConnected ? "Connected" : "Disconnected"} /></dd></div><div><dt>Supported staking chain</dt><dd>Polygon PoS</dd></div></dl><button className="account-button" onClick={openPicker}>Manage wallets</button></AccountPanel><AccountPanel title="Reward automation" icon="activity"><p className="account-muted">Manage scoped auto-compound permissions under Privacy & security, and delivery channels under Notifications.</p><div className="account-quick-actions"><button className="account-button" onClick={() => selectSection("privacy")}>Reward permissions</button><button className="account-button" onClick={() => selectSection("notifications")}>Alert channels</button></div></AccountPanel></>}
+        {section === "integrations" && <><AccountPanel title="Connected services" icon="link"><dl className="account-definition"><div><dt>Loop Wallet</dt><dd><StatusBadge status={loopConnected ? "Connected" : "Disconnected"} /></dd></div><div><dt>EVM wallet</dt><dd><StatusBadge status={isConnected ? "Connected" : "Disconnected"} /></dd></div><div><dt>Enabled staking chains</dt><dd>{liveChains().map(chain => chain.name).join(", ") || "None enabled"}</dd></div></dl><button className="account-button" onClick={openPicker}>Manage wallets</button></AccountPanel><AccountPanel title="Reward automation" icon="activity"><p className="account-muted">Check auto-compound availability and saved permits under Privacy & security, and delivery channels under Notifications.</p><div className="account-quick-actions"><button className="account-button" onClick={() => selectSection("privacy")}>Automation status</button><button className="account-button" onClick={() => selectSection("notifications")}>Alert channels</button></div></AccountPanel></>}
       </div>
     </div>
   </div>;
 }
 
-function AutoCompoundCard({
-  userId,
-  qc,
-}: {
-  userId: string;
-  qc: ReturnType<typeof useQueryClient>;
-}) {
-  const permitsQ = useQuery({
-    queryKey: ["auto-compound-permits", userId],
-    queryFn: () => listAutoCompoundPermits(userId),
-    refetchInterval: 30_000,
-  });
-
-  const [chain, setChain] = useState<CompoundChain>("polygon");
-  const [validator, setValidator] = useState("");
-  const [maxPerRun, setMaxPerRun] = useState("");
-  const [signature, setSignature] = useState("");
-  const [signaturePayload, setSignaturePayload] = useState("");
-  const [days, setDays] = useState(30);
-  const [error, setError] = useState<string | null>(null);
-
-  const createMut = useMutation({
-    mutationFn: createAutoCompoundPermit,
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["auto-compound-permits", userId] });
-      setValidator("");
-      setMaxPerRun("");
-      setSignature("");
-      setSignaturePayload("");
-      setError(null);
-    },
-    onError: (err) => setError(err instanceof Error ? err.message : String(err)),
-  });
-
-  const disableMut = useMutation({
-    mutationFn: disableAutoCompoundPermit,
-    onSuccess: () =>
-      qc.invalidateQueries({ queryKey: ["auto-compound-permits", userId] }),
-  });
-
-  const onSubmit = () => {
-    if (!validator) {
-      setError("validator is required");
-      return;
-    }
-    const expiresAt = new Date(
-      Date.now() + days * 24 * 60 * 60 * 1000,
-    ).toISOString();
-    createMut.mutate({
-      userId,
-      chain,
-      validator: validator.trim(),
-      expiresAt,
-      maxPerRun: maxPerRun.trim() || undefined,
-      signature: signature.trim() || undefined,
-      signaturePayload: signaturePayload.trim() || undefined,
-    });
-  };
-
-  const permits = permitsQ.data?.permits ?? [];
-  const active = permits.filter((p) => p.enabled);
-
-  return (
-    <Card padding={0}>
-      <div
-        style={{
-          padding: "18px 22px",
-          borderBottom: `1px solid ${tokens.hairline}`,
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}
-      >
-        <div>
-          <SectionLabel>§ Auto-compound permits</SectionLabel>
-          <div
-            className="display"
-            style={{ fontSize: 22, color: tokens.ink[100], marginTop: 2 }}
-          >
-            {active.length} active permit{active.length === 1 ? "" : "s"}
-          </div>
-        </div>
-        <Chip color={tokens.cc} dot={active.length > 0}>
-          {active.length > 0 ? "ARMED" : "IDLE"}
-        </Chip>
-      </div>
-
-      <div
-        style={{
-          padding: 22,
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr 1fr",
-          gap: 12,
-        }}
-      >
-        <Field label="Chain">
-          <select
-            value={chain}
-            onChange={(e) => setChain(e.target.value as CompoundChain)}
-            style={selectStyle()}
-          >
-            {COMPOUND_CHAINS.map((c) => (
-              <option key={c} value={c}>
-                {CHAIN_NAME[c] ?? c}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Validator">
-          <input
-            value={validator}
-            onChange={(e) => setValidator(e.target.value)}
-            placeholder={
-              chain === "monad"
-                ? "validator id (uint64)"
-                : chain === "cosmos"
-                  ? "cosmosvaloper1..."
-                  : "0x..."
-            }
-            style={inputStyle()}
-          />
-        </Field>
-        <Field label="Expires (days)">
-          <input
-            type="number"
-            min={1}
-            max={365}
-            value={days}
-            onChange={(e) => setDays(Math.max(1, Number(e.target.value) || 1))}
-            style={inputStyle()}
-          />
-        </Field>
-        <Field label="Max per run (optional, chain-native units)">
-          <input
-            value={maxPerRun}
-            onChange={(e) => setMaxPerRun(e.target.value)}
-            placeholder={
-              chain === "polygon"
-                ? "wei"
-                : chain === "cosmos"
-                  ? "uatom"
-                  : chain === "sui"
-                    ? "mist"
-                    : "smallest unit"
-            }
-            style={inputStyle()}
-          />
-        </Field>
-        <Field label="Signature (EIP-712 / authz tx hash)">
-          <input
-            value={signature}
-            onChange={(e) => setSignature(e.target.value)}
-            placeholder="0x..."
-            style={inputStyle()}
-          />
-        </Field>
-        <Field label="Signature payload (granter / typed-data digest)">
-          <input
-            value={signaturePayload}
-            onChange={(e) => setSignaturePayload(e.target.value)}
-            placeholder={
-              chain === "cosmos" ? "granter cosmos1... address" : "raw signed bytes"
-            }
-            style={inputStyle()}
-          />
-        </Field>
-      </div>
-
-      <div
-        style={{
-          padding: "0 22px 22px",
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-        }}
-      >
-        <Btn
-          onClick={onSubmit}
-          disabled={createMut.isPending || !validator}
-          size="md"
-        >
-          {createMut.isPending ? "Creating…" : "Create permit"}
-        </Btn>
-        {error ? (
-          <span className="mono" style={{ fontSize: 11, color: tokens.danger }}>
-            {error}
-          </span>
-        ) : (
-          <span className="mono" style={{ fontSize: 10, color: tokens.ink[400] }}>
-            Signature is verified per-chain at execution time. Without it the
-            keeper will skip the run.
-          </span>
-        )}
-      </div>
-
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr 1fr 1fr 0.6fr",
-          gap: 12,
-          padding: "10px 22px",
-          borderTop: `1px solid ${tokens.hairline}`,
-          borderBottom: `1px solid ${tokens.hairline}`,
-        }}
-      >
-        {["Chain", "Validator", "Expires", "Status", ""].map((h) => (
-          <SectionLabel key={h}>{h}</SectionLabel>
-        ))}
-      </div>
-
-      {permits.length === 0 ? (
-        <div
-          className="mono"
-          style={{
-            padding: 28,
-            textAlign: "center",
-            fontSize: 11,
-            color: tokens.ink[400],
-          }}
-        >
-          no permits configured yet
-        </div>
-      ) : (
-        permits.map((p) => (
-          <div
-            key={p.id}
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr 1fr 1fr 0.6fr",
-              gap: 12,
-              padding: "12px 22px",
-              borderBottom: `1px solid ${tokens.hairline}`,
-              alignItems: "center",
-            }}
-          >
-            <span
-              className="mono"
-              style={{ fontSize: 11.5, color: tokens.ink[100] }}
-            >
-              {CHAIN_NAME[p.chain] ?? p.chain}
-            </span>
-            <span
-              className="mono tabular"
-              style={{ fontSize: 11, color: tokens.ink[200] }}
-            >
-              {p.validator.length > 18
-                ? `${p.validator.slice(0, 12)}…${p.validator.slice(-4)}`
-                : p.validator}
-            </span>
-            <span className="mono" style={{ fontSize: 11, color: tokens.ink[300] }}>
-              {new Date(p.expiresAt).toLocaleDateString()}
-            </span>
-            <span>
-              <Chip color={p.enabled ? tokens.neon : tokens.ink[400]} dot={p.enabled}>
-                {p.enabled ? "ENABLED" : "DISABLED"}
-              </Chip>
-            </span>
-            {p.enabled ? (
-              <Btn
-                size="sm"
-                variant="ghost"
-                onClick={() => disableMut.mutate(p.id)}
-                disabled={disableMut.isPending}
-              >
-                Revoke
-              </Btn>
-            ) : (
-              <span />
-            )}
-          </div>
-        ))
-      )}
-    </Card>
-  );
-}
 
 function NotificationsCard({
   userId,

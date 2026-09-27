@@ -1,6 +1,7 @@
 /**
  * Auto-compound HTTP routes.
  *
+ *   GET    /api/autocompound/status         - deployment availability
  *   POST   /api/autocompound/permits        - upsert a permit
  *   GET    /api/autocompound/permits?userId - list permits
  *   DELETE /api/autocompound/permits/:id    - disable
@@ -11,7 +12,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { config } from "../config.js";
 import { prisma } from "../db.js";
-import { triggerAutoCompoundTick } from "../services/auto-compound.js";
+import { autoCompoundStatus } from "../services/auto-compound-gate.js";
 
 interface CreatePermitBody {
   userId: string;
@@ -31,10 +32,29 @@ const VALID_CHAINS = new Set([
   "sui",
 ]);
 
-const autoCompoundRoutes: FastifyPluginAsync = async (app) => {
+type Options = {
+  db?: Pick<typeof prisma, "autoCompoundPermit" | "autoCompoundRun">;
+  disabled?: boolean;
+  trigger?: () => Promise<void>;
+};
+
+const autoCompoundRoutes: FastifyPluginAsync<Options> = async (app, options) => {
+  const db = options.db ?? prisma;
+  const availability = () => autoCompoundStatus(options.disabled ?? config.autoCompoundDisabled);
+  const trigger = options.trigger ?? (async () => {
+    const { triggerAutoCompoundTick } = await import("../services/auto-compound.js");
+    await triggerAutoCompoundTick();
+  });
+
+  app.get("/api/autocompound/status", async () => ({ ...availability(), networkMode: config.networkMode }));
+
   app.post<{ Body: CreatePermitBody }>(
     "/api/autocompound/permits",
     async (req, reply) => {
+      const status = availability();
+      if (!status.executionEnabled) {
+        return reply.code(403).send({ error: status.reason, status: status.status });
+      }
       const {
         userId,
         chain,
@@ -53,6 +73,9 @@ const autoCompoundRoutes: FastifyPluginAsync = async (app) => {
       if (!VALID_CHAINS.has(chain)) {
         return reply.code(400).send({ error: `invalid chain: ${chain}` });
       }
+      if (!status.supportedChains.includes(chain)) {
+        return reply.code(403).send({ error: `Auto-compound is not available for ${chain}` });
+      }
       const expires = new Date(expiresAt);
       if (Number.isNaN(expires.getTime()) || expires.getTime() < Date.now()) {
         return reply
@@ -61,7 +84,7 @@ const autoCompoundRoutes: FastifyPluginAsync = async (app) => {
       }
 
       try {
-        const permit = await prisma.autoCompoundPermit.create({
+        const permit = await db.autoCompoundPermit.create({
           data: {
             userId,
             chain,
@@ -87,7 +110,7 @@ const autoCompoundRoutes: FastifyPluginAsync = async (app) => {
       const { userId } = req.query;
       if (!userId) return reply.code(400).send({ error: "missing userId" });
       try {
-        const permits = await prisma.autoCompoundPermit.findMany({
+        const permits = await db.autoCompoundPermit.findMany({
           where: { userId },
           orderBy: { createdAt: "desc" },
         });
@@ -103,7 +126,7 @@ const autoCompoundRoutes: FastifyPluginAsync = async (app) => {
     "/api/autocompound/permits/:id",
     async (req, reply) => {
       try {
-        const permit = await prisma.autoCompoundPermit.update({
+        const permit = await db.autoCompoundPermit.update({
           where: { id: req.params.id },
           data: { enabled: false },
         });
@@ -119,7 +142,7 @@ const autoCompoundRoutes: FastifyPluginAsync = async (app) => {
     "/api/autocompound/permits/:id/runs",
     async (req, reply) => {
       try {
-        const runs = await prisma.autoCompoundRun.findMany({
+        const runs = await db.autoCompoundRun.findMany({
           where: { permitId: req.params.id },
           orderBy: { startedAt: "desc" },
           take: 50,
@@ -133,8 +156,9 @@ const autoCompoundRoutes: FastifyPluginAsync = async (app) => {
   );
 
   app.post("/api/autocompound/trigger", async (_req, reply) => {
-    if (config.autoCompoundDisabled) {
-      return reply.code(403).send({ error: "Auto-compound is disabled via AUTO_COMPOUND_DISABLED" });
+    const status = availability();
+    if (!status.executionEnabled) {
+      return reply.code(403).send({ error: status.reason, status: status.status });
     }
     if (config.logLevel !== "debug") {
       return reply.code(403).send({
@@ -142,7 +166,7 @@ const autoCompoundRoutes: FastifyPluginAsync = async (app) => {
       });
     }
     try {
-      await triggerAutoCompoundTick();
+      await trigger();
       return { ok: true, message: "auto-compound tick enqueued" };
     } catch (err) {
       app.log.error(err);

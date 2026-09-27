@@ -1,6 +1,9 @@
+import { rpcUrls } from "./rpc-registry.js";
 /**
  * Experimental auto-compound keeper scaffolding. Scheduled and manual
- * execution are blocked while AUTO_COMPOUND_DISABLED=true (the default).
+ * execution require both operator enablement and a verified route. The
+ * verified-route registry is currently empty, so execution stays blocked
+ * even if AUTO_COMPOUND_DISABLED is set to false.
  *
  * When enabled, a BullMQ tick loads enabled, non-expired permit rows,
  * dispatches executors, and records their outcomes. Stored signatures
@@ -26,7 +29,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { polygonAmoy } from "viem/chains";
 import { config } from "../config.js";
 import { prisma } from "../db.js";
-import { runAutoCompoundTickIfEnabled } from "./auto-compound-gate.js";
+import { autoCompoundStatus, runAutoCompoundTickIfEnabled } from "./auto-compound-gate.js";
 import {
   getLiquidRewards,
   resolveValidatorShare,
@@ -101,7 +104,7 @@ async function executePolygon(
   const walletClient = createWalletClient({
     account,
     chain: settlementChainDef,
-    transport: http(config.stakeSettlementRpcUrl),
+    transport: http(rpcUrls["settlement"], { timeout: 16_000, retryCount: 0 }),
   });
 
   // Read claimable protocol yield. If zero, skip — a noop wastes gas.
@@ -185,12 +188,12 @@ async function executeMonad(
     id: monadChainId,
     name: "Monad",
     nativeCurrency: { name: "Monad", symbol: "MON", decimals: 18 },
-    rpcUrls: { default: { http: [config.monadRpcUrl] } },
+    rpcUrls: { default: { http: [rpcUrls["monad"]] } },
   } as const;
   const walletClient = createWalletClient({
     account,
     chain: monadChain,
-    transport: http(config.monadRpcUrl),
+    transport: http(rpcUrls["monad"], { timeout: 16_000, retryCount: 0 }),
   });
 
   const stakingContract =
@@ -253,7 +256,7 @@ async function executeCosmos(
   }
 
   const client = await SigningStargateClient.connectWithSigner(
-    config.cosmosRpcUrl,
+    rpcUrls["cosmos"],
     wallet,
     { gasPrice: GasPrice.fromString(config.cosmosGasPrice) }
   );
@@ -357,7 +360,7 @@ async function executeSui(
 
   const keypair = Ed25519Keypair.fromSecretKey(config.suiKeeperPrivateKey);
   const client = new SuiGraphQLClient({
-    url: config.suiGraphqlUrl,
+    url: rpcUrls["sui"],
     network: config.networkMode,
   });
 
@@ -401,9 +404,11 @@ interface TickPayload {
 }
 
 async function runTick(_payload: TickPayload): Promise<void> {
+  const availability = autoCompoundStatus(config.autoCompoundDisabled);
+  if (!availability.executionEnabled) return;
   const now = new Date();
   const permits = await prisma.autoCompoundPermit.findMany({
-    where: { enabled: true, expiresAt: { gt: now } },
+    where: { enabled: true, expiresAt: { gt: now }, chain: { in: availability.supportedChains } },
     include: { user: true },
   });
   if (permits.length === 0) {
@@ -480,8 +485,9 @@ worker.on("failed", (job, err) => {
 });
 
 export async function startAutoCompoundScheduler(): Promise<void> {
-  if (config.autoCompoundDisabled) {
-    console.log("[auto-compound] disabled via AUTO_COMPOUND_DISABLED");
+  const availability = autoCompoundStatus(config.autoCompoundDisabled);
+  if (!availability.executionEnabled) {
+    console.log(`[auto-compound] ${availability.reason}`);
     return;
   }
   const existing = await queue.getRepeatableJobs();
@@ -504,7 +510,8 @@ export async function startAutoCompoundScheduler(): Promise<void> {
 
 /** Manual trigger for demos (not recurring). */
 export async function triggerAutoCompoundTick(): Promise<void> {
-  if (config.autoCompoundDisabled) throw new Error("Auto-compound is disabled via AUTO_COMPOUND_DISABLED");
+  const availability = autoCompoundStatus(config.autoCompoundDisabled);
+  if (!availability.executionEnabled) throw new Error(availability.reason!);
   await queue.add(
     "tick",
     { reason: "manual" },

@@ -227,6 +227,10 @@ export async function fetchCantonReadiness(): Promise<CantonReadiness> {
   const res = await fetch(`${BACKEND_URL}/api/readiness`, { signal: AbortSignal.timeout(5_000) });
   const body = await res.json() as CantonReadiness;
   if (!res.ok && res.status !== 503) throw new Error(`Canton readiness HTTP ${res.status}`);
+  if (body?.networkMode !== networkMode) throw new Error("Canton readiness network mode does not match this frontend");
+  const ready = res.status === 200 && body.status === "ready" && body.canton === "reachable";
+  const unavailable = res.status === 503 && body.status === "unavailable" && body.canton === "unreachable";
+  if (!ready && !unavailable) throw new Error("Invalid Canton readiness response");
   return body;
 }
 
@@ -341,6 +345,30 @@ export interface AutoCompoundPermit {
   enabled: boolean;
   maxPerRun: string | null;
   createdAt: string;
+}
+
+export interface AutoCompoundStatus {
+  status: "disabled" | "unavailable" | "ready";
+  executionEnabled: boolean;
+  supportedChains: string[];
+  reason: string | null;
+  networkMode: "testnet" | "mainnet";
+}
+
+export async function fetchAutoCompoundStatus(): Promise<AutoCompoundStatus> {
+  const res = await fetch(`${BACKEND_URL}/api/autocompound/status`);
+  if (!res.ok) throw new Error("Auto-compound status is unavailable");
+  const status = await res.json() as AutoCompoundStatus;
+  if (status.networkMode !== networkMode) throw new Error("Auto-compound backend network does not match this deployment");
+  if (!["disabled", "unavailable", "ready"].includes(status.status) ||
+      typeof status.executionEnabled !== "boolean" || !Array.isArray(status.supportedChains) ||
+      !status.supportedChains.every(chain => typeof chain === "string") ||
+      (status.reason !== null && typeof status.reason !== "string") ||
+      status.executionEnabled !== (status.status === "ready") ||
+      (status.executionEnabled && status.supportedChains.length === 0)) {
+    throw new Error("Auto-compound status is invalid");
+  }
+  return status;
 }
 
 export interface AutoCompoundRun {
