@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { tokens } from "@/lib/tokens";
 import {
@@ -10,20 +10,19 @@ import {
   type TraceTag,
 } from "@/components/trace/useTraceLog";
 
-/**
- * Always-on bottom-right "Live Trace" toggle that opens a 420px
- * right-side drawer streaming ambient + emitted trace events.
- * Ported from handoff/prototype/redesign/livetrace.jsx.
- *
- * Mount once near the root (in app/layout.tsx, post-Step 6 swap).
- * State (open/closed) is owned by this component — there is no
- * external API. Keep it that way; the drawer is a developer-affordance
- * surface, not part of any user flow.
- */
+type TraceFilter = "all" | "polygon" | "canton" | "marker" | "coupon";
+
+const FILTERS: Array<{ id: TraceFilter; label: string }> = [
+  { id: "all", label: "ALL" },
+  { id: "polygon", label: "POLYGON" },
+  { id: "canton", label: "CANTON" },
+  { id: "marker", label: "MARKER" },
+  { id: "coupon", label: "COUPON" },
+];
 
 const TAG_COLOR: Record<TraceTag, string> = {
   info: tokens.ink[200],
-  idle: tokens.ink[400],
+  idle: tokens.ink[300],
   success: tokens.neon,
   cc: tokens.cc,
   warn: tokens.warning,
@@ -32,33 +31,34 @@ const TAG_COLOR: Record<TraceTag, string> = {
 
 function kindColor(kind: TraceEntry["kind"]): string {
   switch (kind) {
-    case "CANTON":
-      return tokens.neon;
+    case "CANTON": return tokens.neon;
     case "POLYGON":
-    case "EVM":
-      return tokens.amberBright;
-    case "COSMOS":
-      return tokens.ink[200];
-    case "SUI":
-      return "#4ca2ff";
-    case "MARKER":
-      return tokens.cc;
-    case "WALLET":
-      return tokens.ink[200];
-    case "ORCH":
-      return tokens.ink[300];
-    default:
-      return tokens.ink[300];
+    case "EVM": return tokens.amberBright;
+    case "COSMOS": return tokens.ink[200];
+    case "SUI": return "#4ca2ff";
+    case "MARKER": return tokens.cc;
+    case "WALLET": return tokens.ink[200];
+    case "ORCH": return tokens.ink[300];
+    default: return tokens.ink[300];
   }
 }
 
-function formatTime(t: number): string {
-  return new Date(t).toLocaleTimeString("en-GB", { hour12: false });
+function matchesFilter(entry: TraceEntry, filter: TraceFilter): boolean {
+  if (filter === "all") return true;
+  if (filter === "coupon") return entry.tag === "cc" || /coupon/i.test(entry.code);
+  if (filter === "polygon") return entry.kind === "POLYGON" || entry.kind === "EVM";
+  if (filter === "canton") return entry.kind === "CANTON" && entry.tag !== "cc" && !/coupon/i.test(entry.code);
+  return entry.kind === "MARKER";
+}
+
+function formatTime(time: number): string {
+  return new Date(time).toLocaleTimeString("en-GB", { hour12: false });
 }
 
 export function GlobalLiveTrace() {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const [activeFilter, setActiveFilter] = useState<TraceFilter>("all");
   const log = useTraceLog();
   const scroller = useRef<HTMLDivElement | null>(null);
 
@@ -66,243 +66,118 @@ export function GlobalLiveTrace() {
     startAmbientTrace();
   }, []);
 
+  const counts = useMemo(() => Object.fromEntries(
+    FILTERS.map(({ id }) => [id, id === "all" ? log.length : log.filter(entry => matchesFilter(entry, id)).length]),
+  ) as Record<TraceFilter, number>, [log]);
+  const visibleEntries = useMemo(
+    () => log.filter(entry => matchesFilter(entry, activeFilter)),
+    [log, activeFilter],
+  );
+
   useEffect(() => {
-    if (scroller.current) {
-      scroller.current.scrollTop = scroller.current.scrollHeight;
-    }
-  }, [log.length]);
+    if (open && scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight;
+  }, [open, activeFilter, visibleEntries.length]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open]);
 
   if (pathname === "/") return null;
 
   return (
     <>
-      {/* Toggle button — always visible */}
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="mono"
-        type="button"
-        style={{
-          position: "fixed",
-          right: 18,
-          bottom: 18,
-          zIndex: 60,
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 8,
-          padding: "11px 14px",
-          minHeight: 44,
-          background: tokens.ink[900],
-          border: `1px solid ${tokens.hairline}`,
-          color: tokens.ink[100],
-          fontSize: 12,
-          letterSpacing: ".12em",
-          textTransform: "uppercase",
-          cursor: "pointer",
-          transition: "right 240ms ease",
-          borderRadius: 0,
-        }}
-      >
-        <span
-          style={{
-            display: "inline-block",
-            width: 6,
-            height: 6,
-            borderRadius: "50%",
-            background: tokens.neon,
-            animation: "pulse-dot 2s infinite",
-          }}
-        />
-        {open ? "Hide Trace" : "Live Trace"}
-      </button>
+      {!open && (
+        <button
+          type="button"
+          className="trace-launcher mono"
+          onClick={() => setOpen(true)}
+          aria-expanded={false}
+          aria-controls="global-live-trace"
+        >
+          <span className="trace-live-dot" aria-hidden="true" />
+          LIVE TRACE
+        </button>
+      )}
 
-      {/* Drawer */}
       <aside
+        id="global-live-trace"
+        className={`trace-drawer${open ? " trace-drawer--open" : ""}`}
         aria-hidden={!open}
-        style={{
-          position: "fixed",
-          top: 0,
-          right: 0,
-          bottom: 0,
-          width: "min(420px, 100vw)",
-          background: "#08080a",
-          borderLeft: `1px solid ${tokens.hairline}`,
-          zIndex: 55,
-          transition: "right 240ms ease",
-          display: open ? "flex" : "none",
-          flexDirection: "column",
-        }}
+        inert={!open}
+        aria-label="Global live trace"
       >
-        {/* Header */}
-        <div
-          style={{
-            padding: "14px 18px",
-            borderBottom: `1px solid ${tokens.hairline}`,
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ display: "flex", gap: 5 }}>
-              <span
-                style={{
-                  width: 9,
-                  height: 9,
-                  borderRadius: "50%",
-                  background: tokens.danger,
-                  opacity: 0.6,
-                }}
-              />
-              <span
-                style={{
-                  width: 9,
-                  height: 9,
-                  borderRadius: "50%",
-                  background: tokens.warning,
-                  opacity: 0.6,
-                }}
-              />
-              <span
-                style={{
-                  width: 9,
-                  height: 9,
-                  borderRadius: "50%",
-                  background: tokens.success,
-                  opacity: 0.6,
-                }}
-              />
-            </div>
-            <span
-              className="mono"
-              style={{
-                fontSize: 10.5,
-                color: tokens.ink[400],
-                letterSpacing: ".08em",
-              }}
-            >
-              cantonstake://trace/global
-            </span>
+        <header className="trace-header">
+          <div className="trace-header__identity">
+            <span className="trace-live-dot" aria-hidden="true" />
+            <span className="trace-header__title mono">LIVE TRACE</span>
+            <span className="trace-header__uri mono">cantonstake://trace/global</span>
           </div>
-          <span
-            className="mono"
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "2px 8px",
-              fontSize: 9,
-              letterSpacing: ".1em",
-              color: tokens.neon,
-              border: `1px solid ${tokens.neon}`,
-            }}
-          >
-            <span
-              style={{
-                width: 5,
-                height: 5,
-                borderRadius: "50%",
-                background: tokens.neon,
-                animation: "pulse-dot 2s infinite",
-              }}
-            />
-            STREAMING
-          </span>
-        </div>
+          <span className="trace-streaming mono"><i aria-hidden="true" /> STREAMING</span>
+        </header>
 
-        {/* Body */}
-        <div
-          ref={scroller}
-          style={{
-            flex: 1,
-            overflowY: "auto",
-            padding: "14px 18px",
-            fontFamily: "JetBrains Mono, ui-monospace, monospace",
-            fontSize: 11,
-            lineHeight: 1.65,
-            color: tokens.ink[300],
-          }}
-        >
-          <div style={{ color: tokens.ink[500], marginBottom: 8 }}>
-            $ tail -f /var/canton/cantonstake/markers.log
-          </div>
-          {log.length === 0 && (
-            <div style={{ color: tokens.ink[500] }}>
-              ▸ awaiting events
-              <span
-                style={{
-                  display: "inline-block",
-                  width: 6,
-                  height: 11,
-                  background: tokens.neon,
-                  marginLeft: 4,
-                  verticalAlign: "middle",
-                  animation: "blink-caret 1s steps(1) infinite",
-                }}
-              />
-            </div>
-          )}
-          {log.map((e) => (
-            <div
-              key={e.id}
-              style={{ marginBottom: 8, animation: "fade-up 220ms ease" }}
+        <div className="trace-filters mono" role="group" aria-label="Filter trace events">
+          {FILTERS.map(({ id, label }) => (
+            <button
+              key={id}
+              id={`trace-filter-${id}`}
+              type="button"
+              aria-pressed={activeFilter === id}
+              className="trace-filter"
+              onClick={() => setActiveFilter(id)}
             >
-              <div style={{ display: "flex", gap: 6, alignItems: "baseline" }}>
-                <span style={{ color: tokens.ink[500], fontSize: 9.5 }}>
-                  {formatTime(e.t)}
-                </span>
-                <span
-                  style={{
-                    color: kindColor(e.kind),
-                    fontSize: 9.5,
-                    letterSpacing: ".1em",
-                  }}
-                >
-                  {e.kind}
-                </span>
-                <span style={{ color: TAG_COLOR[e.tag] ?? tokens.ink[200] }}>
-                  ▸ {e.code}
-                </span>
-              </div>
-              <div
-                style={{
-                  color: tokens.ink[400],
-                  marginLeft: 18,
-                  fontSize: 10,
-                }}
-              >
-                {e.detail}
-              </div>
-            </div>
+              <span>{label}</span>
+              <span className="trace-filter__count">({counts[id]})</span>
+            </button>
           ))}
         </div>
 
-        {/* Footer */}
         <div
-          style={{
-            padding: "10px 18px",
-            borderTop: `1px solid ${tokens.hairline}`,
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-          }}
+          ref={scroller}
+          id="trace-events"
+          className="trace-events"
+          role="region"
+          aria-label="Trace events"
+          tabIndex={0}
         >
-          <span
-            className="mono"
-            style={{ fontSize: 10, color: tokens.ink[400] }}
-          >
-            {log.length} event{log.length === 1 ? "" : "s"}
-          </span>
-          <span
-            className="mono"
-            style={{
-              fontSize: 10,
-              color: tokens.ink[500],
-              letterSpacing: ".06em",
-            }}
-          >
-            self-custody · keys never leave wallet
-          </span>
+          {visibleEntries.length === 0 ? (
+            <p className="trace-empty mono">{log.length === 0 ? "Awaiting events…" : "No events in this category yet."}</p>
+          ) : visibleEntries.map(entry => {
+            const color = kindColor(entry.kind);
+            return (
+              <article key={entry.id} className="trace-event">
+                <time className="trace-event__time mono" dateTime={new Date(entry.t).toISOString()}>{formatTime(entry.t)}</time>
+                <span
+                  className={`trace-event__dot${entry.kind === "MARKER" ? " trace-event__dot--marker" : ""}`}
+                  style={{ backgroundColor: color }}
+                  aria-hidden="true"
+                />
+                <div className="trace-event__copy">
+                  <div className="trace-event__heading">
+                    <span className="trace-event__kind mono" style={{ color }}>{entry.kind}</span>
+                    <span className="trace-event__code" style={{ color: TAG_COLOR[entry.tag] }}>{entry.code}</span>
+                  </div>
+                  <p className="trace-event__detail">{entry.detail}</p>
+                </div>
+              </article>
+            );
+          })}
         </div>
+
+        <footer className="trace-footer">
+          <span className="trace-footer__count mono">
+            {activeFilter === "all" ? counts.all : `${counts[activeFilter]} / ${counts.all}`} events
+          </span>
+          <span className="trace-footer__note mono">self-custody · keys never leave wallet</span>
+          <button type="button" className="trace-hide mono" onClick={() => setOpen(false)} aria-expanded={true} aria-controls="global-live-trace">
+            <svg viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M2 2l10 10M5.6 5.6a2 2 0 002.8 2.8M1.5 7s1.8-4 5.5-4c1.2 0 2.2.4 3 1M12.5 7s-1.8 4-5.5 4c-.7 0-1.3-.1-1.9-.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></svg>
+            HIDE TRACE
+          </button>
+        </footer>
       </aside>
     </>
   );

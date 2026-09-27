@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import "./home.css";
 import "./account.css";
+import "./trace.css";
 import { Providers } from "./providers";
 import { TopNav } from "@/components/chrome/TopNav";
 import { isMainnet } from "@/lib/network";
