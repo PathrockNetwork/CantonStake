@@ -19,6 +19,15 @@ afterEach(() => {
 });
 
 describe("all-chain deployment mode matrix", () => {
+  it("keeps mainnet Polygon-only unless explicitly configured otherwise", async () => {
+    vi.stubEnv("NEXT_PUBLIC_NETWORK_MODE", "mainnet");
+    vi.stubEnv("NEXT_PUBLIC_ENABLED_CHAINS", undefined);
+    for (const key of overrides) vi.stubEnv(key, "");
+    vi.resetModules();
+    const { liveChains } = await import("@/lib/chains");
+    expect(liveChains().map(chain => chain.id)).toEqual(["polygon"]);
+  });
+
   it.each(["testnet", "mainnet"])("selects consistent identities and adapters in %s", async (mode) => {
     vi.stubEnv("NEXT_PUBLIC_NETWORK_MODE", mode);
     vi.stubEnv("NEXT_PUBLIC_ENABLED_CHAINS", supported.join(","));

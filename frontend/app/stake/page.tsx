@@ -33,6 +33,7 @@ import {
   fetchChainStats,
   fetchPositions,
   fetchWatcherStatus,
+  fetchCantonReadiness,
 } from "@/lib/api";
 import {
   liveChains,
@@ -68,6 +69,8 @@ import { usePrices } from "@/lib/prices";
 import { isMainnet, networkMode } from "@/lib/network";
 import { recordPositionMeta } from "@/lib/position-chain-map";
 import { tokens } from "@/lib/tokens";
+import { StakeChainPicker } from "@/components/stake/StakeChainPicker";
+import { isCantonReadyForStaking } from "@/lib/staking-readiness";
 
 /**
  * StakeFlow — ported from handoff/prototype/redesign/screens.jsx (`StakeFlow`).
@@ -280,7 +283,7 @@ export default function StakePage() {
   const aptos = useAptosWallet();
   const solana = useSolanaWallet();
   const polkadot = usePolkadotWallet();
-  const { data: chainStats } = useQuery({
+  const { data: chainStats, isError: chainStatsError } = useQuery({
     queryKey: ["chain-stats"],
     queryFn: () => fetchChainStats(),
     refetchInterval: 5 * 60_000,
@@ -291,10 +294,8 @@ export default function StakePage() {
     chains[0]?.id ?? "polygon",
   );
   const selectedChain = chains.find((c) => c.id === selectedChainId) ?? chains[0] ?? polygonChain();
-  // Adapter-less chains (newly added networks) have a live settlement
-  // watcher but no in-app staking flow yet — the CTA must say so instead
-  // of dead-ending in a wallet prompt that can never finish.
-  const stakingUiReady = chains.some((c) => c.id === selectedChain.id) && selectedChain.hasAdapter !== false &&
+  // A configured adapter is usable only when the backend enables it too.
+  const stakingUiReady = !chainStatsError && chains.some((c) => c.id === selectedChain.id) && selectedChain.hasAdapter !== false &&
     !!chainStats?.chains.some((c) => c.chain === selectedChain.id);
   const adapter = stakingUiReady ? adapterFor(selectedChain.id) : null;
   // Non-null wherever staking flows run (guarded by stakingUiReady checks).
@@ -385,7 +386,7 @@ export default function StakePage() {
   // Backend watcher reachability per chain. A chain whose watcher can't
   // reach its RPC settles nothing — staking there would strand the Canton
   // request in Pending forever, so those chains render disabled.
-  const { data: watcherStatus } = useQuery({
+  const { data: watcherStatus, isError: watcherStatusError } = useQuery({
     queryKey: ["watcher-status"],
     queryFn: fetchWatcherStatus,
     refetchInterval: 60_000,
@@ -394,10 +395,17 @@ export default function StakePage() {
     (watcherStatus ?? []).map((w) => [w.chain as ChainConfig["id"], w]),
   );
   const selectedWatcher = watcherByChain.get(selectedChain.id);
-  const selectedChainOffline = selectedWatcher?.status !== "ok";
-  const backendModeKnown = watcherStatus?.networkMode === "testnet" || watcherStatus?.networkMode === "mainnet";
+  const selectedChainOffline = watcherStatusError || selectedWatcher?.status !== "ok";
+  const backendModeKnown = !watcherStatusError && (watcherStatus?.networkMode === "testnet" || watcherStatus?.networkMode === "mainnet");
   const backendModeMismatch = backendModeKnown && watcherStatus?.networkMode !== networkMode;
   const backendModeUnsafe = !backendModeKnown || backendModeMismatch;
+  const cantonReadiness = useQuery({
+    queryKey: ["canton-readiness", networkMode],
+    queryFn: fetchCantonReadiness,
+    refetchInterval: 15_000,
+    retry: false,
+  });
+  const cantonReady = isCantonReadyForStaking(cantonReadiness.data, networkMode, cantonReadiness.isError);
 
   // Per-validator buyVoucher floor for the selected top validator, live from
   // the backend registry (the same fetch that refreshes the ValidatorShare
@@ -637,7 +645,7 @@ export default function StakePage() {
     }
     if (!stakingUiReady) {
       setError(
-        `${selectedChain.name}: settlement watcher is live, but the in-app staking flow lands next. Positions on this chain currently settle from native wallets.`,
+        `${selectedChain.name} is not enabled by this deployment's staking backend.`,
       );
       return;
     }
@@ -645,6 +653,19 @@ export default function StakePage() {
       setError(
         `${selectedChain.name} is not ready — its settlement watcher has not completed a successful scan.`,
       );
+      return;
+    }
+    if (!cantonReady) {
+      setError("Canton is unavailable or its network mode does not match. Staking cannot begin until the ledger connection is ready.");
+      return;
+    }
+    // Recheck immediately before starting a wallet flow, not just at the
+    // last background poll or when the review dialog was opened.
+    try {
+      const readiness = await fetchCantonReadiness();
+      if (!isCantonReadyForStaking(readiness, networkMode)) throw new Error("Canton unavailable");
+    } catch {
+      setError("Canton readiness could not be confirmed. No staking transaction was submitted; try again when the ledger connection is restored.");
       return;
     }
     if (!partyId) {
@@ -1235,14 +1256,6 @@ export default function StakePage() {
     <div className="page-shell account-page">
       <PageMasthead index="02" section="Stake on Canton" title="Stake." accent="Create a self-custodial staking position." description={`Delegate ${selectedChain.symbol} from your own wallet, earn native rewards and Canton Coin rewards, with the lifecycle recorded on Canton.`} />
 
-      {isMainnet && (
-        <Banner
-          tone="error"
-          kind="MAINNET — REAL FUNDS"
-          message="This deployment follows mainnet networks. Every stake, unstake and gas payment moves real value. There are no faucets and no undo."
-        />
-      )}
-
       {error && (
         <Banner
           tone="error"
@@ -1320,17 +1333,16 @@ export default function StakePage() {
         {[["01", "Select chain", "stake-chain"], ["02", "Choose token", "stake-token"], ["03", isPolkadotChain ? "Pick pool" : "Pick validator", "stake-validator"], ["04", "Enter amount", "stake-amount"], ["05", "Review & sign", "stake-review"]].map(([number, label, target], index) => <a href={`#${target}`} key={number} className={`stake-stepper__item${index <= formStage ? " stake-stepper__item--active" : ""}`} aria-current={index === formStage ? "step" : undefined}><span>{number}</span><div><strong>{label}</strong><small>{index < formStage ? "Ready" : index === formStage ? "Current step" : "Up next"}</small></div></a>)}
       </nav>
       <div className="account-stake-workspace">
-        <AccountPanel title="01 · Select chain" icon="link" description="Choose a supported chain." id="stake-chain">
-          <div className="account-chain-options">{chains.map(chain => {
-            const enabled = !!chainStats?.chains.some((c) => c.chain === chain.id);
-            const offline = watcherByChain.get(chain.id)?.status !== "ok";
-            return <button key={chain.id} className="account-chain-option" aria-pressed={selectedChain.id === chain.id} disabled={busy || offline || !enabled || chain.hasAdapter === false} onClick={() => { setSelectedChainId(chain.id); setStep(0); setReviewOpen(false); }}><ChainBadge symbol={chain.symbol} label={chain.id === "polygon" ? "Polygon PoS" : chain.name} /><StatusBadge status={!enabled ? "Not enabled" : offline ? "Offline" : chain.hasAdapter === false ? "Coming soon" : "Supported"} /></button>;
-          })}</div>
-          <p className="account-muted">{selectedChain.type}</p><p className="account-muted">More chains coming soon.</p>
+        <AccountPanel title="01 · Select chain" icon="link" description="Choose a network and its native staking flow." id="stake-chain">
+          <StakeChainPicker chains={chains} selectedChainId={selectedChain.id}
+            enabledChainIds={chainStats?.chains.map(chain => chain.chain)} watchers={watcherStatus}
+            statusUnavailable={chainStatsError || watcherStatusError} busy={busy}
+            onSelect={chain => { setSelectedChainId(chain.id); setStep(0); setReviewOpen(false); setError(null); }} />
+          <p className="account-muted">{selectedChain.type}</p>
           <dl className="account-definition"><div><dt>Settlement</dt><dd>{selectedChain.wagmiChain?.name ?? selectedChain.name}</dd></div><div><dt>Unbond period</dt><dd>{unbondingLabel}</dd></div></dl>
         </AccountPanel>
         <AccountPanel title="02 · Choose token" icon="coin" description="Native token for this staking flow." id="stake-token">
-          <div className="account-token-selected"><ChainBadge symbol={selectedChain.symbol} label={selectedChain.symbol} /><StatusBadge status="Selected" /></div>
+          <div className="account-token-selected"><ChainBadge chainId={selectedChain.id} symbol={selectedChain.symbol} label={selectedChain.symbol} /><StatusBadge status="Selected" /></div>
           <p className="account-muted">Stake {selectedChain.symbol} from your wallet to earn native validator yield and Canton Coin rewards.</p>
           <dl className="account-definition"><div><dt>Token standard</dt><dd>{selectedChain.id === "polygon" ? "ERC-20" : selectedChain.symbol}</dd></div><div><dt>Current price</dt><dd>{fmtUsd(chainPriceUsd, 4)}</dd></div><div><dt>Price source</dt><dd>{prices?.source.pol === "coingecko" ? "Market price" : "Reference price"}</dd></div><div><dt>Staking network</dt><dd>{selectedChain.wagmiChain?.name ?? selectedChain.name}</dd></div></dl>
           {selectedChain.id === "polygon" && <a className="account-button" href={`${isMainnet ? "https://etherscan.io" : "https://sepolia.etherscan.io"}/token/${stakeTokenAddress}`} target="_blank" rel="noreferrer">View token ↗</a>}
@@ -1362,8 +1374,9 @@ export default function StakePage() {
           <div className="account-transaction-flow"><div><AccountIcon name="wallet" /><strong>1. Approve & sign</strong><p>Approve the staking token if needed, then sign the delegation.</p></div><div><AccountIcon name="clock" /><strong>2. Wait for confirmation</strong><p>The native-chain watcher observes the confirmed staking event.</p></div><div><AccountIcon name="cube" /><strong>3. Record on Canton</strong><p>Your position and lifecycle activity are recorded on-ledger.</p></div></div>
         </AccountPanel>
         <div className="account-stake-submit">
-          <button className="account-button account-button--primary" disabled={busy || backendModeUnsafe || selectedChainOffline || !stakingUiReady || (walletsReady && (!!amountIssue || !validatorAddr))} onClick={() => { if (!walletsReady) openPicker(); else setReviewOpen(true); }}>{busy ? ctaLabel : backendModeMismatch ? "Network mode mismatch" : backendModeUnsafe ? "Checking network mode" : selectedChainOffline ? "Staking watcher unavailable" : !walletsReady ? "Connect wallets to stake" : step === 5 ? "Review another stake →" : "Review & stake →"}</button>
+          <button className="account-button account-button--primary" disabled={busy || backendModeUnsafe || selectedChainOffline || !stakingUiReady || !cantonReady || (walletsReady && (!!amountIssue || !validatorAddr))} onClick={() => { if (!walletsReady) openPicker(); else setReviewOpen(true); }}>{busy ? ctaLabel : backendModeMismatch ? "Network mode mismatch" : backendModeUnsafe ? "Checking network mode" : !cantonReady ? cantonReadiness.isPending ? "Checking Canton" : "Canton unavailable" : selectedChainOffline ? "Staking watcher unavailable" : !walletsReady ? "Connect wallets to stake" : step === 5 ? "Review another stake →" : "Review & stake →"}</button>
           {backendModeMismatch && <p role="alert" className="account-amount-warning">This page is built for {networkMode}, but the staking backend is on {watcherStatus?.networkMode}. Open the matching deployment before staking.</p>}
+          {!cantonReady && !cantonReadiness.isPending && <p role="status" className="account-amount-warning">Networks are available to explore, but staking is paused until the Canton ledger connection is ready for {networkMode}.</p>}
           <p className="account-muted">Your wallet signs. You retain custody.</p>
           {hash && selectedChain.explorer && <a className="account-text-link" href={selectedChain.explorer.tx(hash)} target="_blank" rel="noreferrer">View transaction ↗</a>}
         </div>
@@ -1548,7 +1561,7 @@ export default function StakePage() {
         <dl className="account-definition"><div><dt>Amount</dt><dd>{amount} {selectedChain.symbol}</dd></div><div><dt>Estimated value</dt><dd>{fmtUsd(usdValue, 2)}</dd></div><div><dt>Settlement network</dt><dd>{selectedChain.wagmiChain?.name ?? selectedChain.name}</dd></div><div><dt>Validator</dt><dd>{validatorName}<small className="mono">{validatorAddr}</small></dd></div><div><dt>Unbond period</dt><dd>{unbondingLabel}</dd></div><div><dt>CC beneficiary split</dt><dd>75% delegator / 25% treasury</dd></div></dl>
         <p className="account-muted">{selectedChain.id === "polygon" ? "Your wallet will ask you to approve POL if needed, then sign the staking transaction." : `Your wallet will ask you to sign the ${selectedChain.symbol} staking transaction.`} Network fees are shown by your wallet.</p>
         {isMainnet && <p className="account-amount-warning">Mainnet transaction · real funds</p>}
-        <footer><button className="account-button" onClick={() => setReviewOpen(false)}>Back</button><button className="account-button account-button--primary" disabled={!walletsReady || !!amountIssue || !validatorAddr || busy || backendModeUnsafe || selectedChainOffline} onClick={() => { void confirmStake(); }}>Confirm & open wallet →</button></footer>
+        <footer><button className="account-button" onClick={() => setReviewOpen(false)}>Back</button><button className="account-button account-button--primary" disabled={!walletsReady || !!amountIssue || !validatorAddr || busy || backendModeUnsafe || selectedChainOffline || !stakingUiReady || !cantonReady} onClick={() => { void confirmStake(); }}>Confirm & open wallet →</button></footer>
       </dialog>
     </div>
   );

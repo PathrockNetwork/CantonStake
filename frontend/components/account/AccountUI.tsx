@@ -57,14 +57,12 @@ export function WalletNotice({ connected, error, loading, onRetry }: { connected
 
 export function StatusBadge({ status }: { status: string }) {
   const kind = /fail|error|unreachable|unavailable|cancel/i.test(status) ? "bad"
-    : /unbond|pending|waiting|unknown|loading/i.test(status) ? "wait"
-    : /^(bonded|completed|confirmed|connected|healthy|ok|active|live|supported|selected|registered)$/i.test(status) ? "good" : "neutral";
+    : /unbond|pending|waiting|unknown|loading|checking/i.test(status) ? "wait"
+    : /^(bonded|completed|confirmed|connected|healthy|ok|active|live|supported|selected|registered|watcher ready)$/i.test(status) ? "good" : "neutral";
   return <span className={`account-status account-status--${kind} mono`}><i />{status}</span>;
 }
 
-export function ChainBadge({ symbol = "POL", label = "Polygon PoS" }: { symbol?: string; label?: string }) {
-  return <span className="account-chain"><span className="account-chain__mark" aria-hidden="true">{symbol === "POL" ? <I size={24}><path d="m8 5 3-2 3 2v4l-3 2-3-2V5L3 8v4l3 2 3-2M3 8 1 6" /></I> : symbol.slice(0, 1)}</span>{label}</span>;
-}
+export { ChainBadge } from "./ChainBadge";
 
 export function SplitPanel({ compact = false }: { compact?: boolean }) {
   return <AccountPanel title="Beneficiary split" icon="percent" description={compact ? undefined : "Canton Coin rewards · weights recorded on-ledger"} className={compact ? "account-split--compact" : ""}>

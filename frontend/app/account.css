@@ -92,7 +92,10 @@
 .account-status--bad { color: #ff9393; }
 .account-status--wait { color: #f2c447; }
 .account-chain { display: inline-flex; align-items: center; gap: 10px; font-size: 12px; }
-.account-chain__mark { display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%; background: radial-gradient(circle at 30% 15%, #b84cff, #741cdc); color: white; }
+.account-chain__mark { display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%; background: #f4f5f8; color: #171923; overflow: hidden; box-shadow: 0 0 0 1px #ffffff1f; }
+.account-chain__mark img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.account-chain__mark[data-network=monad] img, .account-chain__mark[data-network=aptos] img { width: 76%; height: 76%; }
+.account-chain__fallback { font: 600 11px 'JetBrains Mono', monospace; }
 .account-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 30px 20px; min-height: 150px; color: #9bafa6; font-size: 13px; line-height: 1.6; text-align: center; }
 .account-network-card { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px; border: 1px solid #56998266; background: #003a231a; }
 .account-network-card + p { padding: 12px; border: 1px dashed #56998255; }
@@ -238,7 +241,14 @@ html[data-account-density=compact] .account-table td { padding-block: 9px; }
 .account-stake-stepper .stake-stepper__item small { font-size: 10px; }
 .account-stake-workspace { display: grid; grid-template-columns: .85fr .95fr 1.2fr 1.2fr; align-items: start; gap: 12px; }
 .account-stake-workspace > .account-panel { height: 100%; }
+.account-chain-search { display: block; }
+.account-chain-options { display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow-y: auto; padding: 2px; scrollbar-gutter: stable; }
 .account-chain-option { display: flex; align-items: flex-start; flex-direction: column; gap: 12px; padding: 14px; width: 100%; border: 1px solid #61847555; background: #051510; color: #d9e9e0; text-align: left; cursor: pointer; }
+.account-chain-option .account-chain { min-width: 0; line-height: 1.45; }
+.account-chain-option__details { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; width: 100%; }
+.account-chain-option__details > small { color: #98ada3; }
+.account-chain-option:focus-visible { outline: 2px solid #00e7ad; outline-offset: -3px; }
+.account-chain-option:disabled { cursor: not-allowed; opacity: .55; }
 .account-chain-option[aria-pressed=true] { border-color: #00e7ad; background: #00593844; }
 .account-token-selected { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px; border: 1px solid #00e7ad; background: #00593822; }
 .account-token-selected .account-chain__mark { width: 42px; height: 42px; }
