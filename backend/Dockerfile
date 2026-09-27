@@ -3,15 +3,16 @@
 # Three-stage build with BuildKit cache mounts. The npm cache survives
 # between deploys and `npm ci` is deterministic against the lockfile.
 
-FROM node:20-alpine AS deps
+FROM node:22-alpine AS deps
 WORKDIR /app
+RUN apk add --no-cache openssl
 COPY package.json package-lock.json ./
 COPY prisma ./prisma
 RUN --mount=type=cache,target=/root/.npm \
     npm ci --include=dev
 RUN npx prisma generate
 
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/prisma ./prisma
@@ -22,15 +23,16 @@ RUN npm run build
 
 # Pruned production deps go in their own stage so the runner image
 # doesn't carry @types/* / typescript / vitest into prod.
-FROM node:20-alpine AS prod-deps
+FROM node:22-alpine AS prod-deps
 WORKDIR /app
+RUN apk add --no-cache openssl
 COPY package.json package-lock.json ./
 COPY prisma ./prisma
 RUN --mount=type=cache,target=/root/.npm \
     npm ci --omit=dev
 RUN npx prisma generate
 
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 RUN apk add --no-cache openssl

@@ -6,21 +6,48 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Concurrency: a new push cancels an in-flight build for the same branch
-# so we never deploy a stale image after a queued one.
+# Never interrupt an active database migration or application restart.
 concurrency:
   group: deploy-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
   IMAGE_OWNER: ${{ github.repository_owner }}
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Require production deployment configuration
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          NEXT_PUBLIC_NETWORK_MODE: ${{ vars.NEXT_PUBLIC_NETWORK_MODE }}
+          NEXT_PUBLIC_BACKEND_URL: ${{ vars.NEXT_PUBLIC_BACKEND_URL }}
+          NEXT_PUBLIC_LOOP_NETWORK: ${{ vars.NEXT_PUBLIC_LOOP_NETWORK }}
+        run: |
+          set -euo pipefail
+          for name in SSH_HOST SSH_USER SSH_PRIVATE_KEY DEPLOY_PATH NEXT_PUBLIC_BACKEND_URL; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing production configuration: $name"
+              exit 1
+            fi
+          done
+          if [ "$NEXT_PUBLIC_NETWORK_MODE" != mainnet ] || [ "$NEXT_PUBLIC_LOOP_NETWORK" != mainnet ]; then
+            echo "::error::Production requires NEXT_PUBLIC_NETWORK_MODE=mainnet and NEXT_PUBLIC_LOOP_NETWORK=mainnet in repository variables."
+            exit 1
+          fi
+
   # Build frontend + backend in parallel using a matrix. Each lands as
   # ghcr.io/<owner>/cantonstake-<service>:latest plus a SHA-tagged copy
   # so rollbacks are one `docker compose pull` away.
   build:
+    needs: preflight
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -69,12 +96,29 @@ jobs:
           # from GH Actions Variables (non-secret) and Secrets (sensitive).
           # Backend ignores unknown ARGs so passing them to both is safe.
           build-args: |
+            NEXT_PUBLIC_NETWORK_MODE=${{ vars.NEXT_PUBLIC_NETWORK_MODE }}
             NEXT_PUBLIC_BACKEND_URL=${{ vars.NEXT_PUBLIC_BACKEND_URL }}
+            NEXT_PUBLIC_ENABLED_CHAINS=${{ vars.NEXT_PUBLIC_ENABLED_CHAINS || 'polygon' }}
             NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=${{ secrets.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID }}
+            NEXT_PUBLIC_POLYGON_SETTLEMENT_CHAIN_ID=${{ vars.NEXT_PUBLIC_POLYGON_SETTLEMENT_CHAIN_ID }}
+            NEXT_PUBLIC_POLYGON_STAKE_MANAGER=${{ vars.NEXT_PUBLIC_POLYGON_STAKE_MANAGER }}
+            NEXT_PUBLIC_POLYGON_STAKING_LOGGER=${{ vars.NEXT_PUBLIC_POLYGON_STAKING_LOGGER }}
+            NEXT_PUBLIC_POLYGON_STAKE_TOKEN=${{ vars.NEXT_PUBLIC_POLYGON_STAKE_TOKEN }}
+            NEXT_PUBLIC_SHARE_SLIPPAGE_BPS=${{ vars.NEXT_PUBLIC_SHARE_SLIPPAGE_BPS }}
             NEXT_PUBLIC_LOOP_NETWORK=${{ vars.NEXT_PUBLIC_LOOP_NETWORK }}
-            NEXT_PUBLIC_LOOP_SDK_ENABLED=${{ vars.NEXT_PUBLIC_LOOP_SDK_ENABLED }}
-            NEXT_PUBLIC_CC_USD=${{ vars.NEXT_PUBLIC_CC_USD }}
+            NEXT_PUBLIC_LOOP_SDK_ENABLED=${{ vars.NEXT_PUBLIC_LOOP_SDK_ENABLED || 'true' }}
+            NEXT_PUBLIC_CC_USD=${{ vars.NEXT_PUBLIC_CC_USD || '0.16' }}
             NEXT_PUBLIC_REAL_VALIDATOR_SHARES=${{ vars.NEXT_PUBLIC_REAL_VALIDATOR_SHARES }}
+            NEXT_PUBLIC_LOOP_USE_BACKEND_PROXY=${{ vars.NEXT_PUBLIC_LOOP_USE_BACKEND_PROXY || 'false' }}
+            NEXT_PUBLIC_LOOP_API_URL=${{ vars.NEXT_PUBLIC_LOOP_API_URL }}
+            NEXT_PUBLIC_LOOP_WALLET_URL=${{ vars.NEXT_PUBLIC_LOOP_WALLET_URL }}
+            NEXT_PUBLIC_COSMOS_CHAIN_ID=${{ vars.NEXT_PUBLIC_COSMOS_CHAIN_ID }}
+            NEXT_PUBLIC_COSMOS_CHAIN_NAME=${{ vars.NEXT_PUBLIC_COSMOS_CHAIN_NAME }}
+            NEXT_PUBLIC_COSMOS_COIN_DENOM=${{ vars.NEXT_PUBLIC_COSMOS_COIN_DENOM || 'ATOM' }}
+            NEXT_PUBLIC_COSMOS_COIN_MINIMAL_DENOM=${{ vars.NEXT_PUBLIC_COSMOS_COIN_MINIMAL_DENOM || 'uatom' }}
+            NEXT_PUBLIC_COSMOS_COIN_DECIMALS=${{ vars.NEXT_PUBLIC_COSMOS_COIN_DECIMALS || '6' }}
+            NEXT_PUBLIC_COSMOS_COIN_TYPE=${{ vars.NEXT_PUBLIC_COSMOS_COIN_TYPE || '118' }}
+            NEXT_CACHE_ID=cantonstake-next-mainnet
 
   # SSH into the VPS, pull the new images, restart compose. Runs after
   # both image builds succeed.
@@ -86,25 +130,85 @@ jobs:
         id: image
         run: |
           OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          echo "frontend=ghcr.io/${OWNER_LC}/cantonstake-frontend:latest" >> "$GITHUB_OUTPUT"
-          echo "backend=ghcr.io/${OWNER_LC}/cantonstake-backend:latest" >> "$GITHUB_OUTPUT"
+          echo "frontend=ghcr.io/${OWNER_LC}/cantonstake-frontend:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "backend=ghcr.io/${OWNER_LC}/cantonstake-backend:${{ github.sha }}" >> "$GITHUB_OUTPUT"
 
       - name: Deploy on VPS
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          FRONTEND_IMAGE: ${{ steps.image.outputs.frontend }}
+          BACKEND_IMAGE: ${{ steps.image.outputs.backend }}
+          EXPECTED_CHAINS: ${{ vars.NEXT_PUBLIC_ENABLED_CHAINS || 'polygon' }}
+          EXPECTED_BACKEND_URL: ${{ vars.NEXT_PUBLIC_BACKEND_URL }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
+          envs: DEPLOY_PATH,FRONTEND_IMAGE,BACKEND_IMAGE,EXPECTED_CHAINS,EXPECTED_BACKEND_URL
           # The VPS just needs docker-compose.yml + .env in DEPLOY_PATH.
           # Source code is NOT cloned on the VPS — images come from GHCR.
           script: |
-            set -e
-            cd "${{ secrets.DEPLOY_PATH }}"
-            export FRONTEND_IMAGE="${{ steps.image.outputs.frontend }}"
-            export BACKEND_IMAGE="${{ steps.image.outputs.backend }}"
-            docker compose pull
-            docker compose up -d
-            docker image prune -f
+            set -eu
+            cd "$DEPLOY_PATH"
+            command -v jq >/dev/null
+            export FRONTEND_IMAGE BACKEND_IMAGE
+            # Pin the existing production project and its env file; never
+            # create a second database under a directory-derived project name.
+            compose() { docker compose -p cantonstake --env-file .env "$@"; }
+            compose config --format json | jq -e \
+              --arg chains "$EXPECTED_CHAINS" --arg api "$EXPECTED_BACKEND_URL" '
+              def chains: split(",") | map(gsub("^\\s+|\\s+$"; "") | ascii_downcase) | sort | unique;
+              .services.backend.environment as $b |
+              .services.frontend.build.args as $f |
+              $b.NETWORK_MODE == "mainnet" and
+              $b.MAINNET_CONFIRMED == "yes" and
+              $f.NEXT_PUBLIC_NETWORK_MODE == "mainnet" and
+              $f.NEXT_PUBLIC_LOOP_NETWORK == "mainnet" and
+              $f.NEXT_PUBLIC_BACKEND_URL == $api and
+              ($b.ENABLED_CHAINS | chains) == ($chains | chains) and
+              ($f.NEXT_PUBLIC_ENABLED_CHAINS | chains) == ($chains | chains)
+            ' >/dev/null || { echo "Production mode, API URL or enabled chains do not match the image build; refusing to deploy."; exit 1; }
+            compose pull backend frontend
+            # Back up before the backend entrypoint applies Prisma migrations.
+            umask 077
+            mkdir -p .deploy-backups
+            compose exec -T postgres pg_dump -U cantonstake -d cantonstake -Fc \
+              > ".deploy-backups/database-$(date -u +%Y%m%dT%H%M%S)-$$.dump"
+            compose up -d --no-deps backend frontend
+            # Keep previous images for rollback. Do not prune or recreate data services.
+            healthy=false
+            for attempt in $(seq 1 24); do
+              if compose exec -T backend node --input-type=module -e '
+                try {
+                  const read = async (path) => {
+                    const response = await fetch("http://127.0.0.1:4001/api/" + path, { signal: AbortSignal.timeout(5000) });
+                    if (!response.ok) throw new Error("HTTP check failed");
+                    return response.json();
+                  };
+                  const [health, detail, ready, automation] = await Promise.all([
+                    read("health"), read("health/detail"), read("readiness"), read("autocompound/status")
+                  ]);
+                  if (health.networkMode !== "mainnet" || health.stakeSettlementChainId !== 1 ||
+                      detail.database !== "connected" || detail.redis !== "connected" ||
+                      ready.status !== "ready" || ready.networkMode !== "mainnet" ||
+                      automation.networkMode !== "mainnet" || automation.executionEnabled !== false) process.exit(1);
+                } catch { process.exit(1); }
+              ' && compose exec -T frontend node --input-type=module -e '
+                try {
+                  const response = await fetch("http://127.0.0.1:3000/settings", { signal: AbortSignal.timeout(5000) });
+                  if (!response.ok) process.exit(1);
+                } catch { process.exit(1); }
+              '; then
+                healthy=true
+                break
+              fi
+              sleep 5
+            done
+            if [ "$healthy" != true ]; then
+              echo "Release started but failed health/readiness checks. Inspect the application; previous images and the database backup have been retained."
+              exit 1
+            fi
             echo "✅ Deployed. Containers:"
-            docker compose ps
+            compose ps

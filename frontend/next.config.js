@@ -7,6 +7,10 @@ const nextConfig = {
   // through the import graph, dropping the production image's node_modules
   // from ~1 GB to ~150 MB. Cuts deploy push time and cold-start RAM.
   output: "standalone",
+  // All artwork is served directly (the brand mark already uses unoptimized).
+  // Disable the unused image-processing endpoint as defense in depth while
+  // the Next.js major-version security migration is pending.
+  images: { unoptimized: true },
   // `scripts/build-frontends.sh` runs TypeScript once before starting the
   // mainnet and testnet builds in parallel. One-off builds keep Next's
   // validation enabled because SKIP_BUILD_CHECKS defaults to false.

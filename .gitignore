@@ -32,6 +32,9 @@ typechain-types/
 *.log
 logs/
 
+# private production database backups
+.deploy-backups/
+
 # hardhat
 coverage/
 coverage.json
