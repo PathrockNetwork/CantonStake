@@ -35,6 +35,9 @@ logs/
 # private production database backups
 .deploy-backups/
 
+# Dedicated local test-wallet keys (never commit)
+/.test-wallets/
+
 # hardhat
 coverage/
 coverage.json
@@ -51,7 +54,13 @@ coverage.json
 /generated_video.mp4
 /848abccd-1962-41d7-9e75-1b5d41acf762.png
 
-# local docs and scratch markdown — keep only README.md
-docs/
+# Keep scratch markdown private; retain only reviewed public integration docs.
+docs/*
 *.md
 !README.md
+!docs/NETWORK_MODES.md
+!docs/REAL_DATA_MIGRATION.md
+!docs/loop-testnet-integration.md
+!docs/production-rollout-2026-10-04.md
+!docs/CANTON_MAINNET_NODE_PROMPT.md
+!docs/CANTON_TESTNET_NODE_PROMPT.md

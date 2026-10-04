@@ -2,8 +2,8 @@
 # These rules are loaded automatically when working in this repo.
 
 ## Project Overview
-CantonStake is a cross-chain staking platform: users stake POL on Polygon Amoy via EVM smart contracts,
-receive rewards in Canton Coin (CC) on a Hyperledger Canton ledger, managed through Daml smart contracts.
+CantonStake is a cross-chain staking platform with native validator adapters and a separate Amoy liquid-staking route.
+Staking lifecycle data is recorded on Canton through Daml; recorded CC allocations are not proof of claimed or paid rewards.
 The revenue model is based on Featured App activity on the Canton Coin Network (CC burn-mint equilibrium).
 
 ## Monorepo Structure
@@ -28,7 +28,7 @@ The revenue model is based on Featured App activity on the Canton Coin Network (
 ### Frontend
 - All components are `"use client"` unless purely static HTML
 - wagmi v2 hooks: `useAccount`, `useConnect`, `useDisconnect`, `useChainId`
-- Two wallet systems: wagmi (EVM/MetaMask/Ledger) + useLoopWallet (Canton Party ID mock)
+- Two wallet systems: wagmi (EVM/MetaMask/Ledger) + useCantonWallet (real Loop SDK)
 - Tailwind custom classes: `hairline`, `hairline-b`, `chip`, `amber-bright`, `ink-*`
 - Font: `font-display` (italic) for logo, `font-mono` for data/addresses
 
@@ -41,12 +41,12 @@ The revenue model is based on Featured App activity on the Canton Coin Network (
 ### EVM
 - Solidity 0.8.24, Hardhat, OpenZeppelin contracts
 - Deploy to Polygon Amoy testnet only
-- MockValidatorShare simulates the validator's share distribution
+- Polygon validator staking uses the real per-validator ValidatorShare on Ethereum settlement; Amoy liquid staking has separate tooling
 
 ### Docker
 - PostgreSQL 16 + Redis 7 + backend + frontend in docker-compose
 - Canton LocalNet runs separately via cn-quickstart
-- Backend connects to Canton via `host.docker.internal:2975`
+- Existing backend provider connects to LocalNet via `host.docker.internal:3975`; remote user/synchronizer/endpoint routing must be explicit
 
 ## Common Patterns
 
@@ -65,17 +65,23 @@ The revenue model is based on Featured App activity on the Canton Coin Network (
 ### Adding a new frontend page
 1. Create `frontend/app/<route>/page.tsx` as `"use client"`
 2. Import from `@/components/`, `@/lib/`
-3. Use wagmi hooks for EVM state, `useLoopWallet` for Canton state
+3. Use wagmi hooks for EVM state, `useCantonWallet` for Canton state
 4. Follow existing styling conventions (see `app/globals.css`)
 
 ## Testing
-- No test framework configured yet — when adding tests:
-  - Frontend: Vitest + React Testing Library
-  - Backend: Vitest + Prisma test client
-  - Daml: Daml test scripts in `daml/CantonStake/daml/`
-  - EVM: Hardhat + ethers test scripts
+- Frontend: existing Vitest tests (`npm test`)
+- Backend: Node test runner through `tsx --test test/*.test.ts`
+- Daml: lifecycle scripts in `daml/CantonStakeTests/`
+- EVM: Hardhat + existing ethers scripts; never broadcast without explicit authorization
+- Real Loop acceptance requires genuine Loop/native wallets; no mock signer or hosted-user substitute
 
 ## Environment
 - All config via env vars, see `.env.example` files
 - Never commit `.env` files (in `.gitignore`)
 - WalletConnect requires a project ID from https://cloud.walletconnect.com
+
+## Commits
+- Use a scoped conventional subject and a non-empty description of the change, safeguards and verification
+- Do not add Co-authored-by trailers
+- Keep credentials, private wallet files, database backups and generated artifacts out of commits
+- Do not rewrite published history or force push without explicit authorization

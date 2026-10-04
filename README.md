@@ -106,16 +106,43 @@ backend/frontend allowlists. For future GitHub deployments, set the repository's
 `NEXT_PUBLIC_ENABLED_CHAINS` build variable to the same list as the server's
 `.env`; the workflow rejects a mismatch rather than silently changing networks.
 
+### Gated production release — 2026-10-04
+
+The updated staking, positions, rewards and genuine Loop integration code is
+deployed to both production domains. Existing environment files and records are
+preserved. External Loop signing and CC payments remain disabled by explicit
+operator decision; readiness/build/browser checks are not proof of a funded
+wallet lifecycle. The MainNet adapter still needs its separate implementation
+and verified node/package handoff before activation.
+
+See the [rollout record](docs/production-rollout-2026-10-04.md),
+[Loop integration and release gates](docs/loop-testnet-integration.md), and the
+[TestNet](docs/CANTON_TESTNET_NODE_PROMPT.md) /
+[MainNet](docs/CANTON_MAINNET_NODE_PROMPT.md) read-only node handoff prompts.
+These public guides are committed; private runtime credentials, database dumps
+and test-wallet keys remain excluded.
+
 ### Self-custodial by construction
 Native staking and exit transactions are signed by the user's wallet. CantonStake's backend observes verified chain events and records the corresponding Daml lifecycle through its app-provider party. The experimental auto-compound keeper is disabled; its permit storage is not yet a verified authorization boundary.
 
 ### Canton Coin reward rounds
-A BullMQ scheduler ticks every 10 minutes, ingests CIP-0104 `AppActivityRecord` entries from the SV Scan API, and distributes CC across active bonded positions pro-rata bonded stake. Idempotent on `(roundNumber, party, eventId)` so re-polling never double-credits.
+A legacy BullMQ scheduler records allocations every 10 minutes from the
+LocalNet-shaped Scan activity feed. These records are not CC claims or payments.
+The scheduler is disabled for the external Loop TestNet workflow; its configured
+pool and raw-token weighting are not reused for real multi-network rewards.
 
-Parties and traffic weights are read live from the Scan API. The Scan publishes no per-round mint pool, so the **gross CC per round is a configured constant** (`SCAN_ROUND_CC_POOL`) rather than a network-sourced figure — labelled as such rather than presented as live.
+The legacy **gross allocation per round is a configured constant**
+(`SCAN_ROUND_CC_POOL`), not a network-issued minting allowance. Real TestNet
+rewards must be observed through DSO-issued reward coupons, with eligibility,
+beneficiary assignment and minting verified separately. See the staged reward
+observation section below.
 
 ### On-ledger 75/25 beneficiary split
-The `BeneficiarySplit` Daml template enforces `sum(weights) == 1.0` and routes CC to the delegator's Loop party and the app treasury at distribution time. Operator can rotate weights via `Split_Update`, which emits a `BeneficiarySplitUpdated` audit beacon.
+The `BeneficiarySplit` Daml template records recipient weights and enforces
+`sum(weights) == 1.0`; it does not itself claim or transfer CC. Its `Update`
+choice emits a `BeneficiarySplitUpdated` audit contract. The provisioned hosted
+TestNet delegator split cannot substitute for beneficiaries using real Loop
+wallets. Per-user assignment and verified minting remain pending.
 
 ### Validator quality scoring
 Backend service polls each chain's validator source on a 1-hour cron, normalises into a `ScoredValidator` shape, and caches by network mode in Redis. Cosmos Hub, Celestia, and Osmosis validators are read from a chain-ID-verified RPC across all pages; the Cosmos live yield estimate uses that same verified RPC. Composite score combines uptime, commission, slash history, and stake concentration, but uptime and slash history remain unmeasured estimates on chains that do not expose them. The scores drive the staking picker.
@@ -130,7 +157,37 @@ Slashing monitor diffs validator scores hourly and emits `validator.score_drop` 
 `/api/tax/csv?format=koinly` returns a downloadable CSV of every reward event and native sweep keyed to the user's EVM address, in Koinly's import format.
 
 ### Live narrator
-The `/rewards` page surfaces an Anthropic-powered live commentary on the current round, contextualised with the user's lifetime CC, latest round share, and milestone crossings (10/100/1000 CC). Falls back to a templated explainer when no API key is set.
+The backend narrator endpoint can explain recorded activity using Anthropic or
+a templated explanation when no API key is set. Its unused frontend component
+and API wrapper have been removed; the rewards page uses recorded data instead.
+
+### Connected-wallet rewards (staged)
+
+`POST /api/account/rewards` is read-only and batches up to eight native wallet
+addresses into one ledger inventory, deployment-local position metadata,
+recorded history and optional round history. The rewards page gets its scope
+from connected EVM, Cosmos Hub, Celestia, Osmosis, Sui, Aptos, Solana and Polkadot
+wallet hooks; there is no default wallet or hosted-delegator substitution.
+Hex/bech32 addresses are normalized; case-sensitive Solana/SS58 keys are not.
+The response must match the frontend's network and exact wallet scope.
+
+History remains available if the ledger inventory fails; failed reads are not
+converted to zero rewards. The compact scrolling position panel is retained.
+CC totals cover the selected period (or latest displayed events if truncated),
+not a claimed lifetime payout. Native assets are grouped separately; current
+native sweep records are Polygon-only. Round totals and CC allocations are
+database records, not proof of CC settlement. External Loop TestNet reports
+claims/payments and per-user splits as unconfigured; primary positions show CC
+disabled, while preserved legacy allocations remain readable. The rewards page
+does not promise a timed payout or a verified 75/25 transfer.
+
+`backend/scripts/check-account-rewards.ts <actual-native-wallet-address>` checks
+the staged endpoint against the real TestNet database and both ledger sources
+inside a PostgreSQL-enforced read-only transaction. At 2026-10-04 11:25 UTC it
+preserved the supplied wallet's one legacy Monad position, read zero history
+events and ten recorded rounds, rejected a wrong deployment and invalid/empty
+wallet scopes, and made no writes. This is not a Loop wallet integration test,
+does not verify native or CC payments, and does not deploy any configuration.
 
 ### Cross-chain portfolio view
 `/portfolio` aggregates Canton-recorded positions from every connected EVM, Cosmos, Sui, Aptos, Solana, and Polkadot wallet, with bonded/unbonding counts. Cosmos-family wallet reads use chain-ID-checked RPC queries and exhaust pagination. Testnet assets have no real USD valuation; mainnet USD totals are shown only when all active positions have chain metadata and prices. The per-address `/api/portfolio/:address` endpoint combines live Polygon ValidatorShare balances with Canton-recorded native-chain positions and reports unavailable reads or unclassified positions explicitly. Refreshes every 30 seconds.
@@ -415,13 +472,12 @@ cantonstake/
 │   │   ├── dashboard/                 # Connected user overview
 │   │   ├── positions/                 # Per-position lifecycle + sweep
 │   │   ├── portfolio/                 # Cross-chain aggregate
-│   │   ├── rewards/                   # CC rewards + narrator
+│   │   ├── rewards/                   # Connected-wallet positions + recorded rewards
 │   │   ├── analytics/                 # Marker history + insights
 │   │   ├── settings/                  # Auto-compound permits + alert channels
 │   │   └── providers.tsx              # Wagmi + dapp-kit + Sui + WalletPicker
 │   ├── components/
-│   │   ├── chrome/                    # TopNav, PriceTape, CCRoundTicker, SystemStatus
-│   │   ├── diagrams/                  # LifecycleDiagram, BeneficiaryPipeline, RoundVisualizer
+│   │   ├── chrome/                    # TopNav, PriceTape, CCRoundTicker
 │   │   ├── primitives/                # Banner, Btn, Card, Chip, EmptyState
 │   │   ├── trace/                     # Live trace pubsub
 │   │   ├── WalletPickerModal.tsx      # Loop + EVM + Cosmos + Sui in one modal
@@ -430,7 +486,7 @@ cantonstake/
 │   │   ├── api.ts                     # Typed backend client
 │   │   ├── chains.ts                  # Chain catalog + chainFromAddress heuristic
 │   │   ├── chains/                    # Per-chain IChainAdapter implementations
-│   │   ├── canton/                    # Loop SDK + mock providers
+│   │   ├── canton/                    # Real Loop SDK provider and signing workflow
 │   │   ├── cosmos/use-cosmos-wallet   # Keplr / Leap React hook
 │   │   ├── sui/use-sui-wallet         # Mysten dapp-kit wrapper
 │   │   ├── prices.ts                  # CoinGecko POL price + CC env
@@ -462,7 +518,7 @@ cantonstake/
 │   │       ├── validator-scoring.ts   # public-API ingestion + Redis cache
 │   │       ├── notifications.ts       # Telegram / Resend / Discord fan-out
 │   │       ├── slashing-monitor.ts    # validator score-drop alerts
-│   │       ├── nativeSweep.ts         # MockValidatorShare reward sweep
+│   │       ├── nativeSweep.ts         # Real Polygon validator reward sweep
 │   │       ├── narrator.ts            # Anthropic-powered round commentary
 │   │       └── observability.ts       # Prometheus + Sentry
 │   ├── prisma/schema.prisma           # User, StakingPosition, RewardRound, etc.
@@ -472,9 +528,9 @@ cantonstake/
 │   └── daml/CantonStake/
 │       ├── Staking.daml               # StakingRequest, StakingPosition, BeneficiarySplit
 │       └── Setup.daml
-├── evm/                               # Hardhat / MockValidatorShare
-│   ├── contracts/MockValidatorShare.sol
-│   └── scripts/                       # deploy, fund, verify
+├── evm/                               # Hardhat / liquid-staking tools
+│   ├── contracts/TestWrappedPOL.sol   # Amoy test-token wrapping
+│   └── scripts/                       # sPOL deployment and round-trip checks
 ├── docker-compose.yml                 # Local stack (Postgres, Redis, frontend, backend)
 ├── .github/workflows/deploy.yml       # GHCR build + SSH-deploy CI
 └── references/                        # Vendored upstream repos (loop-sdk, restake, sui-staker-ui, etc.)
@@ -584,6 +640,128 @@ swaps every chain endpoint/contract at once, with a hard
 `MAINNET_CONFIRMED=yes` interlock for mainnet and a visible mode badge in
 the UI. See **[docs/NETWORK_MODES.md](docs/NETWORK_MODES.md)** for the full
 per-chain table and the known mainnet gaps.
+
+### Polygon Amoy liquid staking (testnet only)
+
+Testnet `/stake` defaults Polygon to the official Amoy sPOL deposit and a
+liquidity-backed swap exit, both paid with native Amoy test POL. The same flow is
+available at `/stake/liquid`. Direct validator delegation remains an advanced
+option at `/stake?polygon=validator`; that separate flow needs Sepolia test POL
+and Sepolia ETH. Mainnet continues to use its existing validator flow.
+
+The liquid backend requires `SPOL_TEST_ENABLED=true` and the configured
+`SPOL_TEST_ROUTER`, `SPOL_TEST_QUOTER`, `SPOL_TEST_WRAPPER`, and `SPOL_TEST_POOL`.
+Frontend and backend must be deployed together: balances now identify their
+wallet, and quotes identify their chain, token and swap contracts. The UI fails
+closed against an older or mismatched API response.
+
+Safeguards include connected-wallet balance isolation, explicit Amoy switching,
+fresh transaction simulation and gas checks, a 1-token transaction limit,
+30-second quotes, 1% swap slippage, and a 5% price-impact limit measured against
+the pool's pre-trade spot. The pool price can differ substantially from the
+protocol redemption value; these limits do not guarantee a profitable round
+trip. New approvals are limited to the requested amount. If approval outlasts a
+quote, review a fresh quote; the allowance is reused rather than approved again.
+The official deposit method has no on-chain minimum-output parameter.
+
+Canton tracking is optional public-balance evidence, not validator delegation
+or CC payout entitlement. CC rewards remain disabled. The self-seeded swap pool
+is a test fixture with finite liquidity. The queued cross-chain redemption
+fallback is **not implemented or enabled**; the UI never calls the sPOL bridge
+burn as a local withdrawal. No mainnet liquidity route is enabled by this work.
+
+Verification commands (run from the indicated package directory):
+
+- Frontend: `npm test` and `npm run typecheck`.
+- Backend: `node_modules/.bin/tsx --test test/*.test.ts` and `npm run typecheck`.
+- Backend live reads only: `node_modules/.bin/tsx scripts/check-liquid-readonly.ts`.
+  This checks real quotes, disables Canton writes, and does not sign transactions.
+- EVM local swap fixture: `node_modules/.bin/hardhat run --no-compile --config v3-test.config.cjs scripts/test-spol-v3-local.cjs`.
+- EVM deployed-contract fork: `node_modules/.bin/hardhat run --no-compile --config spol-test.config.cjs scripts/check-spol-amoy-roundtrip.cjs`.
+  Requires an Amoy RPC that serves historical state. Only an explicit `PASS`
+  result establishes success; a timeout or EDR/RPC error is not a pass, even if
+  the Hardhat launcher returns exit code zero. This tests a swap, not canonical
+  redemption, and local fork events are not Canton evidence.
+
+## Canton DAR build and deployment workflows
+
+DAR releases are separate from Docker application deployments. These scripts
+do not restart services, create parties, delete old packages, or pay CC rewards.
+Requirements: Node.js 18+, the Daml SDK pinned by the selected project's
+`daml.yaml`, and its dependency DARs. Java is also needed for `daml test`.
+
+```bash
+# Local build only; no upload. Add --run-tests when Daml tests/Java are available.
+bash scripts/build-canton-dar.sh
+
+# Non-mutating server compatibility check; prints artifact identity and confirmation.
+bash scripts/validate-canton-dar.sh --network testnet
+
+# Explicit remote write: validates again, uploads, requests vetting, checks packages.
+# Replace the placeholder with the exact SHA-256 printed by validation.
+bash scripts/upload-canton-dar.sh --network testnet --confirm 'testnet:<SHA256>'
+
+# Test the deployment safeguards without any network writes.
+node --test scripts/canton-dar.test.mjs
+
+# Regression-test the built application DAR in a separate, never-uploaded package.
+# Requires Java on PATH; the test dependency currently pins cantonstake 0.0.2.
+(cd daml/CantonStakeTests && daml test)
+```
+
+The verified TestNet endpoint and synchronizer are in
+[`scripts/canton-dar.targets.json`](scripts/canton-dar.targets.json). MainNet and
+DevNet deliberately have no default target. Configure each from its node handoff
+using **both** dedicated variables, then use the same validate/upload scripts:
+
+```bash
+export CANTON_DAR_MAINNET_JSON_API_URL='https://<verified-mainnet-host>/<json-api-prefix>'
+export CANTON_DAR_MAINNET_SYNCHRONIZER_ID='<complete-mainnet-synchronizer-id>'
+bash scripts/validate-canton-dar.sh --network mainnet
+bash scripts/upload-canton-dar.sh --network mainnet --confirm 'mainnet:<SHA256>'
+```
+
+For DevNet use `CANTON_DAR_DEVNET_JSON_API_URL`,
+`CANTON_DAR_DEVNET_SYNCHRONIZER_ID` and `--network devnet`. No production
+`.env` files are loaded or shared between networks. Where authentication is
+required, supply `--token-file /path/to/private-token` or securely inject
+`CANTON_DAR_<NETWORK>_AUTH_TOKEN`; never put tokens in arguments, target JSON,
+committed files, or Actions logs. HTTPS is required; redirects are refused.
+The target configuration is operator-supplied, not independent proof of network
+identity. Verify the endpoint/synchronizer mapping before approving a release.
+
+Use `--project daml/LiquidStake` for that separate package, `--dar PATH` for a
+specific artifact and `--expected-sha256 HASH` to pin an artifact's bytes.
+Bump the Daml package version before publishing changed code, validate upgrade
+compatibility, and preserve old packages/contracts needed by active positions.
+Uploads are not retried automatically: a timeout can mean the write completed.
+Inspect the node before retrying.
+
+Every successful local build and every attempted remote workflow writes a
+private JSON audit receipt under `.deploy-backups/canton-dar/` (gitignored),
+including target, checksum, main/dependency package IDs and stage outcomes.
+`--receipt PATH` selects a new receipt file; existing files are refused.
+Upload checks that all bundled packages are visible afterwards. It records
+vetting as requested/accepted, **not independently verified**; confirm topology
+propagation on the node. No service-user or staking test is implied by upload.
+
+For GitHub Actions or another CI system, invoke validation in a job with the
+required SDK/dependency DARs and node connectivity. Keep upload in a separately
+approved job with the same artifact/checksum and protected network-specific
+secrets. The existing automatic Docker deployment workflow is unchanged.
+
+**DAR release status (2026-10-03):** `cantonstake-0.0.2.dar` fixes the
+`StakingPosition_RequestUnbond` archival defect by making the intent choice
+non-consuming. Five local lifecycle regressions and 17 deployment-safeguard
+tests pass. It was validated, uploaded and its vetting independently observed
+on the public TestNet participant/synchronizer. MainNet, application endpoints,
+parties and service users were not changed. The separate `CantonStakeTests`
+package is local-only; its Daml Script dependencies are not in the app DAR.
+The old `0.0.1` DAR still has the defect and must not be activated. CC reward
+attribution/claiming remains unverified; package deployment does not establish
+that the application is connected to the public node or can pay rewards.
+
+API contract: [JSON Ledger API DAR validation and upload](https://archived.docs.digitalasset.com/build/3.5/reference/json-api/openapi.html).
 
 ## Environment Variables
 
@@ -918,3 +1096,380 @@ staking routes.
 **Stake any chain. Earn on Canton.** — Self-custody by construction.
 
 </div>
+## Canton TestNet cutover gate (2026-10-04)
+
+The remote TestNet application parties and service users have been confirmed by
+read-only API checks. CantonStake `0.0.2` and all 33 bundled packages are currently
+vetted for the supplied participant/synchronizer. This is provisioning evidence,
+not proof that the production application has been switched to that participant.
+
+Run the scoped, read-only check from `backend/`:
+
+```bash
+node_modules/.bin/tsx scripts/check-canton-testnet.ts
+```
+
+It does not load production `.env`, submit commands, upload packages, change
+rights, or transfer CC. A dedicated TestNet bearer token may be provided through
+`CANTON_TESTNET_LEDGER_TOKEN` when authenticated access has been provisioned;
+never supply it as a command argument. If several matching splits exist, select
+the operator-confirmed active CID through `CANTON_TESTNET_BENEFICIARY_SPLIT_CID`.
+The report deliberately keeps `cutoverReady: false`: read-only provisioning
+checks cannot establish a safe, end-to-end production cutover.
+
+Remaining deployment gates:
+
+- The operator applied an API allowlist on 2026-10-04: app server
+  `169.58.171.187` and node `149.50.116.129`, with other sources denied.
+  App-host ledger access was verified HTTP 200; denial from an untrusted host
+  was reported by the operator. Direct upstream ports still require protection.
+  IP protection does not make Ledger service users authentication boundaries;
+  authenticated access is required before funded/MainNet-grade operation.
+- Keep `CANTON_WRITE_ACCESS_PROTECTED=false` until that protection is independently
+  verified. Setting it to `true` only acknowledges external access controls;
+  **the flag does not secure the node**. Runtime configuration is unchanged.
+- Only one matching active 75/25 split remained at the 2026-10-04 01:50 UTC
+  recheck. The app did not archive either contract. Revalidate before cutover.
+- Preserve existing LocalNet-tracked positions, exit flows and liquid-balance
+  records during cutover. Do not replace their party/contract identifiers blindly.
+- The operator confirmed participant-signed hosted service identities on the
+  node, but these are **not an end-user Loop wallet**. The app integration must
+  use real Loop TestNet accounts. The staged hosted-account provider and its
+  capability endpoint have been removed; no hosted-wallet fallback is offered.
+- An earlier hosted-service TestNet create/observe/cancel check passed, with verified cleanup and
+  unchanged staking positions. No EVM transactions, token transfers or stake
+  accepts were performed. This is historical provisioning evidence, **not Loop
+  integration validation**. Its receipt is retained:
+  `.deploy-backups/canton-testnet-workflow/1791078894862-24afd4a6-e5d9-47bf-af6a-2fff2679fd42.json`.
+  That hosted-service test helper and the newly added mock Loop-wallet tests
+  have been removed. Do not create substitute wallet/test environments to
+  validate the Loop workflow. Static checks do not establish live integration.
+- Full Loop signing requires Five North review/deployment of the exact custom
+  package on the participant hosting Loop users. Native-wallet linking,
+  independent backend adoption of Loop-signed requests, preservation of legacy
+  positions, and a real Loop TestNet lifecycle remain unverified. No production
+  cutover or actual CC transfers have been performed. Database allocations are
+  not CC payments.
+
+The 3.5 node requires package-name identifiers in ACS filters. Commands select
+the validated package through `packageIdSelectionPreference`; do not replace
+the filter's `#cantonstake` identifier with a package hash. See
+[Digital Asset's package-preference documentation](https://docs.digitalasset.com/build/3.5/tutorials/app-dev/external_signing_submission.html).
+
+### Staged real TestNet reward observation
+
+`POST /api/loop/rewards/entitlements` uses the actual connected Loop TestNet
+session, verifies its party through Loop, and reads the configured primary
+provider's reward-assignment interface at an explicit ledger offset. It does
+not fall back to the hosted delegator or mix legacy LocalNet allocation records.
+The compact section inside Rewards → How rewards work shows exact decimal
+minting entitlements separately from recorded allocations, balances and payouts.
+
+The observer verifies the reviewed interface, TestNet synchronizer, DSO
+signatory, implementing template, provider/beneficiary, decimal precision and
+expiry. Missing or failed interface views are unavailable, not zero. Visibility
+is limited to provider-visible active coupons; an archived coupon does not prove
+minting, and an empty snapshot does not establish zero lifetime earnings.
+
+Run the real read-only node diagnostic from the application host:
+
+```bash
+cd backend
+node_modules/.bin/tsx scripts/check-canton-rewards-readonly.ts
+```
+
+It does not load production environment files, generate wallets, submit commands,
+assign coupons, claim rewards or transfer funds. Package vetting is paginated
+to completion within a fixed bound; incomplete inventory fails the check.
+At **2026-10-04 14:05 UTC**, the actual node returned ledger offset `2137797`:
+the reviewed reward-assignment interface `1.0.0` was installed/vetted, five
+`splice-amulet` versions (`0.1.19` through `0.1.23`) were vetted, and the app
+provider had **no active FeaturedAppRight and no visible reward coupons**.
+The empty query passed; positive coupon-view decoding, real Loop authorization,
+assignment, minting and settlement were **not** verified by this diagnostic.
+
+The [reward-assignment API](https://docs.sync.global/app_dev/api/splice-api-reward-assignment-v1/Splice-Api-RewardAssignmentV1.html)
+lets providers divide unassigned minting rights among beneficiaries. Assignment
+is not payment; real Loop beneficiary collection still needs verification.
+[CIP-0104](https://github.com/canton-foundation/cips/blob/main/cip-0104/cip-0104.md)
+specifies featured-only traffic-based rewards in its proposed implementation.
+Do not promise an unfeatured per-round payout or create arbitrary `AppActivity`
+contracts to manufacture eligibility. Installed packages alone do not establish
+network activation, actual coupon issuance or live economic parameters.
+
+Remaining gates are the exact package's approval on Loop's hosting participant,
+a genuine Loop wallet lifecycle, applicable provider reward eligibility, an
+agreed allocation policy across unlike native assets, and verified beneficiary
+collection/payment evidence. Production configuration and deployments remain
+unchanged; CC payments stay disabled.
+
+Follow-up at **2026-10-04 14:14 UTC** also verified that `splice-wallet`
+versions `0.1.20`–`0.1.24` are installed/vetted. This is package evidence, not
+working minting automation. The diagnostic optionally accepts the **public**
+party ID from the real Loop TestNet wallet through
+`CANTON_TESTNET_LOOP_PARTY_ID` and reads whether that party is locally hosted;
+without it, hosting is explicitly unknown. No hosted service identity is used
+as a default. The [documented minting-delegation automation](https://docs.sync.global/validator_operator/validator_delegations.html)
+requires beneficiary hosting on the delegate's validator and explicit user
+authorization. Do not assume our hosted provider can collect for a user hosted
+only on Loop's validator, or grant it the user's `actAs` rights as a shortcut.
+
+The real SDK wrapper now validates party **and public key** through Loop's
+account API before displaying a new/restored connection. Reads are bounded;
+disconnect clears app authorization and the loaded SDK synchronously. Generation
+guards prevent delayed verification or SDK loading from restoring a disconnected
+session or clearing a newer account. These are staged source changes: live
+connection/signing race checks still require a real Loop wallet, and static
+checks are not a substitute.
+
+### Staged real Loop TestNet request handoff
+
+The native request path (direct Polygon validator staking, Monad, BNB,
+Cosmos Hub, Celestia, Osmosis, Sui, Solana, Aptos and Polkadot) now has
+`/api/loop/staking/prepare`, `/authorize`, and `/adopt` endpoints. They verify the
+actual Loop TestNet bearer session, require a native-wallet signature over a
+random expiring intent, and independently observe the exact Canton contract
+before associating it with the user and validator. Existing wallet associations
+are not silently reassigned. No mock wallet is used for integration verification.
+
+Association is now append-only per request: the native consent explicitly binds
+that wallet to the connected Loop party for one intent, then the independently
+observed contract is mirrored in `StakingIntent`. A wallet already used by a
+legacy party can create a new request under its Loop party without changing the
+old user's primary wallet, moving positions, or transferring reward entitlement.
+An existing Loop party may likewise use another explicitly verified native
+wallet. Rewards summary/history, rounds, analytics, narrator and export queries
+follow each position's native address, not the party's primary wallet field.
+Unknown-wallet analytics stays empty/account-scoped rather than falling back to
+global totals. Adoption refuses requests with an already recorded native stake
+hash even while Canton acceptance is still being processed. No database schema
+or production data migration is needed. These paths still require real Loop
+wallet verification before activation; static checks do not prove it.
+
+`NEXT_PUBLIC_LOOP_STAKING_FLOW=external` selects that client path. Backend
+`LOOP_STAKING_ENABLED=false` remains the default; exact-package review through
+`LOOP_REVIEWED_PACKAGE_ID` and the protected remote TestNet configuration are
+required before it can run. The readiness response exposes any blocking reason.
+These settings are provided in the TestNet example only; running deployments
+were not changed. The separate Amoy liquid route is not replaced by this path.
+
+The positions panel now recovers pending requests from the provider's ledger
+view, including unadopted requests after the Redis nonce expires. Cancellation
+is signed in Loop and independently checked against the archive's consuming
+choice; absence from the active-contract list is not cancellation proof.
+Unconfirmed attempts remain available for read-only reconciliation after reload.
+Unbonding now asks Loop to approve the delegator-controlled intent before the
+native EVM transaction. The provider must observe the exact ledger exercise;
+uncertain submissions block native broadcast. Receipt references and native
+broadcast retry guards are local metadata, never authentication or ledger proof.
+The external watcher rejects unadopted requests instead of guessing Polygon.
+
+Receipt recovery now checks an existing Loop update ID or native EVM hash without
+submitting another transaction. A proved revert of the exact recorded native
+hash can clear its guard; arbitrary hashes and unknown original broadcasts cannot.
+
+Optional `CANTON_LEGACY_*` settings preserve the existing LocalNet during the
+remote TestNet cutover. Reads retain source tags; lifecycle writes resolve the
+contract's original participant/package instead of copying contracts or identities.
+The separate Amoy LiquidBalance registry retains its original ledger/operator.
+Only old positions retain their original native-wallet-controlled exit flow;
+new staking requests cannot fall back to hosted signing. Readiness and request
+preparation block new creates if active database positions disappear from the
+configured ledger view. `backend/scripts/check-canton-cutover.ts` verifies actual
+read coverage without submitting commands; proof-driven write routing remains untested.
+
+Still pending: actual Loop custom-DAR deployment approval, real wallet validation,
+operator recovery when original receipt IDs are unknown,
+live verification of preserved exits and append-only wallet association,
+and real per-user CC settlement.
+The staged external mode disables inherited LocalNet CC marker/allocation paths.
+TypeScript/static checks are not end-to-end wallet or payout proof.
+
+### Staged Polkadot Loop workflow
+
+The actual selected extension signs the expiring native consent through
+[`signRaw`](https://polkadot.js.org/docs/extension/cookbook/), with backend
+verification against the exact canonical Westend SS58 account. Only standard
+Ed25519/Sr25519 accounts are accepted; no substitute signer, generated wallet,
+ECDSA/multisig bypass or hosted Loop fallback is offered. Consent binds the
+Westend Asset Hub genesis, nomination pool, amount, connected Loop party and
+reviewed Canton deployment. Extension source, permission and current account
+are checked around signing; account removal/revocation disconnects the UI.
+
+External native extrinsics use the real extension's `signPayload` separately
+from broadcast. The unchanged call, account, genesis and native signature are
+checked. Unbond saves the real signed-extrinsic hash before dispatch; missing
+browser storage blocks dispatch, and an uncertain response retains the guard.
+The provider must independently observe the exact Loop unbond approval first.
+Mainnet/legacy signing retains its original extension submission path.
+
+Read-only receipt recovery also takes the finalized native block hash because
+Substrate's RPC has no generic transaction-by-hash lookup. That value is only a
+lookup hint: recovery checks the canonical finalized block, exact SCALE hash,
+parent execution metadata, direct wallet-signed unbond call, exact pool/member
+points, dispatch result, pallet event and full historical unbond state. Partial
+unbonds, batches/proxies, unavailable historical state and unverified receipts
+cannot clear a guard. Same-block membership changes that cannot be established
+from the parent/block-end snapshots fail closed. Only a proved failure of the
+exact saved native attempt permits retry. Known finalized block hashes are
+saved for recovery; ambiguous broadcasts require the wallet/explorer reference.
+Finality polling hashes raw extrinsic bytes rather than trying to decode every
+unrelated v5 transaction through a v4 `SignedBlock` type.
+
+At 2026-10-04 13:41 UTC, `backend/scripts/check-polkadot-loop-readonly.ts` verified
+the actual checked Westend genesis, nomination-pool runtime and finalized
+metadata over 64 real blocks. The window contained no signed extrinsics or
+full-unbond calls, so native-signature reconstruction, personal wallet consent
+and position-bound receipt recovery remain unverified. Submission is classified
+as a write and is not automatically replayed; no transaction was sent. Both
+TypeScript checks and 18 existing relevant unit tests passed. No mock wallet,
+listening server or replacement Loop environment was created. Production
+configuration, deployment, Canton commands and CC transfers were not changed.
+
+### Staged Aptos Loop workflow
+
+The connected Aptos wallet signs real ownership consent using the wallet
+standard's [message-signing flow](https://petra.app/docs/signing-a-message).
+Only standard Ed25519 accounts are supported here; keyless, multisig, account
+abstraction and other schemes remain unverified. The backend reconstructs the
+exact accepted wrapper and deterministic consent nonce, verifies Ed25519, checks
+TestNet chain ID 2 and compares the derived key against the current on-chain
+`authentication_key`. It does not equate an original address with a rotated key.
+The expiring consent itself binds the wallet, validator, amount, Loop party,
+native network and reviewed Canton deployment. No signature/key is newly persisted.
+
+External native transactions build through the checked RPC, sign separately,
+verify unchanged raw bytes and the actual sender authenticator, then recheck
+the connected wallet/network/current authentication key. Unstake saves the real
+SDK-derived signed-transaction hash before broadcast; missing browser storage
+prevents broadcast and an uncertain response retains the guard. Loop approval
+must already be independently observed before unlocking a position.
+
+The RPC plugin now parses only the Aptos signed-transaction/view BCS media types,
+limits them to their exact Aptos routes and forwards the original bytes. The
+real SDK's binary submission is classified as a write and never automatically
+replayed after dispatch. Other application endpoints remain JSON. Legacy/mainnet
+wallet signing keeps its original path.
+
+Read-only unlock recovery checks the exact committed hash, wallet, delegation
+pool, later ledger version and native unlock entry function. Successful receipts
+must also prove the full wallet/pool unlock at that historical version; current
+balances and partial external unlocks cannot substitute. Missing/pruned state
+or unavailable RPCs retain the guard. Only a proved failure of the exact saved
+attempt permits retry. The existing proof-driven watcher confirms unbonding and
+release; this change does not enable CC claims or payments.
+
+At 2026-10-04 13:27 UTC, `backend/scripts/check-aptos-loop-readonly.ts` verified an
+actual public TestNet unlock's native signature and SDK-derived transaction hash,
+matched authentication-key derivation with the SDK/current public account,
+rejected that signature as personal consent, read its complete historical unlock
+and successfully forwarded a genuine read-only BCS view through the staged pool
+client to a verified upstream. No prior AddStake receipt was indexed for that
+operator's commission unlock, so position-bound recovery remains unverified.
+No wallet, listening server, simulation or transaction submission was created.
+Both TypeScript checks and 35 existing Aptos/readiness/RPC tests passed. This is
+protocol evidence, not live Loop signing, a CantonStake round trip or payout proof;
+the BCS HTTP route and signed submission still need deployment/live verification.
+Production configuration and deployments were not changed.
+
+### Staged Solana Loop workflow
+
+Solana's real connected wallet signs the exact UTF-8 ownership consent; the
+backend verifies its canonical 64-byte Ed25519 signature against the actual
+case-sensitive public key. Consent binds TestNet's genesis hash, vote account,
+amount, fresh stake account and RPC-checked rent. Those account/rent values are
+retained during Loop adoption in the existing `StakingIntent` fields and checked
+again before native staking. No default wallet, substitute user signer or mock
+environment was added. The existing ephemeral stake-account key is used only
+for the real native account-creation transaction, not as the user's wallet.
+
+External unstaking requires Loop approval independently observed by the provider,
+plus the original verified stake account and bond slot. The native wallet signs
+separately from broadcast; unchanged message bytes and actual signatures are
+checked, the current wallet/network is rechecked, and the signature is saved
+before broadcast. Read-only recovery accepts only the exact legacy, single-signer,
+single-instruction deactivation emitted by this flow. It verifies raw transaction
+bytes/signature, wallet, authority, stake account and a later finalized slot using
+[Solana signature statuses](https://solana.com/docs/rpc/http/getsignaturestatuses)
+and [transaction receipts](https://solana.com/docs/rpc/http/gettransaction).
+Only a finalized failure of the exact saved attempt permits retry; missing or
+expired receipts, unknown signatures and RPC outages retain the guard.
+
+At 2026-10-04 12:03 UTC, `backend/scripts/check-solana-loop-readonly.ts` read an
+actual public deactivation and its prior delegation, verified the real native
+signature and rejected its use as personal consent. It correctly rejected that
+durable-nonce/multi-instruction transaction as retry-recovery proof. The bounded
+inventory found no matching single-instruction deactivation, so positive recovery
+and real wallet signing remain unverified. Both TypeScript checks and 13 existing
+Solana/readiness unit tests passed; these are not Loop round-trip evidence.
+Production configuration, deployments and CC settlement were not changed.
+
+### Staged Sui Loop workflow
+
+Sui uses the real dapp-kit wallet's personal-message signature for the expiring
+native ownership consent, followed by the same Loop-signed Canton request and
+independent provider observation. The backend checks the Sui personal-message
+intent, exact wallet address and consent, including TestNet's genesis identifier.
+Only standard single-key Ed25519/secp256k1/secp256r1 accounts are supported;
+zkLogin, passkeys and multisig are not silently accepted. Signatures remain
+transient; no mock wallet or substitute hosted signer was added.
+
+Unstaking requires a reviewed primary position with a verified StakedSui object,
+pool and original bond checkpoint. Loop approves the existing unbond choice;
+the provider independently checks the ledger-effects receipt before any native
+withdrawal. The provider is the StakingPosition signatory, which is entitled to
+see non-consuming exercises under [Daml's choice visibility rules](https://docs.digitalasset.com/build/3.4/reference/daml/choices.html).
+This does not require changing the DAR or adding a synthetic reward marker.
+Actual Loop-to-provider observation still requires live wallet verification.
+
+The external Sui exit builds through the verified network, signs separately,
+checks unchanged transaction bytes and the real native signature, then saves
+the actual case-sensitive digest before broadcast. Storage failure prevents
+broadcast; a lost response retains the retry guard. Read-only reconciliation
+checks the original raw transaction bytes/digest, sender, single withdrawal
+call, exact system/receipt objects and a later checkpoint. Only a proved failure
+of the exact saved digest may clear a known-attempt guard; unknown broadcasts
+and missing receipts never authorize a retry. Legacy/mainnet signing stays on
+its original SDK path. The existing watcher performs native-proof-driven
+ConfirmUnbond/Release; this change does not enable CC settlement.
+
+At 2026-10-04 11:42 UTC, `backend/scripts/check-sui-loop-readonly.ts` read an
+actual public TestNet unstake and its historical StakedSui object, verified the
+raw digest and native transaction signature, rejected that transaction signature
+as personal consent, and rejected a different receipt object. No wallet was
+generated and no transaction was submitted. This checks real receipt decoding,
+not a CantonStake stake, Loop round trip, live personal-consent flow or payout.
+Production settings were not changed.
+
+### Staged Cosmos-family Loop workflow
+
+Cosmos Hub `provider`, Celestia `mocha-5` and Osmosis `osmo-test-5` now use the
+same real Loop prepare/authorize/adopt path. Keplr/Leap signs an off-chain
+ADR-36 consent before the Loop contract create. The backend reconstructs the
+sign document, derives the bech32 address from the compressed public key and
+verifies the signature over the exact intent. Because ADR-36's `chain_id` is
+empty, the consent also explicitly names the native TestNet network, validator,
+amount, nonce, expiry, Loop party and Canton deployment. No native wallet keys
+or ownership signatures are newly persisted. Cosmos multisig/other key types
+and smart EVM accounts remain unsupported.
+
+Native unbond waits for an independently observed Loop approval. The staged
+Cosmos signer rechecks the live wallet/RPC, checks the signed staking message,
+and records its genuine signed-byte hash before broadcasting. A signing
+rejection creates no broadcast guard; an uncertain broadcast retains the hash
+for recovery. MainNet/legacy Cosmos calls retain the original CosmJS
+`signAndBroadcast` path. Recovery is authenticated and read-only through
+`/api/loop/staking/unbond/native-observe`: it checks the native network, raw tx
+hash, wallet, validator, micro-denomination, exact amount and block after the
+on-ledger native bond. A missing/pruned receipt is not permission to retry.
+
+The RPC pool now distinguishes CometBFT's exact transaction-not-found response
+from provider outages for transaction reads only. Writes and other internal
+errors retain their existing failover/no-replay rules. At 2026-10-04 11:03 UTC,
+the compiled classifier was checked against a real public TestNet response with
+zero writes. A real indexed Cosmos undelegation was also read through the live
+gateway; its JSON-RPC hash encoding is base64, not GET-route hex. These are
+protocol/read-path checks, **not Loop wallet, native round-trip or payout proof**.
+Backend build and frontend typecheck pass. Runtime configuration is unchanged;
+exact-package review, genuine Loop/Keplr signing and funded lifecycle verification
+are still required before activating this path.
