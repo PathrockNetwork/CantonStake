@@ -62,17 +62,10 @@ export default {
           "0%,100%": { opacity: "1", transform: "scale(1)" },
           "50%": { opacity: ".4", transform: "scale(.85)" },
         },
-        ticker: {
-          "0%": { transform: "translateX(0)" },
-          "100%": { transform: "translateX(-50%)" },
-        },
         spark: {
           "0%": { opacity: "0", transform: "scale(.6)" },
           "30%": { opacity: "1", transform: "scale(1.4)" },
           "100%": { opacity: "0", transform: "scale(2.2)" },
-        },
-        "flow-dash": {
-          to: { strokeDashoffset: "-40" },
         },
         "blink-caret": {
           "0%,49%": { opacity: "1" },
@@ -85,9 +78,7 @@ export default {
       },
       animation: {
         "pulse-dot": "pulse-dot 2s infinite",
-        ticker: "ticker 60s linear infinite",
         spark: "spark 1.6s ease-out",
-        "flow-dash": "flow-dash 1.4s linear infinite",
         "blink-caret": "blink-caret 1s step-end infinite",
         "fade-up": "fade-up 320ms ease-out",
       },

@@ -30,6 +30,9 @@ interface KeplrLike {
   }>;
   getOfflineSigner(chainId: string): unknown;
   getOfflineSignerAuto?(chainId: string): Promise<unknown>;
+  signArbitrary?(chainId: string, signer: string, data: string): Promise<{
+    pub_key: { type: string; value: string }; signature: string;
+  }>;
 }
 
 declare global {
@@ -100,7 +103,11 @@ export interface UseCosmosWalletReturn {
   signAndBroadcast: (args: {
     typeUrl: string;
     value: Record<string, unknown>;
+  }, options?: {
+    expectedWallet?: string;
+    onBeforeBroadcast?: (hash: string) => void;
   }) => Promise<{ txHash: string }>;
+  signOwnership: (message: string, expectedWallet: string) => Promise<string>;
 }
 
 export function useCosmosWallet(chain: CosmosChainKey = "cosmos"): UseCosmosWalletReturn {
@@ -110,18 +117,54 @@ export function useCosmosWallet(chain: CosmosChainKey = "cosmos"): UseCosmosWall
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Restore the connected address on mount so the chip persists across reloads.
+  // A saved address is only a hint. Verify the live extension key before
+  // reporting a connection, including after account changes or revocation.
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const sync = () => setAddress(localStorage.getItem(storageKey(chain)));
-    sync();
-    window.addEventListener(walletEvent, sync);
-    window.addEventListener("storage", sync);
-    return () => {
-      window.removeEventListener(walletEvent, sync);
-      window.removeEventListener("storage", sync);
+    let active = true;
+    let revision = 0;
+    const sync = async () => {
+      const currentRevision = ++revision;
+      const saved = localStorage.getItem(storageKey(chain));
+      const extension = getKeplrLike();
+      if (!saved || !extension) {
+        if (active && currentRevision === revision) {
+          setAddress(null);
+          setName(null);
+        }
+        return;
+      }
+      try {
+        const key = await extension.getKey(network.chainId);
+        if (!key.bech32Address.startsWith(`${network.prefix}1`)) {
+          throw new Error("Cosmos wallet key has the wrong prefix");
+        }
+        if (!active || currentRevision !== revision) return;
+        setAddress(key.bech32Address);
+        setName(key.name ?? null);
+        if (saved !== key.bech32Address) localStorage.setItem(storageKey(chain), key.bech32Address);
+      } catch {
+        if (!active || currentRevision !== revision) return;
+        setAddress(null);
+        setName(null);
+        localStorage.removeItem(storageKey(chain));
+      }
     };
-  }, [chain]);
+    const onChange = () => { void sync(); };
+    onChange();
+    window.addEventListener(walletEvent, onChange);
+    window.addEventListener("storage", onChange);
+    window.addEventListener("keplr_keystorechange", onChange);
+    window.addEventListener("leap_keystorechange", onChange);
+    return () => {
+      active = false;
+      revision++;
+      window.removeEventListener(walletEvent, onChange);
+      window.removeEventListener("storage", onChange);
+      window.removeEventListener("keplr_keystorechange", onChange);
+      window.removeEventListener("leap_keystorechange", onChange);
+    };
+  }, [chain, network]);
 
   const connect = useCallback(async () => {
     setError(null);
@@ -160,16 +203,20 @@ export function useCosmosWallet(chain: CosmosChainKey = "cosmos"): UseCosmosWall
   }, [chain]);
 
   const signAndBroadcast = useCallback(
-    async (msg: { typeUrl: string; value: Record<string, unknown> }) => {
+    async (msg: { typeUrl: string; value: Record<string, unknown> }, options?: {
+      expectedWallet?: string; onBeforeBroadcast?: (hash: string) => void;
+    }) => {
       const keplr = getKeplrLike();
       if (!keplr || !address) {
         throw new Error("Cosmos wallet not connected");
       }
       const currentKey = await keplr.getKey(network.chainId);
-      assertWalletOwner(network.chainName, currentKey.bech32Address, address);
+      const expectedWallet = options?.expectedWallet ?? address;
+      assertWalletOwner(network.chainName, address, expectedWallet);
+      assertWalletOwner(network.chainName, currentKey.bech32Address, expectedWallet);
 
       // Lazy-import @cosmjs/stargate to keep the initial bundle small.
-      const { SigningStargateClient, GasPrice } = await import(
+      const { SigningStargateClient, GasPrice, calculateFee } = await import(
         "@cosmjs/stargate"
       );
       const offlineSigner = (
@@ -189,15 +236,41 @@ export function useCosmosWallet(chain: CosmosChainKey = "cosmos"): UseCosmosWall
         if (actualChainId !== network.chainId) {
           throw new Error(`RPC connected to ${actualChainId}, expected ${network.chainId}.`);
         }
-        const result = await client.signAndBroadcast(
-          address,
-          [msg],
-          "auto",
-          `CantonStake ${chain} staking`,
-        );
+        const memo = `CantonStake ${chain} staking`;
+        if (networkMode !== "testnet" || process.env.NEXT_PUBLIC_LOOP_STAKING_FLOW !== "external") {
+          // Preserve the established MainNet/legacy wallet transaction path.
+          const result = await client.signAndBroadcast(expectedWallet, [msg], "auto", memo);
+          if (result.code !== 0) throw new Error(`broadcast failed: code=${result.code} log=${result.rawLog ?? ""}`);
+          return { txHash: result.transactionHash };
+        }
+        const [{ TxRaw, TxBody }, { sha256 }, { toHex }] = await Promise.all([
+          import("cosmjs-types/cosmos/tx/v1beta1/tx"), import("@cosmjs/crypto"), import("@cosmjs/encoding"),
+        ]);
+        const estimatedGas = await client.simulate(expectedWallet, [msg], memo);
+        if (!Number.isFinite(estimatedGas) || estimatedGas <= 0) throw new Error("Cosmos gas estimation is unavailable.");
+        // Same 1.4 gas multiplier as CosmJS's default auto-fee path.
+        const fee = calculateFee(Math.ceil(estimatedGas * 1.4), GasPrice.fromString(`${network.gasPrice}${network.denom}`));
+        assertWalletOwner(network.chainName, (await keplr.getKey(network.chainId)).bech32Address, expectedWallet);
+        const signed = await client.sign(expectedWallet, [msg], fee, memo);
+        const signedMessages = TxBody.decode(signed.bodyBytes).messages;
+        const expectedMessage = client.registry.encodeAsAny(msg);
+        if (signedMessages.length !== 1 || signedMessages[0]!.typeUrl !== expectedMessage.typeUrl ||
+            signedMessages[0]!.value.length !== expectedMessage.value.length ||
+            !expectedMessage.value.every((byte, index) => signedMessages[0]!.value[index] === byte)) {
+          throw new Error("The signed Cosmos transaction changed the requested staking message; nothing was broadcast.");
+        }
+        assertWalletOwner(network.chainName, (await keplr.getKey(network.chainId)).bech32Address, expectedWallet);
+        if (await client.getChainId() !== network.chainId) throw new Error("Cosmos RPC changed networks; nothing was broadcast.");
+        const bytes = TxRaw.encode(signed).finish();
+        const hash = toHex(sha256(bytes)).toUpperCase();
+        // Persist the genuine signed-byte hash before sending. A callback
+        // failure (e.g. unavailable browser storage) prevents the broadcast.
+        options?.onBeforeBroadcast?.(hash);
+        const result = await client.broadcastTx(bytes);
         if (result.code !== 0) {
           throw new Error(`broadcast failed: code=${result.code} log=${result.rawLog ?? ""}`);
         }
+        if (result.transactionHash.toUpperCase() !== hash) throw new Error("Cosmos broadcast returned a mismatched transaction hash; reconcile the signed transaction.");
         return { txHash: result.transactionHash };
       } finally {
         client.disconnect();
@@ -205,6 +278,20 @@ export function useCosmosWallet(chain: CosmosChainKey = "cosmos"): UseCosmosWall
     },
     [address, chain, network],
   );
+
+  const signOwnership = useCallback(async (message: string, expectedWallet: string): Promise<string> => {
+    const wallet = getKeplrLike();
+    if (!wallet?.signArbitrary || !address) throw new Error("Connect a Keplr/Leap account supporting ADR-36 ownership signatures.");
+    assertWalletOwner(network.chainName, address, expectedWallet);
+    assertWalletOwner(network.chainName, (await wallet.getKey(network.chainId)).bech32Address, expectedWallet);
+    const signature = await wallet.signArbitrary(network.chainId, expectedWallet, message);
+    assertWalletOwner(network.chainName, (await wallet.getKey(network.chainId)).bech32Address, expectedWallet);
+    if (signature.pub_key?.type !== "tendermint/PubKeySecp256k1" ||
+        typeof signature.pub_key.value !== "string" || typeof signature.signature !== "string") {
+      throw new Error("This Cosmos account type cannot provide a supported native ownership proof.");
+    }
+    return JSON.stringify(signature);
+  }, [address, network]);
 
   return {
     address,
@@ -215,7 +302,6 @@ export function useCosmosWallet(chain: CosmosChainKey = "cosmos"): UseCosmosWall
     connect,
     disconnect,
     signAndBroadcast,
+    signOwnership,
   };
 }
-
-export const cosmosChainId = cosmosNetworks.cosmos.chainId;

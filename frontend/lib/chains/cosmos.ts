@@ -23,10 +23,6 @@ import { fetchValidatorScores, type ValidatorScore } from "../api";
 import { cosmosNetworks, type CosmosChainKey } from "../cosmos/networks";
 import { chainById } from "../chains";
 
-const UATOM_PER_ATOM = 1_000_000n;
-// Cosmos Hub provider testnet and mainnet both currently use 21 days.
-const UNBONDING_SECONDS = 21 * 24 * 60 * 60;
-
 function networkError(message: string, cause?: unknown) {
   return new ChainAdapterError("NETWORK", message, cause);
 }
@@ -140,6 +136,3 @@ export function createCosmosAdapter(chainKey: CosmosChainKey): IChainAdapter {
 export const cosmosAdapter = createCosmosAdapter("cosmos");
 export const celestiaAdapter = createCosmosAdapter("celestia");
 export const osmosisAdapter = createCosmosAdapter("osmosis");
-
-export const cosmosUnbondingSeconds = UNBONDING_SECONDS;
-export const cosmosDenomScale = UATOM_PER_ATOM;

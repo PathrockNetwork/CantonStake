@@ -14,10 +14,6 @@ export function getProvider(id: string = loopSdkProvider.id): ICantonProvider {
   return p;
 }
 
-export function listProviders(): ICantonProvider[] {
-  return PROVIDER_LIST;
-}
-
 /** Returns the highest-priority available provider. */
 export function getActiveProvider(): ICantonProvider {
   return PROVIDER_LIST.find((p) => p.isAvailable()) ?? loopSdkProvider;

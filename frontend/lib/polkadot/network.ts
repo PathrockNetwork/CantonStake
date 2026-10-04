@@ -34,7 +34,7 @@ export function polkadotApi(): Promise<ApiPromise> {
   return currentApi;
 }
 
-export async function waitForFinalizedPolkadotExtrinsic(api: ApiPromise, txHash: string, afterHeight: number): Promise<void> {
+export async function waitForFinalizedPolkadotExtrinsic(api: ApiPromise, txHash: string, afterHeight: number): Promise<string> {
   let scanned = afterHeight;
   const deadline = Date.now() + 180_000;
   while (Date.now() < deadline) {
@@ -42,8 +42,12 @@ export async function waitForFinalizedPolkadotExtrinsic(api: ApiPromise, txHash:
     const height = (await api.rpc.chain.getHeader(head)).number.toNumber();
     for (let blockNumber = scanned + 1; blockNumber <= height; blockNumber++) {
       const hash = await api.rpc.chain.getBlockHash(blockNumber);
-      const block = await api.rpc.chain.getBlock(hash);
-      const index = block.block.extrinsics.findIndex((item) => item.hash.toHex() === txHash);
+      // Do not decode unrelated v5 extrinsics through the v4 SignedBlock type.
+      // Hash the exact SCALE bytes, then inspect events only for our index.
+      const block = await api.rpc.chain.getBlock.raw(hash) as unknown as { block?: { extrinsics?: string[] } };
+      if (!Array.isArray(block?.block?.extrinsics)) throw new Error("Polkadot finalized block is unavailable. Reconcile the recorded transaction before retrying.");
+      const { blake2AsHex } = await import("@polkadot/util-crypto");
+      const index = block.block.extrinsics.findIndex(item => /^0x[a-fA-F0-9]+$/.test(item) && blake2AsHex(item) === txHash);
       if (index >= 0) {
         const at = await api.at(hash);
         const records = await at.query.system.events() as unknown as Array<{
@@ -56,7 +60,7 @@ export async function waitForFinalizedPolkadotExtrinsic(api: ApiPromise, txHash:
         if (!events.some((record) => record.event.section === "system" && record.event.method === "ExtrinsicSuccess")) {
           throw new Error(`Polkadot transaction ${txHash} finalized without a success event.`);
         }
-        return;
+        return hash.toHex();
       }
       scanned = blockNumber;
     }

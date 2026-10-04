@@ -19,9 +19,8 @@ import { usePolkadotWallet } from "@/lib/polkadot/use-polkadot-wallet";
 import { fmt, fmtUsd } from "@/lib/format";
 import { tokens } from "@/lib/tokens";
 
-/** Canton-recorded positions for every connected wallet family. The legacy
- * /api/portfolio endpoint has empty fetcher stubs for non-Polygon chains and
- * cannot represent their distinct wallet addresses. */
+/** Canton-recorded positions for every connected wallet family. Query each
+ * connected address separately so distinct wallet families aren't conflated. */
 
 const CHAIN_COLOR: Record<string, string> = Object.fromEntries(
   CHAINS.map((c) => [c.id, c.color]),

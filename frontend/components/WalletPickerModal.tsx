@@ -171,8 +171,7 @@ export function WalletPickerModal({ open, onClose }: Props) {
                 lineHeight: 1.6,
               }}
             >
-              Loop identifies your Canton party and CC rewards. Connect the
-              native wallet for the network you stake on. Keys stay in your wallet.
+              Loop identifies your Canton party. Connect the native wallet for the network you stake on. Wallet connection alone does not enable CC rewards.
             </p>
           </div>
           <button

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accountChain, accountEvents, positionUsd, totalPositionUsd } from "../account-view";
+import { accountChain, accountEvents, positionUsd, totalPositionUsd, rewardPositionLabel } from "../account-view";
 import { stakeAmountWei } from "../stake-input";
 import type { PositionRow, RoundSummary } from "../api";
 import type { PriceSnapshot } from "../prices";
@@ -47,6 +47,12 @@ describe("account reference screen data", () => {
   it("shows only timestamped lifecycle events, newest first", () => {
     const result = accountEvents([{ ...position, argument: { ...position.argument, unbondingStartedAt: "2026-09-21T08:00:00Z", releasedAt: "not-a-date" } }], [{ ...round, userCcAttributed: "4" }]);
     expect(result.map(item => item.title)).toEqual(["Unbonding started", "CC round attribution", "Position bonded"]);
+  });
+  it("labels reward filters with the recorded chain and validator", () => {
+    const monad = { ...position, chainMeta: { ...position.chainMeta!, chain: "monad", validatorId: 173 } };
+    expect(rewardPositionLabel(monad)).toBe("Monad · Validator #173");
+    expect(rewardPositionLabel({ ...monad, chainMeta: { ...monad.chainMeta, validatorId: 0 } })).toBe("Monad · Validator #0");
+    expect(rewardPositionLabel(position)).toBe("Polygon PoS · Position position-one");
   });
 });
 

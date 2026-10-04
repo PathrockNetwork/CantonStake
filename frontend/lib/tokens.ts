@@ -38,8 +38,6 @@ export const tokens = {
   hairlineStrong: "rgba(255,255,255,0.16)",
 } as const;
 
-export type Tokens = typeof tokens;
-
 /** Short alias matching the prototype's `C` constant for porting fidelity. */
 export const C = {
   ink950: tokens.ink[950],

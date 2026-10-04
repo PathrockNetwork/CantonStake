@@ -62,15 +62,6 @@ function evmTx(data: `0x${string}`, value?: bigint): UnsignedTx {
     : { kind: "evm", to: STAKING_CONTRACT, data, value };
 }
 
-interface MonadValidatorRow {
-  id?: number | string;
-  address?: string;
-  name?: string;
-  commission?: number;
-  total_stake?: string | number;
-  active?: boolean;
-}
-
 export const monadAdapter: IChainAdapter = {
   chainId: MONAD_CHAIN_ID,
 

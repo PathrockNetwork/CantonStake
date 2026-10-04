@@ -47,6 +47,10 @@ describe("all-chain deployment mode matrix", () => {
     }
     expect(chains.polygonSettlementChain.id).toBe(mainnet ? 1 : 11155111);
     expect(chains.polygonNativeChain.id).toBe(mainnet ? 137 : 80002);
+    const polygon = chains.CHAINS.find((chain) => chain.id === "polygon")!;
+    const monad = chains.CHAINS.find((chain) => chain.id === "monad")!;
+    expect(chains.stakingWalletNetworkName(polygon)).toBe(`${chains.polygonSettlementChain.name} (Polygon settlement)`);
+    expect(chains.stakingWalletNetworkName(monad)).toBe(monad.name);
     expect(chains.monadEvmChain.id).toBe(mainnet ? 143 : 10143);
     expect(chains.bnbEvmChain.id).toBe(mainnet ? 56 : 97);
     expect(cosmos.cosmosNetworks.cosmos.chainId).toBe(mainnet ? "cosmoshub-4" : "provider");

@@ -40,6 +40,13 @@ export type ChainConfig = {
   nativeExplorer?: { name: string; tx: (hash: string) => string };
 };
 
+/** Name the chain where the wallet signs, not the chain whose stake is secured. */
+export function stakingWalletNetworkName(chain: ChainConfig): string {
+  return chain.id === "polygon"
+    ? `${chain.wagmiChain?.name ?? "Ethereum"} (Polygon settlement)`
+    : chain.name;
+}
+
 // Validator contract resolution. Polygon deploys ONE ValidatorShare
 // contract per validator, created by the StakeManager when the validator
 // registers. There is therefore no deployment-wide staking address. The

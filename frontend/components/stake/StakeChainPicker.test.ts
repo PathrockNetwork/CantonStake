@@ -55,6 +55,21 @@ describe("multichain staking picker", () => {
 
   it("locks network selection during an active transaction", () => {
     const html = render({ busy: true });
-    expect((html.match(/<button[^>]*disabled=""/g) ?? []).length).toBe(10);
+    expect((html.match(/<button[^>]*disabled=""/g) ?? []).length).toBe(11);
+  });
+
+  it("starts with a collapsed, labelled mobile network control", () => {
+    const html = render();
+    expect(html).toMatch(/class="account-chain-toggle" aria-expanded="false" aria-controls="[^"]+"/);
+    expect(html).toContain("Change network ↓");
+    expect(html).not.toContain("account-chain-picker__content is-expanded");
+  });
+
+  it("does not use the Sepolia watcher to label the Amoy liquid route", () => {
+    const html = render({ polygonLiquid: true, watchers: watchers.map(w => ({ ...w, status: "unreachable" })) });
+    expect(html).toContain("Liquid route · Amoy");
+    expect(html).toContain("Each route checks its own readiness");
+    expect(html).not.toContain("Signing requires a ready watcher and Canton connection");
+    expect(html).toContain("Watcher unavailable");
   });
 });

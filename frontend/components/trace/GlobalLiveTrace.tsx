@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { tokens } from "@/lib/tokens";
 import {
-  startAmbientTrace,
   useTraceLog,
   type TraceEntry,
   type TraceTag,
@@ -61,10 +60,6 @@ export function GlobalLiveTrace() {
   const [activeFilter, setActiveFilter] = useState<TraceFilter>("all");
   const log = useTraceLog();
   const scroller = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    startAmbientTrace();
-  }, []);
 
   const counts = useMemo(() => Object.fromEntries(
     FILTERS.map(({ id }) => [id, id === "all" ? log.length : log.filter(entry => matchesFilter(entry, id)).length]),

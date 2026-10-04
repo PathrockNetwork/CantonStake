@@ -169,4 +169,3 @@ export const suiAdapter: IChainAdapter = {
 };
 
 export const suiUnbondingSeconds = UNBONDING_SECONDS;
-export const suiSystemStateObject = SUI_SYSTEM_STATE;

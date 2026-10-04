@@ -5,11 +5,10 @@ import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAccount, useReadContract, useSendTransaction, useSwitchChain } from "wagmi";
 import { getAccount, waitForTransactionReceipt } from "@wagmi/core";
-import { parseAbi, parseEther, parseUnits } from "viem";
+import { BaseError, UserRejectedRequestError, parseAbi, parseEther, parseUnits } from "viem";
 import { Btn } from "@/components/primitives/Btn";
 import { Card } from "@/components/primitives/Card";
 import { Chip } from "@/components/primitives/Chip";
-import { EmptyState } from "@/components/primitives/EmptyState";
 import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { PageMasthead } from "@/components/primitives/PageMasthead";
 import {
@@ -24,7 +23,6 @@ import { wagmiConfig } from "@/lib/wagmi";
 import { adapterFor } from "@/lib/chains/index";
 import { fetchStakingParams } from "@/lib/chains/polygon";
 import { monadStakingContract } from "@/lib/chains/monad";
-import { chainFromAddress } from "@/lib/chains";
 import { fmt, fmtUsd } from "@/lib/format";
 import { usePrices } from "@/lib/prices";
 import { accountChain, positionUsd, shortId, totalPositionUsd, validatorLabel } from "@/lib/account-view";
@@ -45,6 +43,11 @@ import { networkMode } from "@/lib/network";
 import { assertEvmWalletBinding } from "@/lib/wallet-binding";
 import { createExclusiveAction } from "@/lib/exclusive-action";
 import { successfulEvmSettlementHash } from "@/lib/evm-settlement";
+import { LiquidHoldings, useLiquidHoldings } from "@/components/account/LiquidHoldings";
+import { filterPositionList, positionList } from "@/lib/position-list";
+import { LoopPendingRequests } from "@/components/account/LoopPendingRequests";
+import { LoopUnbondRecovery } from "@/components/account/LoopUnbondRecovery";
+import { approveLoopPositionUnbond } from "@/lib/canton/loop-staking-flow";
 
 /**
  * Positions — staking lifecycle view with Unbond and Claim actions.
@@ -119,6 +122,7 @@ export default function PositionsPage() {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const [chainFilter, setChainFilter] = useState("all");
+  const [kindFilter, setKindFilter] = useState("all");
   const [order, setOrder] = useState("newest");
   const [selectedId, setSelectedId] = useState<string | null | undefined>(undefined);
   const walletAddresses = [...new Set([address, cosmos.address, celestia.address, osmosis.address, sui.address, aptos.address, solana.address, polkadot.address].filter((value): value is string => !!value))];
@@ -142,55 +146,60 @@ export default function PositionsPage() {
       ? `This page is built for ${networkMode}, but the staking backend is on ${backendMode}. Open the matching deployment before signing.`
       : "Cannot verify the staking backend's network mode yet. Wait for the connection before signing.";
   const positions = positionsQ.data ?? [];
+  const liquid = useLiquidHoldings();
+  const listed = positionList(positions, liquid.state, liquid.address);
   useEffect(() => { setSelectedId(undefined); }, [address, cosmos.address, celestia.address, osmosis.address, sui.address, aptos.address, solana.address, polkadot.address]);
   useEffect(() => {
-    if (selectedId !== undefined || !positions.length) return;
+    if (selectedId === null || !listed.length) return;
+    if (selectedId !== undefined && listed.some(p => p.id === selectedId)) return;
     const requested = new URLSearchParams(window.location.search).get("position");
-    setSelectedId(positions.find(p => p.contractId === requested)?.contractId ?? positions[0].contractId);
-  }, [positions, selectedId]);
-  const focused = positions.find(position => position.contractId === selectedId);
+    setSelectedId(listed.find(p => p.id === requested)?.id ?? listed[0].id);
+  }, [listed, selectedId]);
+  const selected = listed.find(position => position.id === selectedId);
+  const focused = selected?.kind === "validator" ? selected.position : undefined;
   const bonded = positions.filter(p => p.argument.status === "Bonded");
   const unbonding = positions.filter(p => p.argument.status === "Unbonding");
   const haveData = anyWalletConnected && !!positionsQ.data && !positionsQ.isError;
   const activeValue = haveData ? totalPositionUsd(bonded, prices) : null;
   const exitingValue = haveData ? totalPositionUsd(unbonding, prices) : null;
-  const visible = positions.filter(p => (status === "all" || p.argument.status === status) && (chainFilter === "all" || accountChain(p).id === chainFilter)
-    && [p.contractId, p.chainMeta?.validatorAddress, p.chainMeta?.validatorShare, accountChain(p).name, accountChain(p).symbol].some(value => value?.toLowerCase().includes(search.toLowerCase())));
-  visible.sort((a, b) => order === "amount" ? Number(b.argument.amountPol) - Number(a.argument.amountPol) : (order === "oldest" ? 1 : -1) * ((Date.parse(a.argument.bondedAt ?? "") || 0) - (Date.parse(b.argument.bondedAt ?? "") || 0)));
-  const refresh = () => { void positionsQ.refetch(); void rewardsQ.refetch(); };
+  const visible = filterPositionList(listed, { status, chain: chainFilter, kind: kindFilter, search, order });
+  const refresh = () => { void positionsQ.refetch(); void rewardsQ.refetch(); void liquid.refetch(); };
   return <div className="page-shell account-page">
-    <PageMasthead index="03" section="Positions" title="Positions." accent="Your stake, your control." description="Monitor and manage your staking positions. View bonded, unbonding, and released positions and follow their lifecycle on Canton." />
+    <PageMasthead index="03" section="Positions" title="Positions." accent="Your stake, your control." description={networkMode === "testnet" ? "Monitor your liquid staking holdings and validator positions. Manage exits and follow recorded activity on Canton." : "Monitor and manage your staking positions. View bonded, unbonding, and released positions and follow their lifecycle on Canton."} />
     <WalletNotice connected={anyWalletConnected} error={positionsQ.isError || (!!address && rewardsQ.isError)} loading={anyWalletConnected && positionsQ.isLoading} onRetry={refresh} />
     <div className="account-metrics">
-      <AccountMetric label="Total active stake" value={activeValue === null ? "—" : fmtUsd(activeValue, 2)} detail="Estimated value of bonded positions" icon="stack" />
+      <AccountMetric label="Active validator stake" value={activeValue === null ? "—" : fmtUsd(activeValue, 2)} detail="Estimated value of bonded validator positions" icon="stack" />
       <AccountMetric label="Total unbonding" value={exitingValue === null ? "—" : fmtUsd(exitingValue, 2)} detail="Estimated value awaiting release" icon="clock" color="#bb6aff" />
-      <AccountMetric label="Bonded positions" value={haveData ? bonded.length : "—"} detail="Positions eligible for native yield" icon="cube" color="#34c6f6" />
+      <AccountMetric label="Bonded validator positions" value={haveData ? bonded.length : "—"} detail="Positions eligible for native yield" icon="cube" color="#34c6f6" />
       <AccountMetric label="Total CC earned" value={rewardsQ.data && !rewardsQ.isError ? `${fmt(rewardsQ.data.totalUserShare, 2)} CC` : "—"} detail="Your recorded beneficiary share" icon="coin" color="#f3c442" />
     </div>
-    <div className={`account-two-col account-positions-layout${focused ? "" : " account-positions-layout--empty"}`}>
+    <div className={`account-two-col account-positions-layout${selected ? "" : " account-positions-layout--empty"}`}>
       <AccountPanel title="Your staking positions" description="Search your positions and select one to view its details." icon="stack" action={<Link href="/stake" className="account-button">+ New stake</Link>}>
+        {networkMode === "testnet" && process.env.NEXT_PUBLIC_LOOP_STAKING_FLOW === "external" && <LoopPendingRequests />}
         <div className="account-filters">
           <label className="account-search"><span className="sr-only">Search positions</span><input className="account-field" aria-label="Search positions" placeholder="Search validator, chain, or position…" value={search} onChange={e => setSearch(e.target.value)} /></label>
           <label><span className="sr-only">Position chain</span><select className="account-field" aria-label="Position chain" value={chainFilter} onChange={e => setChainFilter(e.target.value)}><option value="all">All chains</option>{[...new Map([...liveChains(), ...positions.map(accountChain)].map(chain => [chain.id, chain])).values()].map(chain => <option key={chain.id} value={chain.id}>{chain.id === "polygon" ? "Polygon PoS" : chain.name}</option>)}</select></label>
-          <label><span className="sr-only">Position status</span><select className="account-field" aria-label="Position status" value={status} onChange={e => setStatus(e.target.value)}><option value="all">All states</option>{["Pending", "Bonded", "Unbonding", "Released", "Cancelled"].map(state => <option key={state}>{state}</option>)}</select></label>
+          {networkMode === "testnet" && <label><span className="sr-only">Staking type</span><select className="account-field" aria-label="Staking type" value={kindFilter} onChange={e => setKindFilter(e.target.value)}><option value="all">All staking types</option><option value="validator">Validator staking</option><option value="liquid">Liquid staking</option></select></label>}
+          <label><span className="sr-only">Position status</span><select className="account-field" aria-label="Position status" value={status} onChange={e => setStatus(e.target.value)}><option value="all">All states</option>{[...(networkMode === "testnet" ? ["Active"] : []), "Pending", "Bonded", "Unbonding", "Released", "Cancelled"].map(state => <option key={state}>{state}</option>)}</select></label>
           <label><span className="sr-only">Position sort order</span><select className="account-field" aria-label="Position sort order" value={order} onChange={e => setOrder(e.target.value)}><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="amount">Largest amount</option></select></label>
         </div>
-        <div className="account-table-wrap"><table className="account-table"><thead><tr><th>Chain · validator</th><th>Amount</th><th>Est. USD</th><th>Status</th><th>Details</th></tr></thead><tbody>
-          {visible.map(position => <tr key={position.contractId} data-selected={position.contractId === selectedId}><td><ChainBadge symbol={accountChain(position).symbol} label={accountChain(position).id === "polygon" ? "Polygon PoS" : accountChain(position).name} /><small>{validatorLabel(position)}</small></td><td className="mono">{fmt(Number(position.argument.amountPol), 2)} {accountChain(position).symbol}</td><td>{positionUsd(position, prices) === null ? "—" : fmtUsd(positionUsd(position, prices)!, 2)}</td><td><StatusBadge status={position.argument.status} /></td><td><button className="account-button" aria-pressed={position.contractId === selectedId} aria-label={`View position ${shortId(position.contractId)}`} onClick={() => setSelectedId(position.contractId)}>View →</button></td></tr>)}
+        {liquid.isError && <p role="status" className="account-amount-warning">Amoy liquid positions are temporarily unavailable. <button className="account-button" onClick={() => void liquid.refetch()}>Retry liquid holdings</button></p>}
+        <div className="account-table-wrap"><table className="account-table"><thead><tr><th>Chain · route</th><th>Staking type</th><th>Amount</th><th>Est. USD</th><th>Status</th><th>Details</th></tr></thead><tbody>
+          {visible.map(entry => <tr key={entry.id} data-selected={entry.id === selectedId}><td><ChainBadge symbol={entry.symbol} chainId={entry.kind === "liquid" ? "polygon" : undefined} label={entry.chainName} /><small>{entry.route}</small></td><td><span className={`account-status mono ${entry.kind === "liquid" ? "account-status--liquid" : "account-status--neutral"}`}>{entry.kind === "liquid" ? "Liquid staking" : "Validator staking"}</span></td><td className="mono" title={`${entry.amount} ${entry.symbol}`}>{fmt(Number(entry.amount), entry.kind === "liquid" ? 8 : 2)} {entry.symbol}</td><td>{entry.kind === "liquid" || positionUsd(entry.position, prices) === null ? "—" : fmtUsd(positionUsd(entry.position, prices)!, 2)}</td><td><StatusBadge status={entry.status} /></td><td><button className="account-button" aria-pressed={entry.id === selectedId} aria-label={entry.kind === "liquid" ? "View liquid staking position" : `View position ${shortId(entry.id)}`} onClick={() => setSelectedId(entry.id)}>View →</button></td></tr>)}
         </tbody></table></div>
-        {!visible.length && <AccountEmpty>{!anyWalletConnected ? "Connect your wallet to view and manage your positions." : positionsQ.isLoading ? "Loading positions…" : positionsQ.isError ? "Positions are temporarily unavailable." : positions.length ? "No positions match your filters." : <>No positions yet.<AccountLink href="/stake">Create your first position</AccountLink></>}</AccountEmpty>}
-        <div className="account-results"><span>Showing {visible.length} of {positions.length} positions</span><small>USD values are indicative.</small></div>
+        {!visible.length && <AccountEmpty>{!anyWalletConnected ? "Connect your wallet to view and manage your positions." : positionsQ.isLoading || liquid.isLoading ? "Loading positions…" : positionsQ.isError || liquid.isError ? "Positions are temporarily unavailable." : listed.length ? "No positions match your filters." : <>No positions yet.<AccountLink href="/stake">Explore staking routes</AccountLink></>}</AccountEmpty>}
+        <div className="account-results"><span>Showing {visible.length} of {listed.length} positions</span><small>USD values are indicative.</small></div>
       </AccountPanel>
       <div className="account-stack account-position-details">
-        <AccountPanel title="Position details" icon="cube" action={focused && <button className="account-button" aria-label="Close position details" onClick={() => setSelectedId(null)}>×</button>}>
-          {focused ? <>
+        <AccountPanel title="Position details" icon="cube" action={selected && <button className="account-button" aria-label="Close position details" onClick={() => setSelectedId(null)}>×</button>}>
+          {selected?.kind === "liquid" ? <LiquidHoldings holdings={liquid} /> : focused ? <>
             <div className="account-position-heading"><ChainBadge symbol={accountChain(focused).symbol} label={accountChain(focused).id === "polygon" ? "Polygon PoS" : accountChain(focused).name} /><StatusBadge status={focused.argument.status} /></div>
             <div className="account-position-amount"><strong>{fmt(Number(focused.argument.amountPol), 2)} {accountChain(focused).symbol}</strong><span className="account-muted">{positionUsd(focused, prices) === null ? "—" : `${fmtUsd(positionUsd(focused, prices)!, 2)} estimated value`}</span></div>
             <div className="account-position-lifecycle"><h3>Staking lifecycle</h3><LifecycleRail status={focused.argument.status} /></div>
-            <dl className="account-definition"><div><dt>Position ID</dt><dd className="mono" title={focused.contractId}>{shortId(focused.contractId, 14)}</dd></div><div><dt>Validator</dt><dd title={focused.chainMeta?.validatorAddress ?? ""}>{validatorLabel(focused)}</dd></div><div><dt>Bonded</dt><dd>{focused.argument.bondedAt ? new Date(focused.argument.bondedAt).toLocaleString() : "Awaiting bond"}</dd></div><div><dt>Activity markers</dt><dd>{focused.argument.markersEmitted}</dd></div><div><dt>CC beneficiary split</dt><dd>75% delegator / 25% treasury</dd></div></dl>
+            <dl className="account-definition"><div><dt>Position ID</dt><dd className="mono" title={focused.contractId}>{shortId(focused.contractId, 14)}</dd></div><div><dt>Validator</dt><dd title={focused.chainMeta?.validatorAddress ?? ""}>{validatorLabel(focused)}</dd></div><div><dt>Bonded</dt><dd>{focused.argument.bondedAt ? new Date(focused.argument.bondedAt).toLocaleString() : "Awaiting bond"}</dd></div><div><dt>Activity markers</dt><dd>{focused.argument.markersEmitted}</dd></div>{focused.ledgerOrigin === "legacy" && <div><dt>Canton record</dt><dd>Preserved pre-cutover position</dd></div>}<div><dt>CC beneficiary split</dt><dd>{networkMode === "testnet" && process.env.NEXT_PUBLIC_LOOP_STAKING_FLOW === "external" && focused.ledgerOrigin !== "legacy" ? "Not configured for this Loop position" : "75% delegator / 25% treasury"}</dd></div></dl>
             <div className="account-position-actions"><PositionActions key={focused.contractId} p={focused} cosmosWallets={cosmosWallets} sui={sui} aptos={aptos} solana={solana} polkadot={polkadot} switchChainAsync={switchChainAsync} modeError={actionModeError} /><AccountLink href="/rewards">View rewards</AccountLink></div>
             <details className="account-position-proof"><summary>View recorded lifecycle</summary><Timeline p={focused} /></details>
-          </> : <><AccountEmpty>{positions.length ? "Select a position to inspect its lifecycle and available actions." : "Your selected position and its actions will appear here."}</AccountEmpty><LifecycleRail /></>}
+          </> : <><AccountEmpty>{listed.length ? "Select a position to inspect its details and available actions." : "Your selected position and its actions will appear here."}</AccountEmpty><LifecycleRail /></>}
         </AccountPanel>
       </div>
     </div>
@@ -219,19 +228,19 @@ function PositionActions({
   const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
-  const [pendingAction, setPendingAction] = useState<"sweep" | "unbond" | "claim" | null>(null);
+  const [pendingAction, setPendingAction] = useState<"sweep" | "unbond" | "claim" | "recover" | null>(null);
   const runPositionAction = useRef(createExclusiveAction()).current;
 
   const { address } = useAccount();
   const { sendTransactionAsync } = useSendTransaction();
 
   const lifecycle = STATUS_TO_LIFECYCLE[p.argument.status] ?? "pending";
-  const color = lifecycleColor(lifecycle);
   const chain = positionChain(p);
 
   // Get position metadata (chain + validator)
   const meta = lookupPositionMeta(p.argument.evmAddress, p.argument.amountPol);
   const chainId = chain.id;
+  const externalLoop = networkMode === "testnet" && process.env.NEXT_PUBLIC_LOOP_STAKING_FLOW === "external" && p.ledgerOrigin !== "legacy";
   const isCosmos = isCosmosChainKey(chainId);
   const cosmos = isCosmos ? cosmosWallets[chainId] : cosmosWallets.cosmos;
   const validator = p.chainMeta?.validatorAddress ?? meta?.validator;
@@ -431,11 +440,18 @@ function PositionActions({
       // Check chain type
       const isSui = chainId === "sui";
       const isEvm = !!chain.wagmiChain;
+      if (externalLoop && !["polygon", "monad", "bnb", "solana", "aptos", "polkadot"].includes(chainId) && !isCosmos && !isSui) {
+        throw new Error("Loop/native unbond ownership verification is not enabled for this network yet.");
+      }
 
       if (isCosmos) {
         if (!cosmos.isConnected || !cosmos.address || cosmos.address.toLowerCase() !== p.argument.evmAddress.toLowerCase()) {
           setError("Connect Keplr wallet first");
           return;
+        }
+        const nativeGuardKey = `cantonstake:loop-testnet:native-unbond:${p.argument.delegator}:${p.contractId}`;
+        if (externalLoop && localStorage.getItem(nativeGuardKey)) {
+          throw new Error("A native unbond was already attempted for this position. Check its recorded receipt before retrying; no second transaction was sent.");
         }
         const tx = await adapter.buildUndelegateTx({
           validator,
@@ -445,9 +461,17 @@ function PositionActions({
         if (tx.kind !== "cosmos") {
           throw new Error("Unexpected tx kind");
         }
+        if (externalLoop) await approveLoopPositionUnbond({ contractId: p.contractId, delegator: p.argument.delegator,
+          evmAddress: p.argument.evmAddress, amount: p.argument.amountPol, chain: chainId, validator });
         const result = await cosmos.signAndBroadcast({
           typeUrl: tx.typeUrl,
           value: tx.value,
+        }, {
+          expectedWallet: p.argument.evmAddress,
+          ...(externalLoop ? { onBeforeBroadcast: (hash: string) => {
+            if (localStorage.getItem(nativeGuardKey)) throw new Error("A native unbond attempt appeared during signing; reconcile it before sending another.");
+            localStorage.setItem(nativeGuardKey, hash);
+          } } : {}),
         });
         setOkMsg(`Unbonding... tx: ${result.txHash.slice(0, 10)}...`);
         setTimeout(() => setOkMsg(null), 3000);
@@ -462,7 +486,16 @@ function PositionActions({
           amount: parseUnits(p.argument.amountPol, 8),
           delegator: aptos.address,
         });
-        const result = await aptos.signAndSubmit(tx, p.argument.evmAddress);
+        const nativeGuardKey = `cantonstake:loop-testnet:native-unbond:${p.argument.delegator}:${p.contractId}`;
+        if (externalLoop && localStorage.getItem(nativeGuardKey)) throw new Error("An Aptos unlock was already attempted. Check its saved hash before sending another transaction.");
+        if (externalLoop) await approveLoopPositionUnbond({ contractId: p.contractId, delegator: p.argument.delegator,
+          evmAddress: p.argument.evmAddress, amount: p.argument.amountPol, chain: chainId, validator });
+        const result = await aptos.signAndSubmit(tx, p.argument.evmAddress, externalLoop ? {
+          onBeforeBroadcast: hash => {
+            if (localStorage.getItem(nativeGuardKey)) throw new Error("Another Aptos unlock attempt is already recorded.");
+            localStorage.setItem(nativeGuardKey, hash);
+          },
+        } : undefined);
         setOkMsg(`Aptos unlock settled; awaiting Canton indexing… ${result.hash.slice(0, 10)}…`);
         setTimeout(() => qc.invalidateQueries({ queryKey: ["positions"] }), 5000);
       } else if (chainId === "solana") {
@@ -473,7 +506,17 @@ function PositionActions({
         if (!stakeAccount) throw new Error("This Solana position has no verified stake-account address.");
         const tx = await adapter.buildUndelegateTx({ validator: stakeAccount, amount: parseUnits(p.argument.amountPol, 9), delegator: solana.address });
         if (tx.kind !== "solana" || tx.action !== "deactivate") throw new Error("Invalid Solana deactivate plan.");
-        const result = await solana.deactivate(stakeAccount);
+        const nativeGuardKey = `cantonstake:loop-testnet:native-unbond:${p.argument.delegator}:${p.contractId}`;
+        if (externalLoop && localStorage.getItem(nativeGuardKey)) throw new Error("A Solana deactivation was already attempted. Check its saved signature before sending another transaction.");
+        if (externalLoop) await approveLoopPositionUnbond({ contractId: p.contractId, delegator: p.argument.delegator,
+          evmAddress: p.argument.evmAddress, amount: p.argument.amountPol, chain: chainId, validator, validatorShare: stakeAccount });
+        const result = await solana.deactivate(stakeAccount, externalLoop ? {
+          expectedWallet: p.argument.evmAddress,
+          onBeforeBroadcast: signature => {
+            if (localStorage.getItem(nativeGuardKey)) throw new Error("Another Solana deactivation attempt is already recorded.");
+            localStorage.setItem(nativeGuardKey, signature);
+          },
+        } : undefined);
         setOkMsg(`SOL deactivation finalized; awaiting Canton indexing… ${result.signature.slice(0, 10)}…`);
         setTimeout(() => qc.invalidateQueries({ queryKey: ["positions"] }), 5000);
       } else if (chainId === "polkadot") {
@@ -483,7 +526,18 @@ function PositionActions({
         const tx = await adapter.buildUndelegateTx({ validator: pool,
           amount: parseUnits(p.argument.amountPol, polkadotNetwork.decimals), delegator: polkadot.address });
         if (tx.kind !== "substrate" || tx.method !== "nominationPools.unbond") throw new Error("Invalid Polkadot unbond plan.");
-        const result = await polkadot.unbond(Number(pool.slice(5)));
+        const nativeGuardKey = `cantonstake:loop-testnet:native-unbond:${p.argument.delegator}:${p.contractId}`;
+        if (externalLoop && localStorage.getItem(nativeGuardKey)) throw new Error("A Polkadot unbond was already attempted. Reconcile its saved hash before sending another extrinsic.");
+        if (externalLoop) await approveLoopPositionUnbond({ contractId: p.contractId, delegator: p.argument.delegator,
+          evmAddress: p.argument.evmAddress, amount: p.argument.amountPol, chain: chainId, validator, validatorShare: pool });
+        const result = await polkadot.unbond(Number(pool.slice(5)), externalLoop ? {
+          expectedWallet: p.argument.evmAddress,
+          onBeforeBroadcast: hash => {
+            if (localStorage.getItem(nativeGuardKey)) throw new Error("Another Polkadot unbond attempt is already recorded.");
+            localStorage.setItem(nativeGuardKey, hash);
+          },
+        } : undefined);
+        if (externalLoop) localStorage.setItem(`cantonstake:loop-testnet:native-unbond-block:${p.argument.delegator}:${p.contractId}`, result.blockHash);
         setOkMsg(`Polkadot unbond finalized; awaiting Canton indexing… ${result.hash.slice(0, 10)}…`);
         setTimeout(() => qc.invalidateQueries({ queryKey: ["positions"] }), 5000);
       } else if (isSui) {
@@ -493,7 +547,16 @@ function PositionActions({
         }
         const stakedSuiId = p.chainMeta?.suiStakedObjectId;
         if (!stakedSuiId) throw new Error("This Sui stake has no verified receipt object ID.");
-        const result = await sui.undelegate({ stakedSuiId, expectedWallet: p.argument.evmAddress });
+        const nativeGuardKey = `cantonstake:loop-testnet:native-unbond:${p.argument.delegator}:${p.contractId}`;
+        if (externalLoop && localStorage.getItem(nativeGuardKey)) throw new Error("A Sui unstake was already attempted. Check its saved digest before sending another transaction.");
+        if (externalLoop) await approveLoopPositionUnbond({ contractId: p.contractId, delegator: p.argument.delegator,
+          evmAddress: p.argument.evmAddress, amount: p.argument.amountPol, chain: chainId, validator,
+          suiStakedObjectId: stakedSuiId });
+        const result = await sui.undelegate({ stakedSuiId, expectedWallet: p.argument.evmAddress,
+          ...(externalLoop ? { onBeforeBroadcast: (digest: string) => {
+            if (localStorage.getItem(nativeGuardKey)) throw new Error("A Sui unstake attempt appeared during signing; reconcile it before broadcasting.");
+            localStorage.setItem(nativeGuardKey, digest);
+          } } : {}) });
         setOkMsg(`Unstake settled; awaiting Canton indexing… ${result.digest.slice(0, 10)}...`);
         setTimeout(() => setOkMsg(null), 3000);
         setTimeout(() => qc.invalidateQueries({ queryKey: ["positions"] }), 5000);
@@ -503,6 +566,10 @@ function PositionActions({
         }
         // Switch to the correct chain first
         const wagmiChain = chain.wagmiChain;
+        const nativeGuardKey = `cantonstake:loop-testnet:native-unbond:${p.argument.delegator}:${p.contractId}`;
+        if (externalLoop && localStorage.getItem(nativeGuardKey)) {
+          throw new Error(`A native unbond was already attempted for this position (${localStorage.getItem(nativeGuardKey)}). Reconcile it before retrying; no second transaction was sent.`);
+        }
         if (wagmiChain) {
           await switchChainAsync({ chainId: wagmiChain.id });
         }
@@ -517,19 +584,42 @@ function PositionActions({
         }
 
         assertEvmWalletBinding(getAccount(wagmiConfig), p.argument.evmAddress, wagmiChain!.id);
-        const hash = await sendTransactionAsync({
-          account: address,
-          chainId: wagmiChain!.id,
-          to: tx.to,
-          data: tx.data,
-          value: tx.value ?? 0n,
-          gas: tx.gas,
-        });
+        if (externalLoop) {
+          await approveLoopPositionUnbond({ contractId: p.contractId, delegator: p.argument.delegator,
+            evmAddress: p.argument.evmAddress, amount: p.argument.amountPol, chain: chainId, validator });
+          // Both wallet popups may change the active EVM account/network.
+          assertEvmWalletBinding(getAccount(wagmiConfig), p.argument.evmAddress, wagmiChain!.id);
+        }
+        if (externalLoop) localStorage.setItem(nativeGuardKey, "submission-uncertain");
+        let hash: `0x${string}`;
+        try {
+          hash = await sendTransactionAsync({
+            account: address,
+            chainId: wagmiChain!.id,
+            to: tx.to,
+            data: tx.data,
+            value: tx.value ?? 0n,
+            gas: tx.gas,
+          });
+        } catch (error) {
+          // A definite user rejection is safe to retry; unknown RPC failures
+          // may occur after broadcast and retain the retry-suppression marker.
+          if (externalLoop && error instanceof BaseError &&
+              error.walk(cause => cause instanceof UserRejectedRequestError) instanceof UserRejectedRequestError) {
+            localStorage.removeItem(nativeGuardKey);
+          }
+          throw error;
+        }
+        if (externalLoop) localStorage.setItem(nativeGuardKey, hash);
         let replacementReason: "repriced" | "replaced" | "cancelled" | undefined;
         const receipt = await waitForTransactionReceipt(wagmiConfig, { hash, chainId: wagmiChain!.id,
           onReplaced: ({ reason }) => { replacementReason = reason; } });
-        if (receipt.status !== "success") throw new Error("The unbond transaction reverted.");
+        if (receipt.status !== "success") {
+          if (externalLoop) localStorage.removeItem(nativeGuardKey);
+          throw new Error("The unbond transaction reverted.");
+        }
         if (!successfulEvmSettlementHash(receipt, replacementReason)) throw new Error("The wallet cancelled or replaced the unbond call. Review the replacement before retrying.");
+        if (externalLoop) localStorage.setItem(nativeGuardKey, receipt.transactionHash);
         setOkMsg("Unbond settled; awaiting Canton indexing…");
         void qc.invalidateQueries({ queryKey: ["positions"] });
       }
@@ -711,9 +801,20 @@ function PositionActions({
             className="mono"
             style={{ fontSize: 9, color: tokens.danger }}
           >
-            {error.slice(0, 30)}
+            {error}
           </span>
         ) : null}
+        {externalLoop && (chain.wagmiChain || isCosmos || chainId === "sui" || chainId === "solana" || chainId === "aptos" || chainId === "polkadot") && validator && lifecycle === "bonded" && <LoopUnbondRecovery
+          position={{ contractId: p.contractId, delegator: p.argument.delegator, evmAddress: p.argument.evmAddress,
+            amount: p.argument.amountPol, chain: chainId, validator, validatorShare: p.chainMeta?.validatorShare,
+            suiStakedObjectId: p.chainMeta?.suiStakedObjectId }}
+          disabled={isPending || !!modeError} run={runPositionAction}
+          onBusy={busy => setPendingAction(busy ? "recover" : null)}
+          onResult={(message, failed) => {
+            setError(failed ? message : null);
+            setOkMsg(failed ? null : message);
+            void qc.invalidateQueries({ queryKey: ["positions"] });
+          }} />}
       </div>
   );
 }

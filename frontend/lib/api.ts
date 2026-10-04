@@ -1,10 +1,13 @@
 import { networkMode } from "./network";
+import { nativeWalletScope, normalizedNativeWallet } from "./native-wallet-addresses";
 
 const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4001";
 
 export interface PositionRow {
   contractId: string;
+  /** Set by the verified backend ledger router, never browser storage. */
+  ledgerOrigin?: "primary" | "legacy";
   argument: {
     delegator: string;
     evmAddress: string;
@@ -39,16 +42,6 @@ export interface PositionRow {
   } | null;
 }
 
-export interface RequestRow {
-  contractId: string;
-  argument: {
-    delegator: string;
-    evmAddress: string;
-    amountPol: string;
-    requestedAt: string;
-  };
-}
-
 export interface RewardsSummary {
   address: string;
   totalPositions: number;
@@ -77,13 +70,18 @@ export async function createStakingRequest(body: {
   chain?: "polygon" | "monad" | "cosmos" | "celestia" | "osmosis" | "sui" | "aptos" | "polkadot" | "bnb" | "solana";
   validator?: string;
   stakeAccountAddress?: string;
-}): Promise<{
+}, signNativeOwnership?: (message: string, expectedWallet: string) => Promise<string>): Promise<{
   ok: boolean;
-  transactionId: string;
+  transactionId: string | null;
   delegator: string;
   chain?: string;
   stakeRentLamports?: string;
+  stakeAccountAddress?: string;
 }> {
+  if (process.env.NEXT_PUBLIC_LOOP_STAKING_FLOW === "external") {
+    const { createLoopStakingRequest } = await import("./canton/loop-staking-flow");
+    return createLoopStakingRequest(body, signNativeOwnership);
+  }
   const res = await fetch(`${BACKEND_URL}/api/requests`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -125,15 +123,6 @@ export async function fetchPositions(address: string): Promise<PositionRow[]> {
   if (!res.ok) throw new Error(await res.text());
   const json = (await res.json()) as { positions: PositionRow[] };
   return json.positions;
-}
-
-export async function fetchPendingRequests(
-  address: string
-): Promise<RequestRow[]> {
-  const res = await fetch(`${BACKEND_URL}/api/requests?address=${address}`);
-  if (!res.ok) throw new Error(await res.text());
-  const json = (await res.json()) as { requests: RequestRow[] };
-  return json.requests;
 }
 
 export async function fetchRewards(address: string): Promise<RewardsSummary> {
@@ -221,6 +210,7 @@ export interface CantonReadiness {
   canton: "reachable" | "unreachable";
   networkMode: "testnet" | "mainnet";
   time: string;
+  loopStaking?: { status: "ready" | "blocked"; reason: string | null; supportedChains: string[]; ccPaymentsEnabled: false };
 }
 
 export async function fetchCantonReadiness(): Promise<CantonReadiness> {
@@ -303,36 +293,6 @@ export async function fetchUserByEvm(address: string): Promise<UserRecord> {
   return body.user;
 }
 
-export interface DelegationRow {
-  chain: "polygon" | "monad" | "cosmos" | "celestia" | "osmosis" | "sui" | "aptos" | "polkadot" | "bnb" | "solana";
-  validator: string;
-  amount: string;
-  symbol: string;
-  status: "bonded" | "unbonding" | "released";
-  unbondingReadyAt?: number;
-}
-
-export interface PortfolioSnapshot {
-  address: string;
-  fetchedAt: string;
-  totalUsd: number | null;
-  delegations: DelegationRow[];
-  source: Record<string, "live" | "unavailable" | "cache" | "canton">;
-  unclassifiedPositions: number;
-}
-
-export async function fetchPortfolio(
-  address: string,
-  refresh = false,
-): Promise<PortfolioSnapshot> {
-  const params = refresh ? "?refresh=true" : "";
-  const res = await fetch(
-    `${BACKEND_URL}/api/portfolio/${encodeURIComponent(address)}${params}`,
-  );
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
 export interface AutoCompoundPermit {
   id: string;
   userId: string;
@@ -371,18 +331,6 @@ export async function fetchAutoCompoundStatus(): Promise<AutoCompoundStatus> {
   return status;
 }
 
-export interface AutoCompoundRun {
-  id: string;
-  permitId: string;
-  status: string;
-  reason: string | null;
-  amountClaimed: string | null;
-  amountRestaked: string | null;
-  txHash: string | null;
-  startedAt: string;
-  completedAt: string | null;
-}
-
 export async function listAutoCompoundPermits(
   userId: string,
 ): Promise<{ permits: AutoCompoundPermit[] }> {
@@ -393,41 +341,12 @@ export async function listAutoCompoundPermits(
   return res.json();
 }
 
-export async function createAutoCompoundPermit(body: {
-  userId: string;
-  chain: "polygon" | "monad" | "cosmos" | "celestia" | "osmosis" | "sui" | "aptos" | "polkadot" | "bnb" | "solana";
-  validator: string;
-  scope?: "compound" | "claim" | "redelegate";
-  signature?: string;
-  signaturePayload?: string;
-  expiresAt: string;
-  maxPerRun?: string;
-}): Promise<{ permit: AutoCompoundPermit }> {
-  const res = await fetch(`${BACKEND_URL}/api/autocompound/permits`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
 export async function disableAutoCompoundPermit(
   id: string,
 ): Promise<{ permit: AutoCompoundPermit }> {
   const res = await fetch(`${BACKEND_URL}/api/autocompound/permits/${id}`, {
     method: "DELETE",
   });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-export async function fetchAutoCompoundRuns(
-  permitId: string,
-): Promise<{ runs: AutoCompoundRun[] }> {
-  const res = await fetch(
-    `${BACKEND_URL}/api/autocompound/permits/${permitId}/runs`,
-  );
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -490,34 +409,6 @@ export async function sendTestNotification(
   return res.json();
 }
 
-export interface NarratorResponse {
-  text: string;
-  model: string;
-  context: {
-    address: string;
-    partyId: string | null;
-    latestRoundNumber: number | null;
-    totalUserCc: number;
-    totalTreasuryCc: number;
-    rewardEventCount: number;
-    recentRoundCc: number;
-    recentRoundShare: number | null;
-    previousRoundCc: number | null;
-    previousRoundNumber: number | null;
-    lifetimeUserCc: number;
-    crossedTen: boolean;
-    crossedHundred: boolean;
-    crossedThousand: boolean;
-    source: "anthropic" | "rule-based";
-  };
-}
-
-export async function fetchNarrator(address: string): Promise<NarratorResponse> {
-  const res = await fetch(`${BACKEND_URL}/api/narrator/${address}`);
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
 export interface ValidatorScore {
   chain: string;
   address: string;
@@ -567,6 +458,48 @@ export interface RewardHistoryEvent {
   status: string;
 }
 export interface RewardHistory { events: RewardHistoryEvent[]; since: string; hasMore: boolean }
+export interface AccountRewards {
+  networkMode: "mainnet" | "testnet";
+  addresses: string[];
+  days: number;
+  checkedAt: string;
+  positions: PositionRow[] | null;
+  history: RewardHistory | null;
+  rounds?: Array<Pick<RoundSummary, "roundNumber" | "status" | "startedAt" | "completedAt" | "totalCcMinted" | "userCcAttributed">> | null;
+  policy: { ccPayments: "disabled" | "unverified"; beneficiarySplit: "not_configured" | "unverified" };
+}
+
+export async function fetchAccountRewards(addresses: string[], days: number, includeRounds: boolean, signal?: AbortSignal): Promise<AccountRewards> {
+  const scope = nativeWalletScope(addresses);
+  if (!scope.length || scope.length > 8) throw new Error("Connect a native wallet to read rewards");
+  const res = await fetch(`${BACKEND_URL}/api/account/rewards`, {
+    method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ addresses: scope, days, includeRounds, limit: 250, clientNetworkMode: networkMode }),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(12_000)]) : AbortSignal.timeout(12_000),
+  });
+  if (!res.ok) throw new Error(`Account rewards unavailable (HTTP ${res.status})`);
+  const body = await res.json() as AccountRewards;
+  if (body?.networkMode !== networkMode || body.days !== days || !Array.isArray(body.addresses) ||
+      JSON.stringify(body.addresses) !== JSON.stringify(scope) || !Number.isFinite(Date.parse(body.checkedAt)) ||
+      !["disabled", "unverified"].includes(body.policy?.ccPayments) ||
+      !["not_configured", "unverified"].includes(body.policy?.beneficiarySplit)) {
+    throw new Error("Reward response does not match this connected wallet scope");
+  }
+  if (body.positions !== null && (!Array.isArray(body.positions) || body.positions.some(position =>
+    !position.contractId || typeof position.argument?.evmAddress !== "string" ||
+    !scope.includes(normalizedNativeWallet(position.argument.evmAddress)) || !position.chainMeta?.chain))) {
+    throw new Error("Invalid account position response");
+  }
+  if (body.history !== null && (!Array.isArray(body.history?.events) || typeof body.history.hasMore !== "boolean" ||
+      !Number.isFinite(Date.parse(body.history.since)) || body.history.events.some(event =>
+        !["native", "cc"].includes(event.kind) || !event.positionId || !event.chain ||
+        typeof event.amount !== "string" || !/^\d+(?:\.\d+)?$/.test(event.amount) || !Number.isFinite(Date.parse(event.time))))) {
+    throw new Error("Invalid recorded reward history");
+  }
+  if (includeRounds && body.rounds !== null && !Array.isArray(body.rounds)) throw new Error("Invalid account round history");
+  return body;
+}
+
 export async function fetchRewardHistory(address: string, days = 30): Promise<RewardHistory> {
   const params = new URLSearchParams({ address, days: String(days), limit: "250" });
   const response = await fetch(`${BACKEND_URL}/api/rewards/history?${params}`, { signal: AbortSignal.timeout(10_000) });

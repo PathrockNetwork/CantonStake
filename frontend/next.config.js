@@ -3,6 +3,9 @@ const skipBuildChecks = process.env.SKIP_BUILD_CHECKS === "true";
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Build workers share the production host with Canton. Bound their fan-out
+  // instead of deriving it from every CPU exposed by Docker.
+  experimental: { cpus: 1 },
   // Standalone output bundles only the runtime deps Next actually traces
   // through the import graph, dropping the production image's node_modules
   // from ~1 GB to ~150 MB. Cuts deploy push time and cold-start RAM.
@@ -29,6 +32,7 @@ const nextConfig = {
       "/rewards",
       "/settings",
       "/stake",
+      "/stake/liquid",
     ];
 
     return documentRoutes.map((source) => ({

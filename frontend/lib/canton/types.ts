@@ -9,7 +9,7 @@
  * Consumers keep using useCantonWallet().
  */
 
-export type CantonNetwork = "local" | "devnet" | "mainnet";
+export type CantonNetwork = "local" | "devnet" | "testnet" | "mainnet";
 
 export interface CantonIdentity {
   partyId: string;

@@ -67,21 +67,6 @@ export function recordPositionMeta(
   writeMap(map);
 }
 
-// Legacy function name for compatibility
-export function recordPositionChain(
-  evmAddress: string,
-  amountPol: string,
-  chainId: ChainId,
-): void {
-  const map = readMap();
-  const existing = map[key(evmAddress, amountPol)];
-  map[key(evmAddress, amountPol)] = {
-    chainId,
-    validator: existing?.validator ?? "",
-  };
-  writeMap(map);
-}
-
 export function lookupPositionMeta(
   evmAddress: string,
   amountPol: string,
@@ -95,11 +80,4 @@ export function lookupPositionChain(
   amountPol: string,
 ): ChainId | undefined {
   return lookupPositionMeta(evmAddress, amountPol)?.chainId;
-}
-
-export function lookupPositionValidator(
-  evmAddress: string,
-  amountPol: string,
-): string | undefined {
-  return lookupPositionMeta(evmAddress, amountPol)?.validator;
 }

@@ -1,7 +1,6 @@
 "use client";
 
 import { networkMode } from "@/lib/network";
-import { tokens } from "@/lib/tokens";
 import { useProtocolStatus } from "@/lib/use-protocol-status";
 
 type PageMastheadProps = {
@@ -51,39 +50,5 @@ export function PageMasthead({
         </div>
       </aside>
     </section>
-  );
-}
-
-export function ReferenceMetricGrid({ children }: { children: React.ReactNode }) {
-  return <div className="reference-metric-grid">{children}</div>;
-}
-
-export function ReferenceMetric({
-  label,
-  value,
-  detail,
-  accent = tokens.neon,
-}: {
-  label: string;
-  value: React.ReactNode;
-  detail: React.ReactNode;
-  accent?: string;
-}) {
-  return (
-    <div className="reference-metric">
-      <div className="reference-metric__mark" style={{ color: accent }} aria-hidden="true">
-        ◇
-      </div>
-      <div>
-        <div className="reference-metric__label mono">{label}</div>
-        <div className="reference-metric__value tabular" style={{ color: accent }}>
-          {value}
-        </div>
-        <div className="reference-metric__detail mono">{detail}</div>
-      </div>
-      <div className="reference-metric__spark" style={{ color: accent }} aria-hidden="true">
-        <i /><i /><i /><i />
-      </div>
-    </div>
   );
 }

@@ -6,7 +6,6 @@ import {
   useAccount,
   useBalance,
   useReadContract,
-  useChainId,
   useSendTransaction,
   useSwitchChain,
   useWaitForTransactionReceipt,
@@ -19,13 +18,11 @@ import {
 import { erc20Abi, formatUnits, parseEther, parseUnits } from "viem";
 import { polygonAmoy } from "wagmi/chains";
 import { PublicKey } from "@solana/web3.js";
-import { IconArrowRight } from "@/components/icons";
 import { Banner } from "@/components/primitives/Banner";
 import { Btn } from "@/components/primitives/Btn";
 import { Card } from "@/components/primitives/Card";
 import { Chip } from "@/components/primitives/Chip";
 import { MarkerSpark } from "@/components/primitives/MarkerSpark";
-import { SectionLabel } from "@/components/primitives/SectionLabel";
 import { PageMasthead } from "@/components/primitives/PageMasthead";
 import { emitTrace } from "@/components/trace/useTraceLog";
 import {
@@ -38,6 +35,8 @@ import {
 import {
   liveChains,
   polygonChain,
+  polygonNativeChain,
+  stakingWalletNetworkName,
   stakeTokenAddress,
   validatorMinAmounts,
   type ChainConfig,
@@ -58,6 +57,7 @@ import { useCantonWallet } from "@/lib/canton";
 import { useCosmosWallet } from "@/lib/cosmos/use-cosmos-wallet";
 import { cosmosNetworks, isCosmosChainKey, type CosmosChainKey } from "@/lib/cosmos/networks";
 import { useSuiWallet } from "@/lib/sui/use-sui-wallet";
+import { suiNetwork } from "@/lib/sui/network";
 import { useAptosWallet } from "@/lib/aptos/use-aptos-wallet";
 import { useSolanaWallet } from "@/lib/solana/use-solana-wallet";
 import { usePolkadotWallet } from "@/lib/polkadot/use-polkadot-wallet";
@@ -65,18 +65,20 @@ import { polkadotApi, polkadotNetwork } from "@/lib/polkadot/network";
 import { fetchPolkadotPools } from "@/lib/chains/polkadot";
 import { aptosView } from "@/lib/aptos/network";
 import { aptosNetwork } from "@/lib/aptos/network";
+import { solanaNetwork } from "@/lib/solana/network";
 import { usePrices } from "@/lib/prices";
 import { isMainnet, networkMode } from "@/lib/network";
 import { recordPositionMeta } from "@/lib/position-chain-map";
 import { tokens } from "@/lib/tokens";
 import { StakeChainPicker } from "@/components/stake/StakeChainPicker";
+import { PolygonLiquidStake } from "@/components/stake/PolygonLiquidStake";
+import { usesPolygonLiquid } from "@/lib/polygon-liquid";
 import { isCantonReadyForStaking } from "@/lib/staking-readiness";
 
 /**
  * StakeFlow — ported from handoff/prototype/redesign/screens.jsx (`StakeFlow`).
  *
- * The prototype runs a pure simulation. This port drives the same five
- * visible stages off REAL wagmi + backend state:
+ * The five visible stages follow wallet, native receipt and backend state:
  *
  *   01 StakingRequest_Create          → backend createStakingRequest()
  *   01a/01b ERC20.approve             → Polygon only. buyVoucher is NOT
@@ -89,8 +91,7 @@ import { isCantonReadyForStaking } from "@/lib/staking-readiness";
  *   02 ValidatorShare.buyVoucher      → wagmi sendTransaction(...)
  *   03 ShareMinted                    → useWaitForTransactionReceipt()
  *   04 StakingRequest_Accept          → orchestrator (fires after evm confirms)
- *   05 FeaturedAppActivityMarker      → animation only; no on-chain signal
- *                                       to listen for at this layer
+ *   05 Indexed Bonded position        → backend confirms the settled native tx
  *
  * Stage 4 follows successful native settlement. Stage 5 waits for the
  * exact settled transaction hash on an indexed Bonded Canton position;
@@ -99,7 +100,7 @@ import { isCantonReadyForStaking } from "@/lib/staking-readiness";
  * If the wagmi write fails (rejected, wrong network, RPC error), step
  * resets and an error banner replaces the wrong-network banner.
  */
-type ChainKind = "CANTON" | "EVM" | "COSMOS" | "SUI" | "MOVE" | "SUBSTRATE" | "SVM" | "MARKER";
+type ChainKind = "CANTON" | "EVM" | "COSMOS" | "SUI" | "MOVE" | "SUBSTRATE" | "SVM";
 
 interface Stage {
   code: string;
@@ -197,20 +198,19 @@ function buildCtaLabels(chain: ChainConfig): string[] {
 
 type LogEntry = Stage & { t: number };
 
-// Where to get testnet funds per chain. Polygon is special: staking
-// settles on Ethereum Sepolia, so the wallet needs Sepolia ETH (gas) and
-// the testnet POL ERC-20 there — Amoy-side POL alone is not stakeable.
+// Polygon validator staking settles on Sepolia; Amoy POL funds the separate
+// liquid-staking test route and cannot be used by this validator form.
 const FUNDING_HINTS: Record<ChainConfig["id"], React.ReactNode> = {
   polygon: (
     <>
-      Staking settles on Ethereum Sepolia — you need Sepolia ETH for gas +
-      testnet POL there. ETH:{" "}
+      Direct validator staking needs test POL and ETH for gas on Sepolia.
+      Amoy test POL is a different balance and cannot be used here. ETH:{" "}
       <a href="https://sepoliafaucet.com" target="_blank" rel="noreferrer">sepoliafaucet.com</a>,{" "}
       <a href="https://cloud.google.com/application/web3/faucet/ethereum/sepolia" target="_blank" rel="noreferrer">Google faucet</a>.
-      POL:{" "}
+      For Amoy test POL, use{" "}
       <a href="https://www.alchemy.com/faucets/polygon-amoy" target="_blank" rel="noreferrer">Alchemy Amoy faucet</a>,{" "}
-      <a href="https://faucet.quicknode.com/polygon/amoy" target="_blank" rel="noreferrer">QuickNode</a>{" "}
-      (claim, then check the POL balance shows on Sepolia).
+      <a href="https://faucet.quicknode.com/polygon/amoy" target="_blank" rel="noreferrer">QuickNode</a>.
+      Amoy POL can be used in the separate{" "}<a href="/stake/liquid">liquid staking test</a>.
     </>
   ),
   monad: (
@@ -270,8 +270,12 @@ const FUNDING_HINTS: Record<ChainConfig["id"], React.ReactNode> = {
 };
 
 export default function StakePage() {
-  const { address, isConnected, connector } = useAccount();
-  const chainId = useChainId();
+  const [advancedPolygon, setAdvancedPolygon] = useState(false);
+  const [liquidBusy, setLiquidBusy] = useState(false);
+  useEffect(() => {
+    setAdvancedPolygon(new URLSearchParams(window.location.search).get("polygon") === "validator");
+  }, []);
+  const { address, isConnected, connector, chainId } = useAccount();
   const { switchChainAsync, isPending: switchPending } = useSwitchChain();
   const { partyId, isConnected: loopConnected } = useCantonWallet();
   const { openPicker } = useWalletPicker();
@@ -294,6 +298,7 @@ export default function StakePage() {
     chains[0]?.id ?? "polygon",
   );
   const selectedChain = chains.find((c) => c.id === selectedChainId) ?? chains[0] ?? polygonChain();
+  const walletNetworkName = stakingWalletNetworkName(selectedChain);
   // A configured adapter is usable only when the backend enables it too.
   const stakingUiReady = !chainStatsError && chains.some((c) => c.id === selectedChain.id) && selectedChain.hasAdapter !== false &&
     !!chainStats?.chains.some((c) => c.chain === selectedChain.id);
@@ -308,17 +313,21 @@ export default function StakePage() {
   const isAptosChain = selectedChain.id === "aptos";
   const isSolanaChain = selectedChain.id === "solana";
   const isPolkadotChain = selectedChain.id === "polkadot";
+  // Wallet guidance must remain available while backend chain stats are loading.
+  const wrongNetwork = !!selectedChain.wagmiChain && isConnected && chainId !== selectedChain.wagmiChain.id;
+  const aptosWrongNetwork = isAptosChain && aptos.isConnected && (
+    aptos.network?.chainId !== aptosNetwork.chainId || aptos.network.name !== aptosNetwork.name
+  );
+  const suiUnsupportedNetwork = isSuiChain && sui.isConnected && !sui.networkSupported;
   const isWalletReadyForChain =
-    (stakingUiReady && !!selectedChain.wagmiChain && isConnected) ||
+    (stakingUiReady && !!selectedChain.wagmiChain && isConnected && !wrongNetwork) ||
     (stakingUiReady && isCosmosChain && cosmos.isConnected) ||
-    (stakingUiReady && isSuiChain && sui.isConnected) ||
-    (stakingUiReady && isAptosChain && aptos.isConnected) ||
+    (stakingUiReady && isSuiChain && sui.isConnected && !suiUnsupportedNetwork) ||
+    (stakingUiReady && isAptosChain && aptos.isConnected && !aptosWrongNetwork) ||
     (stakingUiReady && isSolanaChain && solana.isConnected) ||
     (stakingUiReady && isPolkadotChain && polkadot.isConnected);
   const polygon = polygonChain();
   const polygonId = polygon.wagmiChain!.id;
-  const wrongNetwork =
-    isEvmStakingReady && isConnected && chainId !== selectedChain.wagmiChain!.id;
 
   const [amount, setAmount] = useState("1");
   const [validators, setValidators] = useState<Validator[]>([]);
@@ -340,6 +349,46 @@ export default function StakePage() {
   const [log, setLog] = useState<LogEntry[]>([]);
   const [showSpark, setShowSpark] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [networkActionError, setNetworkActionError] = useState<string | null>(null);
+  const [aptosSwitchPending, setAptosSwitchPending] = useState(false);
+  useEffect(() => { setNetworkActionError(null); }, [selectedChain.id, chainId, aptos.network?.chainId, aptos.network?.name]);
+
+  const requestEvmSwitch = async () => {
+    if (!selectedChain.wagmiChain) return;
+    setNetworkActionError(null);
+    const target = selectedChain.wagmiChain;
+    try {
+      await switchChainAsync({ chainId: target.id });
+    } catch (cause) {
+      const details = String(cause);
+      const code = (cause as { cause?: { code?: number }; code?: number })?.cause?.code ??
+        (cause as { code?: number })?.code;
+      if (code === 4902 || /4902|unrecognized chain/i.test(details)) {
+        try {
+          const provider = await (connector as any)?.getProvider?.();
+          if (!provider?.request) throw new Error("Wallet cannot add this chain automatically.");
+          await provider.request({ method: "wallet_addEthereumChain", params: [evmWalletChainParameters(target)] });
+          await switchChainAsync({ chainId: target.id });
+          return;
+        } catch {
+          // Some wallets require the network to be added manually.
+        }
+      }
+      setNetworkActionError(`Switch to ${walletNetworkName} in your wallet, then try again. The wallet may have rejected the request or require adding the network manually.`);
+    }
+  };
+
+  const requestAptosSwitch = async () => {
+    setNetworkActionError(null);
+    setAptosSwitchPending(true);
+    try {
+      await aptos.switchNetwork();
+    } catch {
+      setNetworkActionError(`Switch to Aptos ${aptosNetwork.name} in your wallet settings, then try again. This wallet may not support automatic switching.`);
+    } finally {
+      setAptosSwitchPending(false);
+    }
+  };
   const [validatorName, setValidatorName] = useState<string | null>(null);
   const [validatorAddr, setValidatorAddr] = useState<string | null>(null);
   const stage5PollingStartedRef = useRef(false);
@@ -405,7 +454,7 @@ export default function StakePage() {
     refetchInterval: 15_000,
     retry: false,
   });
-  const cantonReady = isCantonReadyForStaking(cantonReadiness.data, networkMode, cantonReadiness.isError);
+  const cantonReady = isCantonReadyForStaking(cantonReadiness.data, networkMode, cantonReadiness.isError, selectedChain.id);
 
   // Per-validator buyVoucher floor for the selected top validator, live from
   // the backend registry (the same fetch that refreshes the ValidatorShare
@@ -494,7 +543,7 @@ export default function StakePage() {
   const settledEvmHash = successfulEvmSettlementHash(evmReceipt);
   const confirmed = !!evmSubmission && !!settledEvmHash;
 
-  // Promote simulation step when wagmi state advances
+  // Advance the visible step when wagmi state advances.
   useEffect(() => {
     if (!evmSubmission || selectedChain.id !== evmSubmission.chain) return;
     if (sendPending && step < 2) advance(2);
@@ -656,14 +705,14 @@ export default function StakePage() {
       return;
     }
     if (!cantonReady) {
-      setError("Canton is unavailable or its network mode does not match. Staking cannot begin until the ledger connection is ready.");
+      setError(cantonReadiness.data?.loopStaking?.reason || "Canton is unavailable or its network mode does not match. Staking cannot begin until the ledger connection is ready.");
       return;
     }
     // Recheck immediately before starting a wallet flow, not just at the
     // last background poll or when the review dialog was opened.
     try {
       const readiness = await fetchCantonReadiness();
-      if (!isCantonReadyForStaking(readiness, networkMode)) throw new Error("Canton unavailable");
+      if (!isCantonReadyForStaking(readiness, networkMode, false, selectedChain.id)) throw new Error("Canton unavailable for this network");
     } catch {
       setError("Canton readiness could not be confirmed. No staking transaction was submitted; try again when the ledger connection is restored.");
       return;
@@ -792,7 +841,7 @@ export default function StakePage() {
           await new Promise(resolve => setTimeout(resolve, 500));
         } catch (switchError) {
           throw new Error(
-            `Please switch your wallet to ${selectedChain.name} and try again.`,
+            `Please switch your wallet to ${walletNetworkName} and try again.`,
           );
         }
       }
@@ -901,7 +950,7 @@ export default function StakePage() {
         setError(msg.replace("WALLET_CHAIN_MISMATCH: ", ""));
       } else if (msg.includes("does not match the target chain")) {
         setError(
-          `Your wallet is on the wrong network. Switch to ${selectedChain.name} and try again. If your wallet doesn't support switching, use MetaMask or Rabby.`,
+          `Your wallet is on the wrong network. Switch to ${walletNetworkName} and try again. If your wallet doesn't support switching, use MetaMask or Rabby.`,
         );
       } else {
         setError(msg);
@@ -947,7 +996,7 @@ export default function StakePage() {
         delegator: partyId,
         chain: selectedChain.id,
         validator: validator.address,
-      });
+      }, cosmos.signOwnership);
       recordPositionMeta(cosmos.address, amount, selectedChain.id, validator.address);
 
       advance(2);
@@ -1003,7 +1052,7 @@ export default function StakePage() {
         delegator: partyId,
         chain: "sui",
         validator: validator.address,
-      });
+      }, sui.signOwnership);
       recordPositionMeta(sui.address, amount, "sui", validator.address);
 
       advance(2);
@@ -1047,7 +1096,7 @@ export default function StakePage() {
         delegator: partyId,
         chain: "aptos",
         validator: validator.address,
-      });
+      }, aptos.signOwnership);
       recordPositionMeta(aptos.address, amount, "aptos", validator.address);
 
       advance(2);
@@ -1087,8 +1136,11 @@ export default function StakePage() {
         chain: "solana",
         validator: validator.address,
         stakeAccountAddress: prepared.stakeAccount.publicKey.toBase58(),
-      });
-      if (!request.stakeRentLamports) throw new Error("Canton request did not return Solana stake-account rent.");
+      }, solana.signOwnership);
+      if (!request.stakeRentLamports || BigInt(request.stakeRentLamports) !== prepared.rentLamports ||
+          (process.env.NEXT_PUBLIC_LOOP_STAKING_FLOW === "external" && request.stakeAccountAddress !== prepared.stakeAccount.publicKey.toBase58())) {
+        throw new Error("Canton request does not match the prepared Solana stake account and rent. No native stake was sent.");
+      }
       recordPositionMeta(walletAddress, amount, "solana", validator.address);
 
       advance(2);
@@ -1114,10 +1166,10 @@ export default function StakePage() {
       if (tx.kind !== "substrate" || tx.method !== "nominationPools.join") throw new Error("Invalid Polkadot pool-join plan.");
       advance(1);
       await createStakingRequest({ evmAddress: walletAddress, amountPol: amount, delegator: partyId,
-        chain: "polkadot", validator: validator.address });
+        chain: "polkadot", validator: validator.address }, polkadot.signOwnership);
       recordPositionMeta(walletAddress, amount, "polkadot", validator.address);
       advance(2);
-      const result = await polkadot.stake(Number(validator.address.slice(5)), amountPlanck);
+      const result = await polkadot.stake(Number(validator.address.slice(5)), amountPlanck, walletAddress);
       advance(3); advance(4);
       setNativeSettlement({ chain: "polkadot", wallet: walletAddress, txHash: result.hash });
     } catch (cause) {
@@ -1140,6 +1192,16 @@ export default function StakePage() {
     address,
     chainId: selectedChain.wagmiChain?.id,
     query: { enabled: !!address && selectedChain.id !== "polygon" && !!selectedChain.wagmiChain, refetchInterval: 30_000 },
+  });
+  const polygonNativeBalance = useBalance({
+    address,
+    chainId: polygonNativeChain.id,
+    query: { enabled: !!address && selectedChain.id === "polygon", refetchInterval: 30_000 },
+  });
+  const settlementGasBalance = useBalance({
+    address,
+    chainId: polygonId,
+    query: { enabled: !!address && selectedChain.id === "polygon", refetchInterval: 30_000 },
   });
   const cosmosBalance = useQuery({
     queryKey: ["cosmos-balance", selectedChain.id, cosmos.address],
@@ -1225,7 +1287,9 @@ export default function StakePage() {
     : isPolkadotChain && !polkadotParams.data ? "Loading Polkadot nomination pools…"
     : isPolkadotChain && polkadotAmount !== null && polkadotAmount < BigInt(polkadotParams.data?.minJoinPlanck ?? "0") ? `Minimum pool join: ${formatUnits(BigInt(polkadotParams.data!.minJoinPlanck), polkadotNetwork.decimals)} ${polkadotNetwork.symbol}.`
     : isPolkadotChain && polkadotAmount !== null && polkadotBalance.data !== undefined && polkadotAmount >= polkadotBalance.data ? `Leave ${polkadotNetwork.symbol} for network fees and the existential deposit.`
-    : balanceWei !== undefined && amountWei > balanceWei ? "Amount exceeds your wallet balance."
+    : balanceWei !== undefined && amountWei > balanceWei ? selectedChain.id === "polygon" && !isMainnet
+      ? "Amount exceeds your Sepolia test POL balance. Amoy test POL cannot fund this validator stake."
+      : "Amount exceeds your wallet balance."
     : selectedChain.id !== "polygon" && !!selectedChain.wagmiChain && balanceWei !== undefined && amountWei === balanceWei ? "Leave some native token for gas." : null;
   const busy = preparing || (step > 0 && step < 5);
   const walletsReady = loopConnected && !!partyId && isWalletReadyForChain;
@@ -1248,13 +1312,25 @@ export default function StakePage() {
     : isSuiChain
       ? sui.address ? "SUI balance shown in your wallet" : "Connect wallet for balance"
       : address
-        ? balanceWei !== undefined ? `Balance: ${fmt(Number(formatUnits(balanceWei, 18)), 4)} ${selectedChain.symbol}` : balanceFailed ? "Balance unavailable" : "Loading balance…"
+        ? balanceWei !== undefined ? `Balance: ${fmt(Number(formatUnits(balanceWei, 18)), 4)} ${selectedChain.id === "polygon" ? isMainnet ? "Ethereum POL" : "Sepolia test POL" : selectedChain.symbol}` : balanceFailed ? "Balance unavailable" : "Loading balance…"
         : "Connect wallet for balance";
   const formStage = !validatorAddr ? 2 : amountIssue ? 3 : 4;
 
+  if (usesPolygonLiquid(networkMode, selectedChain.id, advancedPolygon)) return (
+    <div className="page-shell account-page">
+      <PolygonLiquidStake onDirect={() => setAdvancedPolygon(true)} onBusyChange={setLiquidBusy} networkPicker={
+        <StakeChainPicker chains={chains} selectedChainId={selectedChain.id}
+          enabledChainIds={chainStats?.chains.map(chain => chain.chain)} watchers={watcherStatus}
+          statusUnavailable={chainStatsError || watcherStatusError} busy={liquidBusy} polygonLiquid
+          onSelect={chain => { setSelectedChainId(chain.id); setAdvancedPolygon(false); setStep(0); setReviewOpen(false); setError(null); }} />
+      } />
+    </div>
+  );
+
   return (
     <div className="page-shell account-page">
-      <PageMasthead index="02" section="Stake on Canton" title="Stake." accent="Create a self-custodial staking position." description={`Delegate ${selectedChain.symbol} from your own wallet, earn native rewards and Canton Coin rewards, with the lifecycle recorded on Canton.`} />
+      <PageMasthead index="02" section="Stake on Canton" title="Stake." accent="Create a self-custodial staking position." description={`Delegate ${selectedChain.symbol} from your connected native wallet. Connect Loop for your Canton identity; CC rewards require a separately enabled rewards workflow.`} />
+      {!isMainnet && selectedChain.id === "polygon" && <div className="my-4"><p>Advanced direct delegation: requires Sepolia test POL and Sepolia ETH for gas.</p><button className="account-button" disabled={busy} onClick={() => setAdvancedPolygon(false)}>← Use Amoy POL liquid staking</button></div>}
 
       {error && (
         <Banner
@@ -1276,52 +1352,60 @@ export default function StakePage() {
           }
         />
       )}
-      {!error && wrongNetwork && (
+      {networkActionError && <Banner tone="warn" kind="WALLET NETWORK" message={networkActionError} />}
+      {!!selectedChain.wagmiChain && !isConnected && (
+        <Banner tone="warn" kind="EVM WALLET NOT CONNECTED" message={`Connect an EVM wallet to stake on ${selectedChain.name}.`} action={<Btn size="sm" variant="ghost" onClick={openPicker}>Connect wallet</Btn>} />
+      )}
+      {wrongNetwork && (
         <Banner
           tone="warn"
           kind="WRONG NETWORK"
-          message={`Wallet on chain ${chainId}. Switch your EVM wallet to ${selectedChain.name} to stake here.`}
+          message={`Wallet on chain ${chainId ?? "unknown"}. Switch your EVM wallet to ${walletNetworkName} (chain ${selectedChain.wagmiChain!.id}) to stake here.`}
           action={
             <Btn
               size="sm"
               variant="ghost"
-              onClick={() =>
-                switchChainAsync({
-                  chainId: selectedChain.wagmiChain!.id,
-                })
-              }
+              onClick={() => { void requestEvmSwitch(); }}
               disabled={switchPending}
             >
-              Switch to {selectedChain.name}
+              Switch to {walletNetworkName}
             </Btn>
           }
         />
       )}
-      {!error && isCosmosChain && !cosmos.isConnected && (
+      {isCosmosChain && !cosmos.isConnected && (
         <Banner
           tone="warn"
           kind="KEPLR NOT CONNECTED"
-          message={`${selectedChain.name} staking requires Keplr (or Leap). Click the chip in the top-right to connect.`}
+          message={`${selectedChain.name} staking requires Keplr or Leap with ${cosmosNetworks[selectedChain.id as CosmosChainKey].chainId} enabled.`}
+          action={<Btn size="sm" variant="ghost" onClick={openPicker}>Connect wallet</Btn>}
         />
       )}
-      {!error && isSuiChain && !sui.isConnected && (
+      {isSuiChain && !sui.isConnected && (
         <Banner
           tone="warn"
           kind="SUI WALLET NOT CONNECTED"
-          message="Sui staking requires Slush, Suiet, or any Sui wallet extension. Click the chip in the top-right to connect."
+          message="Sui staking requires Slush, Suiet, or another Sui wallet extension."
+          action={<Btn size="sm" variant="ghost" onClick={openPicker}>Connect wallet</Btn>}
         />
       )}
-      {!error && isAptosChain && !aptos.isConnected && (
-        <Banner tone="warn" kind="APTOS WALLET NOT CONNECTED" message="Aptos staking requires Petra or another Aptos-compatible wallet. Click the wallet chip to connect." />
+      {suiUnsupportedNetwork && (
+        <Banner tone="warn" kind="SUI NETWORK UNSUPPORTED" message={`This Sui wallet account does not support ${suiNetwork.name}. Switch to ${suiNetwork.name} in your wallet or connect a compatible account.`} action={<Btn size="sm" variant="ghost" onClick={openPicker}>Choose wallet</Btn>} />
       )}
-      {!error && isAptosChain && aptos.isConnected && aptos.network?.chainId !== aptosNetwork.chainId && (
-        <Banner tone="warn" kind="WRONG APTOS NETWORK" message={`Switch your Aptos wallet to ${aptosNetwork.name} before staking.`} />
+      {isAptosChain && !aptos.isConnected && (
+        <Banner tone="warn" kind="APTOS WALLET NOT CONNECTED" message="Aptos staking requires Petra or another Aptos-compatible wallet." action={<Btn size="sm" variant="ghost" onClick={openPicker}>Connect wallet</Btn>} />
       )}
-      {!error && isSolanaChain && !solana.isConnected && (
-        <Banner tone="warn" kind="SOLANA WALLET NOT CONNECTED" message="Solana staking requires Phantom, Solflare, or another Solana wallet. Connect it from the wallet chip." />
+      {aptosWrongNetwork && (
+        <Banner tone="warn" kind="WRONG APTOS NETWORK" message={`Wallet on ${aptos.network?.name ?? "unknown"} (chain ${aptos.network?.chainId ?? "unknown"}). Switch to Aptos ${aptosNetwork.name} (chain ${aptosNetwork.chainId}) before staking.`} action={<Btn size="sm" variant="ghost" disabled={aptosSwitchPending} onClick={() => { void requestAptosSwitch(); }}>{aptosSwitchPending ? "Switching…" : `Switch to ${aptosNetwork.name}`}</Btn>} />
       )}
-      {!error && isPolkadotChain && !polkadot.isConnected && (
-        <Banner tone="warn" kind="POLKADOT WALLET NOT CONNECTED" message="Polkadot nomination pools run on Asset Hub. Connect Talisman, SubWallet, or Polkadot.js from the wallet chip." />
+      {isSolanaChain && !solana.isConnected && (
+        <Banner tone="warn" kind="SOLANA WALLET NOT CONNECTED" message="Solana staking requires Phantom, Solflare, or another Solana wallet." action={<Btn size="sm" variant="ghost" onClick={openPicker}>Connect wallet</Btn>} />
+      )}
+      {isSolanaChain && solana.isConnected && (
+        <Banner tone="warn" kind="CHECK SOLANA NETWORK" message={`The app uses ${solanaNetwork.name}, but your wallet does not report its active cluster to this app. Switch to ${solanaNetwork.name} in your wallet if needed before signing.`} />
+      )}
+      {isPolkadotChain && !polkadot.isConnected && (
+        <Banner tone="warn" kind="POLKADOT WALLET NOT CONNECTED" message="Polkadot nomination pools run on Asset Hub. Connect Talisman, SubWallet, or Polkadot.js." action={<Btn size="sm" variant="ghost" onClick={openPicker}>Connect wallet</Btn>} />
       )}
       {isPolkadotChain && (
         <Banner tone="warn" kind="NOMINATION POOL" message={isMainnet
@@ -1336,20 +1420,20 @@ export default function StakePage() {
         <AccountPanel title="01 · Select chain" icon="link" description="Choose a network and its native staking flow." id="stake-chain">
           <StakeChainPicker chains={chains} selectedChainId={selectedChain.id}
             enabledChainIds={chainStats?.chains.map(chain => chain.chain)} watchers={watcherStatus}
-            statusUnavailable={chainStatsError || watcherStatusError} busy={busy}
-            onSelect={chain => { setSelectedChainId(chain.id); setStep(0); setReviewOpen(false); setError(null); }} />
+            statusUnavailable={chainStatsError || watcherStatusError} busy={busy} polygonLiquid={!isMainnet && selectedChain.id !== "polygon"}
+            onSelect={chain => { setSelectedChainId(chain.id); setAdvancedPolygon(false); setStep(0); setReviewOpen(false); setError(null); }} />
           <p className="account-muted">{selectedChain.type}</p>
           <dl className="account-definition"><div><dt>Settlement</dt><dd>{selectedChain.wagmiChain?.name ?? selectedChain.name}</dd></div><div><dt>Unbond period</dt><dd>{unbondingLabel}</dd></div></dl>
         </AccountPanel>
         <AccountPanel title="02 · Choose token" icon="coin" description="Native token for this staking flow." id="stake-token">
           <div className="account-token-selected"><ChainBadge chainId={selectedChain.id} symbol={selectedChain.symbol} label={selectedChain.symbol} /><StatusBadge status="Selected" /></div>
-          <p className="account-muted">Stake {selectedChain.symbol} from your wallet to earn native validator yield and Canton Coin rewards.</p>
+          <p className="account-muted">Stake {selectedChain.symbol} from your wallet. Native yield follows the selected network; CC rewards depend on the enabled Canton rewards workflow.</p>
           <dl className="account-definition"><div><dt>Token standard</dt><dd>{selectedChain.id === "polygon" ? "ERC-20" : selectedChain.symbol}</dd></div><div><dt>Current price</dt><dd>{fmtUsd(chainPriceUsd, 4)}</dd></div><div><dt>Price source</dt><dd>{prices?.source.pol === "coingecko" ? "Market price" : "Reference price"}</dd></div><div><dt>Staking network</dt><dd>{selectedChain.wagmiChain?.name ?? selectedChain.name}</dd></div></dl>
           {selectedChain.id === "polygon" && <a className="account-button" href={`${isMainnet ? "https://etherscan.io" : "https://sepolia.etherscan.io"}/token/${stakeTokenAddress}`} target="_blank" rel="noreferrer">View token ↗</a>}
         </AccountPanel>
         <AccountPanel title={isPolkadotChain ? "03 · Pick pool" : "03 · Pick validator"} icon="shield" description={isPolkadotChain ? "Select an open Asset Hub nomination pool." : "Select a validator to delegate to."} id="stake-validator">
           <label><span className="sr-only">Sort validators</span><select className="account-field" aria-label="Sort validators" value={validatorSort} onChange={event => setValidatorSort(event.target.value)} disabled={busy}><option value="rank">{isPolkadotChain ? "Largest pools" : "Recommended order"}</option><option value="fee">Lowest commission</option></select></label>
-          <div className="account-validator-options" role="group" aria-label="Available validators">{sortedValidators.map((validator, i) => <button key={validator.address} className="account-validator-option" aria-pressed={validatorAddr === validator.address} disabled={busy} onClick={() => { setValidatorAddr(validator.address); setValidatorName(validator.name); }}>
+          <div className="account-validator-options" role="group" aria-label="Available validators">{sortedValidators.map((validator) => <button key={validator.address} className="account-validator-option" aria-pressed={validatorAddr === validator.address} disabled={busy} onClick={() => { setValidatorAddr(validator.address); setValidatorName(validator.name); }}>
             <span className="account-validator-avatar" aria-hidden="true">{validator.name.slice(0, 1)}</span><span><strong>{validator.name}</strong><small>{shortId(validator.address)}</small><small>{Number.isFinite(validator.uptime) ? `${validator.uptime.toFixed(1)}% uptime` : isPolkadotChain ? "Nomination pool" : "Validator"}</small></span><span><b>{validatorApr(validator) > 0 ? `${validatorApr(validator).toFixed(1)}%` : "—"}</b><small>Est. APR</small><small>{validator.commission}% fee</small></span><span className="account-validator-check" aria-hidden="true">{validatorAddr === validator.address ? "✓" : "○"}</span>
           </button>)}</div>
           {!validators.length && <AccountEmpty>{validatorLoadError || "Loading available validators…"}</AccountEmpty>}
@@ -1357,14 +1441,19 @@ export default function StakePage() {
         </AccountPanel>
         <div className="account-stack">
           <AccountPanel title="04 · Enter amount" icon="wallet" description={`Set the amount of ${selectedChain.symbol} to stake.`} id="stake-amount">
+            {selectedChain.id === "polygon" && address && <p className="account-muted account-connected-wallet" title={address}>Connected wallet: {shortId(address)}</p>}
             <div className="account-amount-balance"><span>{balanceLabel}</span><button className="account-button" disabled={busy || tokenBalance.data === undefined || selectedChain.id !== "polygon"} onClick={() => setAmount(formatUnits(tokenBalance.data!, 18))}>Max</button></div>
+            {selectedChain.id === "polygon" && address && <p className="account-muted account-network-balances">
+              <span>{isMainnet ? "Polygon PoS POL" : "Amoy test POL"}: {polygonNativeBalance.data ? fmt(Number(formatUnits(polygonNativeBalance.data.value, 18)), 4) : polygonNativeBalance.isError ? "unavailable" : "loading…"}</span>
+              <span>{isMainnet ? "Ethereum ETH" : "Sepolia ETH"} for gas: {settlementGasBalance.data ? fmt(Number(formatUnits(settlementGasBalance.data.value, 18)), 4) : settlementGasBalance.isError ? "unavailable" : "loading…"}</span>
+            </p>}
             <label className="account-stake-amount"><span className="sr-only">Stake amount</span><input aria-label="Stake amount" inputMode="decimal" value={amount} onChange={event => setAmount(event.target.value)} disabled={busy} /><span>{selectedChain.symbol}</span></label>
             <p className="account-muted">{isPolkadotChain && !isMainnet ? "WND is a testnet token with no USD value." : `≈ ${Number.isFinite(usdValue) ? fmtUsd(usdValue, 2) : "—"} USD · estimated`}</p>
             {amountIssue && <p role="status" className="account-amount-warning">{amountIssue}</p>}
             {!isMainnet && <details className="account-funding"><summary>Need testnet funds?</summary><p>{FUNDING_HINTS[selectedChain.id]}</p></details>}
           </AccountPanel>
           <AccountPanel title="05 · Review rewards" icon="activity" description="Native yield and Canton allocations." id="stake-review">
-            <div className="account-dual-rewards"><div className="account-yield-card"><span aria-hidden="true"><AccountIcon name="stack" /></span><div><small>NATIVE VALIDATOR YIELD</small><strong>{selectedValidator && validatorApr(selectedValidator) > 0 ? `${validatorApr(selectedValidator).toFixed(1)}%` : nativeApy !== null ? `${nativeApy.toFixed(1)}%` : "—"}</strong><small>Estimated APR</small></div></div><div className="account-yield-card account-yield-card--cc"><span aria-hidden="true"><AccountIcon name="coin" /></span><div><small>CANTON COIN REWARDS</small><strong>Per round</strong><small>Based on actual attribution</small></div></div></div>
+            <div className="account-dual-rewards"><div className="account-yield-card"><span aria-hidden="true"><AccountIcon name="stack" /></span><div><small>NATIVE VALIDATOR YIELD</small><strong>{selectedValidator && validatorApr(selectedValidator) > 0 ? `${validatorApr(selectedValidator).toFixed(1)}%` : nativeApy !== null ? `${nativeApy.toFixed(1)}%` : "—"}</strong><small>Estimated APR</small></div></div><div className="account-yield-card account-yield-card--cc"><span aria-hidden="true"><AccountIcon name="coin" /></span><div><small>CANTON COIN REWARDS</small><strong>When enabled</strong><small>Based on actual attribution</small></div></div></div>
           </AccountPanel>
           <SplitPanel compact />
         </div>
@@ -1374,7 +1463,18 @@ export default function StakePage() {
           <div className="account-transaction-flow"><div><AccountIcon name="wallet" /><strong>1. Approve & sign</strong><p>Approve the staking token if needed, then sign the delegation.</p></div><div><AccountIcon name="clock" /><strong>2. Wait for confirmation</strong><p>The native-chain watcher observes the confirmed staking event.</p></div><div><AccountIcon name="cube" /><strong>3. Record on Canton</strong><p>Your position and lifecycle activity are recorded on-ledger.</p></div></div>
         </AccountPanel>
         <div className="account-stake-submit">
-          <button className="account-button account-button--primary" disabled={busy || backendModeUnsafe || selectedChainOffline || !stakingUiReady || !cantonReady || (walletsReady && (!!amountIssue || !validatorAddr))} onClick={() => { if (!walletsReady) openPicker(); else setReviewOpen(true); }}>{busy ? ctaLabel : backendModeMismatch ? "Network mode mismatch" : backendModeUnsafe ? "Checking network mode" : !cantonReady ? cantonReadiness.isPending ? "Checking Canton" : "Canton unavailable" : selectedChainOffline ? "Staking watcher unavailable" : !walletsReady ? "Connect wallets to stake" : step === 5 ? "Review another stake →" : "Review & stake →"}</button>
+          <button
+            className="account-button account-button--primary"
+            disabled={busy || switchPending || aptosSwitchPending || backendModeUnsafe || selectedChainOffline || !stakingUiReady || !cantonReady || (walletsReady && (!!amountIssue || !validatorAddr))}
+            onClick={() => {
+              if (wrongNetwork) void requestEvmSwitch();
+              else if (aptosWrongNetwork) void requestAptosSwitch();
+              else if (!walletsReady) openPicker();
+              else setReviewOpen(true);
+            }}
+          >
+            {busy ? ctaLabel : backendModeMismatch ? "Network mode mismatch" : backendModeUnsafe ? "Checking network mode" : !cantonReady ? cantonReadiness.isPending ? "Checking Canton" : "Canton unavailable" : selectedChainOffline ? "Staking watcher unavailable" : wrongNetwork ? `Switch to ${walletNetworkName}` : aptosWrongNetwork ? `Switch to Aptos ${aptosNetwork.name}` : suiUnsupportedNetwork ? `Choose a ${suiNetwork.name} Sui wallet` : !walletsReady ? "Connect wallets to stake" : step === 5 ? "Review another stake →" : "Review & stake →"}
+          </button>
           {backendModeMismatch && <p role="alert" className="account-amount-warning">This page is built for {networkMode}, but the staking backend is on {watcherStatus?.networkMode}. Open the matching deployment before staking.</p>}
           {!cantonReady && !cantonReadiness.isPending && <p role="status" className="account-amount-warning">Networks are available to explore, but staking is paused until the Canton ledger connection is ready for {networkMode}.</p>}
           <p className="account-muted">Your wallet signs. You retain custody.</p>

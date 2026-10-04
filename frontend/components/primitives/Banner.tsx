@@ -31,6 +31,7 @@ export function Banner({
   const c = TONE_COLOR[tone];
   return (
     <div
+      className="ui-banner"
       style={{
         display: "flex",
         alignItems: "center",
@@ -46,6 +47,7 @@ export function Banner({
       role="alert"
     >
       <div
+        className="ui-banner__copy"
         style={{
           display: "flex",
           alignItems: "center",
@@ -55,7 +57,7 @@ export function Banner({
         }}
       >
         <span
-          className="mono"
+          className="mono ui-banner__kind"
           style={{
             fontSize: 9.5,
             color: c,
@@ -66,11 +68,11 @@ export function Banner({
         >
           ● {kind}
         </span>
-        <span style={{ fontSize: 12.5, color: tokens.ink[200], lineHeight: 1.5 }}>
+        <span className="ui-banner__message" style={{ fontSize: 12.5, color: tokens.ink[200], lineHeight: 1.5 }}>
           {message}
         </span>
       </div>
-      {action ? <div style={{ flexShrink: 0 }}>{action}</div> : null}
+      {action ? <div className="ui-banner__action" style={{ flexShrink: 0 }}>{action}</div> : null}
     </div>
   );
 }

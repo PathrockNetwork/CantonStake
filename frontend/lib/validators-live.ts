@@ -1,5 +1,4 @@
 import type { ValidatorRow } from "@/lib/validators";
-import { validatorsForChain as staticValidatorsForChain } from "@/lib/validators";
 
 const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4001";
@@ -59,10 +58,10 @@ export async function fetchScoredValidators(
       .filter((row): row is ValidatorRow => row !== null);
 
     if (rows.length === 0) {
-      return { rows: chain === "polygon" ? [] : staticValidatorsForChain(chain), source: "fallback" };
+      return { rows: [], source: "fallback" };
     }
     return { rows, source: snap.source };
   } catch {
-    return { rows: chain === "polygon" ? [] : staticValidatorsForChain(chain), source: "fallback" };
+    return { rows: [], source: "fallback" };
   }
 }

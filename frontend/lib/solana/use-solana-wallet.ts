@@ -3,7 +3,10 @@
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { type WalletName } from "@solana/wallet-adapter-base";
 import { Authorized, Keypair, PublicKey, StakeProgram, Transaction } from "@solana/web3.js";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
+import { toBase64 } from "@cosmjs/encoding";
+import { toBase58 } from "@mysten/sui/utils";
+import { networkMode } from "../network";
 import { assertSolanaGenesis } from "./network";
 import { readSolanaStakeActivation } from "./stake-activation";
 import { waitForSolanaFinality } from "./confirmation";
@@ -15,6 +18,13 @@ export function useSolanaWallet() {
   const { connection } = useConnection();
   const [error, setError] = useState<string | null>(null);
   const address = wallet.publicKey?.toBase58() ?? null;
+  const liveWallet = useRef(wallet);
+  liveWallet.current = wallet;
+  const assertOwner = useCallback((expected: string) => {
+    const current = liveWallet.current;
+    if (!current.connected || current.publicKey?.toBase58() !== expected ||
+        current.wallet?.adapter.publicKey?.toBase58() !== expected) throw new Error("Solana wallet changed; reconnect the original wallet before signing or broadcasting.");
+  }, []);
 
   const assertNetwork = useCallback(async () => {
     if (!wallet.connected || !wallet.publicKey) throw new Error("Connect a Solana wallet first.");
@@ -29,15 +39,50 @@ export function useSolanaWallet() {
     else wallet.select(name as WalletName);
   }, [wallet]);
 
-  const send = useCallback(async (tx: Transaction, signers: Keypair[] = []) => {
+  const signOwnership = useCallback(async (message: string, expectedWallet: string) => {
     await assertNetwork();
+    assertOwner(expectedWallet);
+    const sign = liveWallet.current.signMessage;
+    if (!sign) throw new Error("This Solana wallet does not support message signing. Choose a wallet that can sign ownership consent.");
+    const signature = await sign(new TextEncoder().encode(message));
+    assertOwner(expectedWallet);
+    await assertNetwork();
+    if (signature.length !== 64) throw new Error("Solana wallet returned an invalid ownership signature.");
+    return toBase64(signature); // Backend verifies Ed25519 over the exact UTF-8 consent.
+  }, [assertNetwork, assertOwner]);
+
+  const send = useCallback(async (tx: Transaction, signers: Keypair[] = [],
+    options?: { expectedWallet: string; onBeforeBroadcast?: (signature: string) => void }) => {
+    await assertNetwork();
+    if (options) assertOwner(options.expectedWallet);
     tx.feePayer = wallet.publicKey!;
     const latest = await connection.getLatestBlockhash("finalized");
     tx.recentBlockhash = latest.blockhash;
-    const signature = await wallet.sendTransaction(tx, connection, { signers, preflightCommitment: "confirmed" });
+    let signature: string;
+    if (options?.onBeforeBroadcast || (networkMode === "testnet" && process.env.NEXT_PUBLIC_LOOP_STAKING_FLOW === "external")) {
+      const owner = options?.expectedWallet ?? tx.feePayer.toBase58();
+      assertOwner(owner);
+      const sign = liveWallet.current.signTransaction;
+      if (!sign) throw new Error("This Solana wallet cannot sign separately from broadcast; safe Loop transaction tracking is unavailable.");
+      if (signers.length) tx.partialSign(...signers);
+      const message = toBase64(tx.serializeMessage());
+      const signed = await sign(tx);
+      if (toBase64(signed.serializeMessage()) !== message || !signed.verifySignatures(true) || !signed.signature) {
+        throw new Error("Solana wallet changed the prepared transaction or returned invalid signatures.");
+      }
+      assertOwner(owner);
+      await assertNetwork();
+      const bytes = signed.serialize();
+      signature = toBase58(signed.signature);
+      options?.onBeforeBroadcast?.(signature); // Storage failure prevents broadcast.
+      const broadcast = await connection.sendRawTransaction(bytes, { preflightCommitment: "confirmed" });
+      if (broadcast !== signature) throw new Error(`Solana RPC returned a different signature; reconcile ${signature} before retrying.`);
+    } else {
+      signature = await wallet.sendTransaction(tx, connection, { signers, preflightCommitment: "confirmed" });
+    }
     await waitForSolanaFinality(connection, signature, latest.lastValidBlockHeight);
     return { signature };
-  }, [assertNetwork, wallet, connection]);
+  }, [assertNetwork, assertOwner, wallet, connection]);
 
   const prepareStake = useCallback(async (amountLamports: bigint) => {
     await assertNetwork();
@@ -71,7 +116,7 @@ export function useSolanaWallet() {
       authorizedPubkey: owner,
       votePubkey: new PublicKey(voteAddress),
     });
-    return send(new Transaction().add(...create.instructions, ...delegate.instructions), [stakeAccount]);
+    return send(new Transaction().add(...create.instructions, ...delegate.instructions), [stakeAccount], { expectedWallet });
   }, [assertNetwork, wallet.publicKey, send]);
 
   const assertAuthority = useCallback(async (stakeAccount: string, type: "staker" | "withdrawer") => {
@@ -85,10 +130,10 @@ export function useSolanaWallet() {
     return info.value;
   }, [assertNetwork, connection, address]);
 
-  const deactivate = useCallback(async (stakeAccount: string) => {
+  const deactivate = useCallback(async (stakeAccount: string, options?: { expectedWallet: string; onBeforeBroadcast: (signature: string) => void }) => {
     await assertAuthority(stakeAccount, "staker");
     const tx = StakeProgram.deactivate({ stakePubkey: new PublicKey(stakeAccount), authorizedPubkey: wallet.publicKey! });
-    return send(tx);
+    return send(tx, [], options);
   }, [assertAuthority, wallet.publicKey, send]);
 
   const withdraw = useCallback(async (stakeAccount: string) => {
@@ -109,7 +154,7 @@ export function useSolanaWallet() {
     address, isConnected: wallet.connected && !!address, isConnecting: wallet.connecting,
     name: wallet.wallet?.adapter.name ?? null,
     wallets: wallet.wallets.map((item) => ({ name: item.adapter.name })),
-    error, connect, disconnect: wallet.disconnect, assertNetwork, prepareStake, stake, deactivate, withdraw,
+    error, connect, disconnect: wallet.disconnect, assertNetwork, signOwnership, prepareStake, stake, deactivate, withdraw,
     connection,
   };
 }

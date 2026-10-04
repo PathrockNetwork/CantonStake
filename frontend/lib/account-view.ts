@@ -41,6 +41,16 @@ export function totalPositionUsd(positions: PositionRow[], prices?: PriceSnapsho
 export function validatorLabel(position: PositionRow) {
   return shortId(position.chainMeta?.validatorAddress ?? position.chainMeta?.validatorShare);
 }
+/** Human-readable labels shared by reward cards and their position filter. */
+export function rewardPositionLabel(position: PositionRow) {
+  const chain = accountChain(position);
+  const name = chain.id === "polygon" ? "Polygon PoS" : chain.name.replace(/ Testnet$/, "");
+  const validatorId = position.chainMeta?.validatorId;
+  const validator = validatorId != null ? `Validator #${validatorId}`
+    : position.chainMeta?.validatorAddress ? `Validator ${shortId(position.chainMeta.validatorAddress)}`
+    : `Position ${shortId(position.contractId)}`;
+  return `${name} · ${validator}`;
+}
 export type AccountEvent = { id: string; time: string; title: string; detail: string; status: string; kind: "positions" | "rewards"; positionId?: string; round?: number };
 /** Recorded timestamps only: never synthesize watcher confirmations or reward amounts. */
 export function accountEvents(positions: PositionRow[], rounds: RoundSummary[], userScope = true): AccountEvent[] {

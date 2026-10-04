@@ -89,14 +89,6 @@ export const IconArrowRight = (p: IconProps) => (
   </I>
 );
 
-export const IconChevronRight = (p: IconProps) => (
-  <I {...p} d="M6 4l4 4-4 4" />
-);
-
-export const IconCheck = (p: IconProps) => (
-  <I {...p} d="M3 8.5 6.5 12 13 4.5" />
-);
-
 export const IconClock = (p: IconProps) => (
   <I {...p}>
     <circle cx="8" cy="8" r="5.5" fill="none" />
