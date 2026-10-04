@@ -14,9 +14,8 @@
  *   RootChain      0xbd07D7E1E93c8d4b2a261327F3C28a8EA7167209  (== StakeManager.rootChain())
  *   stake token    0x44499312f493F62f2DFd3C6435Ca3603EbFCeeBa  (POL, == StakeManager.token())
  *
- * The old code carried a single global `config.mockValidatorShare`. That is
- * structurally wrong for real Polygon: the address is per-VALIDATOR, so every
- * call site has to resolve it. This module is that resolver.
+ * The address is per-validator, so every call site must resolve it rather
+ * than use a single global ValidatorShare. This module is that resolver.
  *
  * ON-CHAIN FACTS THIS MODULE ENCODES (all verified, not assumed):
  *
@@ -176,14 +175,6 @@ export function eventsHubAddress(): Promise<Address> {
   });
   return eventsHubPromise;
 }
-
-export const erc20Abi = parseAbi([
-  "function allowance(address owner, address spender) view returns (uint256)",
-  "function approve(address spender, uint256 value) returns (bool)",
-  "function balanceOf(address) view returns (uint256)",
-  "function decimals() view returns (uint8)",
-  "function symbol() view returns (string)",
-]);
 
 const rootChainAbi = parseAbi([
   "function currentHeaderBlock() view returns (uint256)",
@@ -388,119 +379,7 @@ export async function validatorShareMap(): Promise<Record<string, string>> {
  * Polygon's own `_getRatePrecision`: the eight original foundation validators
  * predate the high-precision exchange rate and still use 100.
  */
-export function ratePrecision(validatorId: number | bigint): bigint {
-  return BigInt(validatorId) < 8n ? 100n : 10n ** 29n;
-}
-
-export interface ExchangeRateInfo {
-  validatorId: number;
-  /** Raw exchangeRate() — scaled by `precision`, NOT by 1e18. */
-  rate: bigint;
-  /** withdrawExchangeRate(), used by sellVoucher_new. */
-  withdrawRate: bigint;
-  precision: bigint;
-}
-
-export async function getExchangeRate(
-  share: Address,
-  validatorId?: number
-): Promise<ExchangeRateInfo> {
-  const id =
-    validatorId ??
-    Number(
-      await settlementClient.readContract({
-        address: share,
-        abi: validatorShareAbi,
-        functionName: "validatorId",
-      })
-    );
-  const [rate, withdrawRate] = await Promise.all([
-    settlementClient.readContract({
-      address: share,
-      abi: validatorShareAbi,
-      functionName: "exchangeRate",
-    }),
-    settlementClient.readContract({
-      address: share,
-      abi: validatorShareAbi,
-      functionName: "withdrawExchangeRate",
-    }),
-  ]);
-  return { validatorId: id, rate, withdrawRate, precision: ratePrecision(id) };
-}
-
-/** shares minted for `amount` of stake token — mirrors ValidatorShare._buyShares. */
-export function sharesForAmount(
-  amount: bigint,
-  rate: bigint,
-  precision: bigint
-): bigint {
-  if (rate === 0n) return 0n;
-  return (amount * precision) / rate;
-}
-
-/** stake-token value of `shares` — mirrors ValidatorShare.getTotalStake. */
-export function amountForShares(
-  shares: bigint,
-  rate: bigint,
-  precision: bigint
-): bigint {
-  return (shares * rate) / precision;
-}
-
-/** Apply a slippage tolerance in basis points, rounding against the user. */
-export function withSlippage(
-  value: bigint,
-  bps: number,
-  direction: "min" | "max"
-): bigint {
-  const factor = BigInt(Math.round(bps));
-  return direction === "min"
-    ? (value * (10_000n - factor)) / 10_000n
-    : (value * (10_000n + factor)) / 10_000n;
-}
-
 // --- Positions ------------------------------------------------------------
-
-export interface StakeSnapshot {
-  /** Stake-token value of the delegator's shares, in wei. */
-  amountWei: bigint;
-  /** Raw share balance. */
-  shares: bigint;
-  /** Claimable protocol yield, in wei — NOT a pre-funded balance. */
-  liquidRewardsWei: bigint;
-}
-
-export async function getStakeSnapshot(
-  share: Address,
-  delegator: Address
-): Promise<StakeSnapshot> {
-  const [total, shares, rewards] = await Promise.all([
-    settlementClient.readContract({
-      address: share,
-      abi: validatorShareAbi,
-      functionName: "getTotalStake",
-      args: [delegator],
-    }),
-    settlementClient.readContract({
-      address: share,
-      abi: validatorShareAbi,
-      functionName: "balanceOf",
-      args: [delegator],
-    }),
-    settlementClient.readContract({
-      address: share,
-      abi: validatorShareAbi,
-      functionName: "getLiquidRewards",
-      args: [delegator],
-    }),
-  ]);
-  return {
-    amountWei: (total as readonly bigint[])[0] ?? 0n,
-    shares: shares as bigint,
-    liquidRewardsWei: rewards as bigint,
-  };
-}
 
 /** Claimable protocol yield for one (validator, delegator) pair. P2.5. */
 export async function getLiquidRewards(
@@ -556,7 +435,7 @@ export async function getStakeToken(): Promise<Address> {
  * cadence. We sample the last CHECKPOINT_SAMPLES header blocks and average
  * the gaps. On Sepolia this currently measures ~1,070 s (~18 min), which
  * makes the 80-checkpoint withdrawal delay land near 24 h — NOT the 21 days
- * quoted for Cosmos-style chains, and not the mock's 60 s either.
+ * quoted for Cosmos-style chains.
  */
 const CHECKPOINT_SAMPLES = 12;
 const HEADER_BLOCK_STEP = 10_000n;
@@ -669,20 +548,6 @@ export async function getUnbond(
     etaSeconds,
     readyAtEstimate: Math.floor(Date.now() / 1000) + etaSeconds,
   };
-}
-
-export async function getLatestUnbond(
-  share: Address,
-  delegator: Address
-): Promise<UnbondInfo | null> {
-  const nonce = (await settlementClient.readContract({
-    address: share,
-    abi: validatorShareAbi,
-    functionName: "unbondNonces",
-    args: [delegator],
-  })) as bigint;
-  if (nonce === 0n) return null;
-  return getUnbond(share, delegator, nonce);
 }
 
 // --- Aggregate parameters (served to the frontend) ------------------------

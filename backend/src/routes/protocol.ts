@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { canton, TEMPLATES } from "../canton.js";
 import { prisma } from "../db.js";
 import { readProtocolSummary } from "../services/protocol-summary.js";
+import { config } from "../config.js";
 
 const protocolRoutes: FastifyPluginAsync = async (app) => {
   type Snapshot = Awaited<ReturnType<typeof readProtocolSummary>>;
@@ -20,6 +21,7 @@ const protocolRoutes: FastifyPluginAsync = async (app) => {
             return positions.map(({ amountPol, ...position }) => ({ ...position, amount: amountPol }));
           },
           now: () => new Date(),
+          networkMode: config.networkMode,
         }).then((value) => {
           cache = { value, expiresAt: Date.now() + 30_000 };
           return value;

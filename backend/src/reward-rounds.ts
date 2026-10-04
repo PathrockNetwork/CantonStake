@@ -1,16 +1,17 @@
 /**
- * CC Reward Round Automation — the revenue engine.
+ * Recorded CC attribution/allocation automation.
  *
  * Every 10 minutes, this service:
  *   1. Counts all FeaturedAppActivityMarker transactions since last round
  *   2. Calculates the app's share of the CC mint pool
- *   3. Distributes CC to user Loop wallets via beneficiary splits (75/25)
- *   4. Records each distribution in the database
+ *   3. Calculates beneficiary allocations (75/25)
+ *   4. Records those allocations in the database
+ *
+ * This service does not claim or transfer CC to Loop wallets. Recorded
+ * allocations are not settled on-ledger payouts.
  *
  * BullMQ + Redis provides:
  *   - Reliable scheduling with retry logic
- *   - Dead-letter queue for failed rounds
- *   - Dashboard visibility via BullBoard
  *
  * In production, the actual CC mint depends on:
  *   - Featured App status being active (2/3 Super Validator approval)
@@ -18,7 +19,6 @@
  *   - CC/USD price (~$0.16 at time of writing)
  *   - 100x burn-mint multiplier for Featured Apps
  *
- * For the hackathon, the mint is simulated and persisted to PostgreSQL.
  */
 
 import { Queue, Worker, type Job } from "bullmq";
@@ -33,7 +33,6 @@ import { counter, gauge } from "./services/observability.js";
 
 const ROUND_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 const QUEUE_NAME = "cc-reward-rounds";
-const DEAD_LETTER_QUEUE = "cc-reward-rounds-dead";
 
 const connection = new IORedis(config.redisUrl, {
   maxRetriesPerRequest: null, // BullMQ requirement
@@ -54,6 +53,11 @@ interface RoundPayload {
 }
 
 async function processRound(job: Job<RoundPayload>) {
+  if (config.networkMode === "testnet" && config.loopStakingEnabled) {
+    // Do not inherit LocalNet FeaturedAppRight/split/Scan settings and present
+    // bookkeeping as payouts to the newly connected real Loop parties.
+    return { skipped: true, reason: "Loop TestNet CC claiming and transfers are not enabled" };
+  }
   let { roundNumber } = job.data;
   const startedAt = new Date();
 

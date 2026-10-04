@@ -5,6 +5,10 @@ import { RpcUnavailable, type RpcRequest } from "../services/rpc-pool.js";
 import { classifyRpcRequest } from "../services/rpc-policy.js";
 
 const rpcRoutes: FastifyPluginAsync = async (app) => {
+  // The real Aptos SDK submits signed transactions and view payloads as BCS.
+  // Preserve the bytes in this RPC plugin only; normal application APIs remain JSON.
+  const aptosBcsTypes = new Set(["application/x.aptos.signed_transaction+bcs", "application/x.aptos.view_function+bcs"]);
+  app.addContentTypeParser([...aptosBcsTypes], { parseAs: "buffer" }, (_request, body, done) => done(null, body));
   // Bounded process-local limits supplement the edge proxy. Do not trust
   // arbitrary forwarded IPs and never forward browser auth/cookie headers.
   let windowStart = Date.now();
@@ -25,6 +29,15 @@ const rpcRoutes: FastifyPluginAsync = async (app) => {
       const prefix = `/api/rpc/${request.params.mode}/${name}`;
       const path = request.raw.url!.slice(prefix.length);
       const headers: Record<string, string> = {};
+      if (Buffer.isBuffer(request.body)) {
+        const contentType = request.headers["content-type"]?.split(";")[0]?.trim().toLowerCase();
+        const signed = contentType === "application/x.aptos.signed_transaction+bcs";
+        const routePath = path.split("?")[0];
+        if (name !== "aptos" || !contentType || !aptosBcsTypes.has(contentType) || request.method !== "POST" ||
+            (signed ? !["/v1/transactions", "/v1/transactions/simulate"].includes(routePath)
+              : routePath !== "/v1/view")) return reply.code(400).send({ error: "Unsupported Aptos binary operation" });
+        headers["content-type"] = contentType;
+      }
       // Keep the installed SDK's protocol-negotiation header, plus the
       // older GraphQL version/usage headers. Never forward cookies/API keys.
       for (const key of ["x-sui-client-protocol-version", "x-sui-rpc-version", "x-sui-rpc-show-usage"]) {

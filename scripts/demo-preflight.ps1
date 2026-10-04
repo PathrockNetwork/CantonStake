@@ -79,14 +79,13 @@ try {
   Add-Check "file:evm/.env" (Test-Path $evmEnvPath) "EVM deploy/verify env"
 
   $rootEnv = Read-DotEnv $rootEnvPath
-  Test-EnvValue $rootEnv "MOCK_VALIDATOR_SHARE_ADDRESS"
   Test-EnvValue $rootEnv "CANTON_APP_PROVIDER_PARTY"
   Test-EnvValue $rootEnv "CANTON_DELEGATOR_PARTY"
   Test-EnvValue $rootEnv "FEATURED_APP_RIGHT_CID"
-  Test-EnvValue $rootEnv "NEXT_PUBLIC_MOCK_LOOP_PARTY_ID"
+  Test-EnvValue $rootEnv "NEXT_PUBLIC_LOOP_NETWORK"
 
   $damlDar = Join-Path $Root "daml\CantonStake\.daml\dars\splice-api-featured-app-v1.dar"
-  $appDar = Join-Path $Root "daml\CantonStake\.daml\dist\cantonstake-0.0.1.dar"
+  $appDar = Join-Path $Root "daml\CantonStake\.daml\dist\cantonstake-0.0.2.dar"
   Add-Check "daml:splice DAR" (Test-Path $damlDar) ".daml/dars/splice-api-featured-app-v1.dar"
   Add-Check "daml:app DAR" (Test-Path $appDar) ".daml/dist/cantonstake-0.0.1.dar"
 

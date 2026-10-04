@@ -13,6 +13,7 @@ export async function solanaRpc<T>(method: string, params: unknown[] = []): Prom
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    signal: AbortSignal.timeout(12000), redirect: "error",
   });
   if (!response.ok) throw new Error(`Solana ${method} returned ${response.status}`);
   const body = await response.json() as { result?: T; error?: { message?: string } };

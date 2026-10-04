@@ -149,6 +149,22 @@ export const config = {
   polygonWatcherMaxRange: modeDefault("POLYGON_WATCHER_MAX_BLOCK_RANGE", 5000, 50),
 
   cantonJsonApiUrl: optional("CANTON_JSON_API_URL", "http://localhost:3975"),
+  cantonDelegatorJsonApiUrl: optional("CANTON_DELEGATOR_JSON_API_URL"),
+  cantonUserId: optional("CANTON_USER_ID"),
+  cantonDelegatorUserId: optional("CANTON_DELEGATOR_USER_ID"),
+  cantonSynchronizerId: optional("CANTON_SYNCHRONIZER_ID"),
+  cantonPackageId: optional("CANTON_PACKAGE_ID"),
+  cantonModernEventFormat: optional("CANTON_MODERN_EVENT_FORMAT", "false") === "true",
+  cantonWriteAccessProtected: optional("CANTON_WRITE_ACCESS_PROTECTED", "false") === "true",
+  // Existing LocalNet preservation; never inferred from primary credentials.
+  cantonLegacyJsonApiUrl: optional("CANTON_LEGACY_JSON_API_URL"),
+  cantonLegacyAuthToken: optional("CANTON_LEGACY_AUTH_TOKEN"),
+  cantonLegacyProviderParty: optional("CANTON_LEGACY_APP_PROVIDER_PARTY"),
+  cantonLegacyPackageId: optional("CANTON_LEGACY_PACKAGE_ID"),
+  // Disabled until real Loop custom-DAR review/deployment and legacy-position
+  // preservation have been verified. Never a hosted-wallet fallback.
+  loopStakingEnabled: optional("LOOP_STAKING_ENABLED", "false") === "true",
+  loopReviewedPackageId: optional("LOOP_REVIEWED_PACKAGE_ID"),
   cantonAppProviderParty: required("CANTON_APP_PROVIDER_PARTY"),
   cantonAuthToken: optional("CANTON_AUTH_TOKEN"),
   cantonDelegatorParty: required("CANTON_DELEGATOR_PARTY"),
@@ -346,3 +362,10 @@ export const config = {
 // A mainnet chain ID must never bypass the explicit mainnet acknowledgement
 // by being configured under a deployment that still reports testnet mode.
 assertPolygonSettlementMode(config.networkMode, config.stakeSettlementChainId);
+
+// The external adapter currently verifies TestNet-native ownership/receipts.
+// Enabling its flag on MainNet must never silently retain hosted submissions
+// or apply TestNet receipt checks to real funds.
+if (config.networkMode === "mainnet" && config.loopStakingEnabled) {
+  throw new Error("External Loop MainNet signing is not released; keep LOOP_STAKING_ENABLED=false until the MainNet integration is implemented and verified");
+}

@@ -12,13 +12,12 @@ import { rpcUrls } from "./services/rpc-registry.js";
  * Auth: none for the hackathon MVP. In production, tie to the user's
  *       signed-in Canton party via OAuth2 / Keycloak.
  */
-import Fastify from "fastify";
+import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import cors from "@fastify/cors";
-import { createPublicClient, formatEther, http, parseUnits, type Address } from "viem";
-import { polygonAmoy } from "viem/chains";
+import { formatEther, parseUnits } from "viem";
 import { config } from "./config.js";
-import { canton, cantonDelegator, TEMPLATES } from "./canton.js";
-import { startReleaseChecker, featuredRightCidForDaml, extractCreatedContractId } from "./orchestrator.js";
+import { canton, cantonPrimary, cantonDelegator, TEMPLATES } from "./canton.js";
+import { startReleaseChecker, extractCreatedContractId } from "./orchestrator.js";
 import { startMultichainWatchers, watchersHealth } from "./multichain-watcher.js";
 import { prisma } from "./db.js";
 import { startRewardScheduler, shutdownRewardSystem, redisConnection, enqueueRound } from "./reward-rounds.js";
@@ -43,6 +42,7 @@ import {
 } from "./services/auto-compound.js";
 import sweepRoutes from "./routes/sweep.js";
 import rewardHistoryRoutes from "./routes/reward-history.js";
+import { accountRewardRoutesFor } from "./routes/account-rewards.js";
 import validatorRoutes from "./routes/validators.js";
 import notificationsRoutes from "./routes/notifications.js";
 import taxRoutes from "./routes/tax.js";
@@ -68,21 +68,11 @@ import { assertCosmosRpcNetwork, assertSuiGraphqlNetwork } from "./services/nati
 import { nativeStakeInputError } from "./services/native-staking-input.js";
 import { watcherGateError } from "./services/watcher-gate.js";
 import { parseAptosDelegationStake } from "./services/aptos-lifecycle.js";
-
-const publicClient = createPublicClient({
-  chain: polygonAmoy,
-  transport: http(rpcUrls["polygon"], { timeout: 16_000, retryCount: 0 }),
-});
-
-const validatorShareAbi = [
-  {
-    type: "function",
-    name: "pendingRewards",
-    stateMutability: "view",
-    inputs: [{ name: "user", type: "address" }],
-    outputs: [{ type: "uint256" }],
-  },
-] as const;
+import { accountPositionRoutesFor } from "./routes/account-positions.js";
+import { verifyLoopSession, prepareLoopIntent, authorizeLoopIntent, adoptLoopIntent, pendingLoopRequests,
+  prepareLoopCancellation, observeLoopCancellation, prepareLoopUnbond, observeLoopUnbond, observeLoopNativeUnbond, LoopWorkflowError } from "./services/loop-staking.js";
+import { LOOP_STAKING_CHAINS, type LoopNativeChain } from "./services/loop-native-ownership.js";
+import { observeLoopRewardEntitlements } from "./services/canton-reward-entitlements.js";
 
 function sumWei(values: string[]): bigint {
   return values.reduce((sum, value) => sum + BigInt(value || "0"), 0n);
@@ -147,6 +137,7 @@ async function upsertUserIdentity(args: {
 const app = Fastify({
   logger: {
     level: config.logLevel,
+    redact: ["req.headers.authorization", "req.headers.cookie", "req.body.signature", "req.body.nativeSignature"],
     transport:
       config.logLevel === "info"
         ? { target: "pino-pretty", options: { colorize: true } }
@@ -258,8 +249,9 @@ app.get("/api/health/detail", async () => {
     !config.featuredAppRightCid
       ? "FEATURED_APP_RIGHT_CID missing: reward rounds will be skipped"
       : null,
-    config.featuredAppRightCid === "demo-stub"
-      ? "FEATURED_APP_RIGHT_CID=demo-stub: scheduler runs, Daml marker exercise is disabled"
+    config.featuredAppRightCid &&
+    (!/^[a-f0-9]{2,512}$/.test(config.featuredAppRightCid) || config.featuredAppRightCid.length % 2 !== 0)
+      ? "FEATURED_APP_RIGHT_CID is not a valid contract ID: legacy marker exercise is disabled"
       : null,
     config.logLevel !== "debug"
       ? "Manual ops triggers (rounds/refresh/autocompound) disabled outside LOG_LEVEL=debug"
@@ -336,6 +328,9 @@ interface UpsertUserBody {
 }
 
 app.post<{ Body: UpsertUserBody }>("/api/users", async (req, reply) => {
+  if (config.networkMode === "testnet" && config.loopStakingEnabled) {
+    return reply.code(409).send({ error: "Wallet linking requires a verified Loop session and native ownership signature through the staking workflow" });
+  }
   const { cantonPartyId, evmAddress, displayName } = req.body;
   if (!cantonPartyId) {
     return reply.code(400).send({ error: "missing cantonPartyId" });
@@ -378,6 +373,8 @@ interface CreateRequestBody {
   delegator?: string; // Loop/Canton party id
 }
 
+const LOOP_NATIVE_CHAINS = new Set<string>(LOOP_STAKING_CHAINS);
+
 function canonicalStakeAmount(value: string): string | null {
   const raw = value.trim();
   if (!/^\d+(?:\.\d+)?$/.test(raw)) return null;
@@ -386,18 +383,28 @@ function canonicalStakeAmount(value: string): string | null {
   const decimal = fraction.replace(/0+$/, "");
   // StakingRequest.amountPol is a Daml Decimal (Numeric 10). Reject a
   // nonzero sub-10th-decimal remainder before a wallet transaction is sent.
-  if (decimal.length > 10) return null;
+  if (decimal.length > 10 || integer.length > 28) return null;
   const result = decimal ? `${integer}.${decimal}` : integer;
   return result === "0" ? null : result;
 }
 
-app.post<{ Body: CreateRequestBody }>("/api/requests", async (req, reply) => {
+async function handleStakingRequest(req: FastifyRequest<{ Body: CreateRequestBody }>, reply: FastifyReply, externalLoop = false) {
+  if (!externalLoop && config.networkMode === "testnet" && config.loopStakingEnabled) {
+    return reply.code(409).send({ error: "Use the real Loop prepare/authorize/adopt workflow; hosted delegator creation is disabled" });
+  }
   const { evmAddress, validator, stakeAccountAddress } = req.body;
   const amountPol = typeof req.body.amountPol === "string"
     ? canonicalStakeAmount(req.body.amountPol)
     : null;
   const chain = req.body.chain ?? "polygon";
   const delegator = req.body.delegator || config.cantonDelegatorParty;
+  if (externalLoop) {
+    if (!LOOP_NATIVE_CHAINS.has(chain) || !req.body.delegator) {
+      return reply.code(400).send({ error: "External Loop staking requires a supported native chain and your connected Loop party; no hosted fallback is available" });
+    }
+    try { await verifyLoopSession(req.headers.authorization, delegator); }
+    catch (error) { return loopWorkflowFailure(error, reply); }
+  }
 
   // A stale frontend image can otherwise create a mainnet Canton intent and
   // then ask its wallet to sign on testnet (or vice versa). Require every
@@ -560,8 +567,6 @@ app.post<{ Body: CreateRequestBody }>("/api/requests", async (req, reply) => {
         return reply.code(400).send({ error: "Insufficient Polkadot balance for the pool stake, transaction fee, and existential deposit" });
       }
     }
-    const user = await upsertUserIdentity({ cantonPartyId: delegator, evmAddress });
-
     // Two indistinguishable pending intents cannot be assigned to distinct
     // on-chain delegation events. Reject the second until the first settles
     // or is cancelled on Canton.
@@ -686,6 +691,12 @@ app.post<{ Body: CreateRequestBody }>("/api/requests", async (req, reply) => {
       });
     }
 
+    if (externalLoop) {
+      return await prepareLoopIntent({ delegator, evmAddress, amountPol,
+        chain: chain as LoopNativeChain, validator: validator!,
+        ...(chain === "solana" ? { stakeAccountAddress, stakeRentLamports: solanaRentLamports! } : {}) });
+    }
+    const user = await upsertUserIdentity({ cantonPartyId: delegator, evmAddress });
     const result = await cantonDelegator.createContract({
       templateId: TEMPLATES.StakingRequest,
       argument: {
@@ -722,129 +733,98 @@ app.post<{ Body: CreateRequestBody }>("/api/requests", async (req, reply) => {
     return { ok: true, transactionId: result.transactionId, requestContractId, delegator: knownDelegator, chain,
       ...(solanaRentLamports ? { stakeRentLamports: solanaRentLamports } : {}) };
   } catch (err) {
+    if (externalLoop) return loopWorkflowFailure(err, reply);
     req.log.error(err);
     return reply.code(500).send({ error: String(err) });
   }
+}
+
+function loopWorkflowFailure(error: unknown, reply: FastifyReply) {
+  // Do not expose upstream bodies, account responses, signatures or tokens.
+  if (error instanceof LoopWorkflowError) return reply.code(error.statusCode).send({ error: error.message });
+  return reply.code(503).send({ error: "Loop staking preflight or reconciliation is unavailable; no native stake should be sent" });
+}
+
+app.post<{ Body: CreateRequestBody }>("/api/requests", (req, reply) => handleStakingRequest(req, reply));
+app.post<{ Body: CreateRequestBody }>("/api/loop/staking/prepare", { bodyLimit: 4096 },
+  (req, reply) => handleStakingRequest(req, reply, true));
+
+interface LoopIntentAuthorizationBody { intentId: string; delegator: string; nativeSignature: string }
+app.post<{ Body: LoopIntentAuthorizationBody }>("/api/loop/staking/authorize", { bodyLimit: 4096 }, async (req, reply) => {
+  try {
+    const { intentId, delegator, nativeSignature } = req.body;
+    if (![intentId, delegator, nativeSignature].every(value => typeof value === "string")) return reply.code(400).send({ error: "Intent, Loop party and native signature are required" });
+    const intent = await authorizeLoopIntent(intentId, delegator, nativeSignature, req.headers.authorization);
+    return reply.header("Cache-Control", "no-store").send({ ok: true, intentId: intent.id, expiresAt: intent.expiresAt });
+  } catch (error) { return loopWorkflowFailure(error, reply); }
+});
+app.post<{ Body: LoopIntentAuthorizationBody }>("/api/loop/staking/adopt", { bodyLimit: 4096 }, async (req, reply) => {
+  try {
+    const { intentId, delegator, nativeSignature } = req.body;
+    if (![intentId, delegator, nativeSignature].every(value => typeof value === "string")) return reply.code(400).send({ error: "Intent, Loop party and native signature are required" });
+    const intent = await authorizeLoopIntent(intentId, delegator, nativeSignature, req.headers.authorization);
+    return reply.header("Cache-Control", "no-store").send(await adoptLoopIntent(intent));
+  } catch (error) { return loopWorkflowFailure(error, reply); }
 });
 
-// --- List pending requests by EVM address ---
-
-app.get<{ Querystring: { address?: string } }>(
-  "/api/requests",
-  async (req, reply) => {
-    const { address } = req.query;
+interface LoopRequestActionBody { delegator: string; contractId?: string; updateId?: string; nativeHash?: string; nativeBlockHash?: string }
+for (const operation of ["requests", "cancel/prepare", "cancel/observe", "unbond/prepare", "unbond/observe", "unbond/native-observe"] as const) {
+  app.post<{ Body: LoopRequestActionBody }>(`/api/loop/staking/${operation}`, { bodyLimit: 4096 }, async (req, reply) => {
+    reply.header("Cache-Control", "no-store");
     try {
-      const contracts = await canton.activeContracts(TEMPLATES.StakingRequest);
-      const filtered = address
-        ? contracts.filter((c) => {
-            const a = c.argument as { evmAddress?: string };
-            return sameWalletAddress(a.evmAddress, address);
-          })
-        : contracts;
-      return { requests: filtered };
-    } catch (err) {
-      req.log.error(err);
-      return reply.code(500).send({ error: String(err) });
-    }
+      const { delegator, contractId, updateId, nativeHash, nativeBlockHash } = req.body ?? {};
+      if (typeof delegator !== "string" || (operation !== "requests" && typeof contractId !== "string")) {
+        return reply.code(400).send({ error: "Loop party and request contract ID are required" });
+      }
+      if (operation === "unbond/observe" && typeof updateId !== "string") return reply.code(400).send({ error: "A confirmed Loop update ID is required" });
+      if (operation === "unbond/native-observe" && typeof nativeHash !== "string") return reply.code(400).send({ error: "A native transaction hash, Solana signature or Sui digest is required" });
+      if (nativeBlockHash !== undefined && (typeof nativeBlockHash !== "string" || !/^0x[a-fA-F0-9]{64}$/.test(nativeBlockHash))) return reply.code(400).send({ error: "Invalid finalized native block hash" });
+      await verifyLoopSession(req.headers.authorization, delegator);
+      return operation === "requests" ? await pendingLoopRequests(delegator)
+        : operation === "cancel/prepare" ? await prepareLoopCancellation(delegator, contractId!)
+        : operation === "cancel/observe" ? await observeLoopCancellation(delegator, contractId!)
+        : operation === "unbond/prepare" ? await prepareLoopUnbond(delegator, contractId!)
+        : operation === "unbond/native-observe" ? await observeLoopNativeUnbond(delegator, contractId!, nativeHash!, nativeBlockHash)
+        : await observeLoopUnbond(delegator, contractId!, updateId!);
+    } catch (error) { return loopWorkflowFailure(error, reply); }
+  });
+}
+
+app.post<{ Body: { delegator: string } }>("/api/loop/rewards/entitlements", { bodyLimit: 2048 }, async (req, reply) => {
+  reply.header("Cache-Control", "no-store");
+  try {
+    const delegator = req.body?.delegator;
+    if (typeof delegator !== "string") return reply.code(400).send({ error: "Your connected Loop party is required" });
+    await verifyLoopSession(req.headers.authorization, delegator);
+    // Remote primary only: never blend old LocalNet allocations or coupons
+    // into the verified Loop party's current TestNet minting entitlements.
+    return await observeLoopRewardEntitlements(cantonPrimary, config.cantonAppProviderParty, delegator);
+  } catch (error) {
+    if (error instanceof LoopWorkflowError) return reply.code(error.statusCode).send({ error: error.message });
+    return reply.code(503).send({ error: "Canton reward entitlement observation is unavailable; no payment status was inferred" });
   }
-);
+});
 
-// --- List positions by EVM address ---
+// Shared ledger contracts require a deployment-local position/intent mirror.
+await app.register(accountPositionRoutesFor({ ledger: canton, db: prisma, templates: TEMPLATES, networkMode: config.networkMode }));
 
-app.get<{ Querystring: { address?: string } }>(
-  "/api/positions",
-  async (req, reply) => {
-    const { address } = req.query;
-    try {
-      // Canton owns lifecycle status; Postgres adds chain and tx metadata
-      // absent from the current StakingPosition template.
-      const contracts = await canton.activeContracts(TEMPLATES.StakingPosition);
-      const filtered = address
-        ? contracts.filter((c) => {
-            const a = c.argument as { evmAddress?: string };
-            return sameWalletAddress(a.evmAddress, address);
-          })
-        : contracts;
-
-      // Canton owns the lifecycle, but the authoritative claim condition on
-      // Polygon is checkpoint-based: unstakeClaimTokens_new only succeeds once
-      // `unbondWithdrawEpoch + withdrawalDelay() <= epoch()`. That epoch lives
-      // on-chain and in the Postgres mirror, never in the Daml contract — the
-      // contract's unbondingReadyAt is a cadence-derived ESTIMATE. Attach the
-      // mirror's real values so the UI can gate on the epoch instead of a
-      // timestamp that drifts whenever checkpoints are slow.
-      const mirrors = await prisma.stakingPosition.findMany({
-        where: { contractId: { in: filtered.map((c) => c.contractId) } },
-        select: {
-          contractId: true,
-          chain: true,
-          validatorAddress: true,
-          validatorShare: true,
-          validatorId: true,
-          evmTxHash: true,
-          unbondNonce: true,
-          unbondWithdrawEpoch: true,
-          suiStakedObjectId: true,
-        },
-      });
-      const byCid = new Map(mirrors.map((m) => [m.contractId, m]));
-
-      return {
-        positions: filtered.map((c) => ({
-          ...c,
-          chainMeta: byCid.get(c.contractId) ?? null,
-        })),
-      };
-    } catch (err) {
-      req.log.error(err);
-      return reply.code(500).send({ error: String(err) });
-    }
-  }
-);
-
-// --- Rewards summary (Postgres-backed with actual CC distributed) ---
+// --- Rewards summary (recorded allocations and native sweeps) ---
 
 app.get<{ Params: { address: string } }>(
   "/api/rewards/:address",
   async (req, reply) => {
     const address = normalizeWalletAddress(req.params.address);
     try {
-      // Find user by EVM address
-      const user = await prisma.user.findFirst({
+      // Preserve both legacy and real Loop positions without reassigning
+      // identities or aggregating another wallet's positions under one user.
+      const positions = await prisma.stakingPosition.findMany({
         where: { evmAddress: address },
       });
-
-      if (!user) {
-        return {
-          address,
-          totalPositions: 0,
-          totalBondedPol: 0,
-          totalMarkersEmitted: 0,
-          estimatedCcEarned: 0,
-          totalCcEarned: 0,
-          totalUserShare: 0,
-          totalTreasuryShare: 0,
-          userShare: 0.75,
-          appShare: 0.25,
-          rewardEventCount: 0,
-          totalNativeRewardsSweptWei: "0",
-          totalNativeRewardsSweptPol: 0,
-          totalProtocolFeeWei: "0",
-          totalProtocolFeePol: 0,
-          totalUserPayoutWei: "0",
-          totalUserPayoutPol: 0,
-          rewardSweepCount: 0,
-        };
-      }
-
-      const positions = await prisma.stakingPosition.findMany({
-        where: { userId: user.id },
-      });
       const events = await prisma.rewardEvent.findMany({
-        where: { userId: user.id },
+        where: { position: { evmAddress: address } },
       });
       const sweeps = await prisma.rewardSweep.findMany({
-        where: { userId: user.id },
+        where: { position: { evmAddress: address } },
       });
 
       const totalCc = events.reduce((s, e) => s + Number(e.ccAmount), 0);
@@ -944,6 +924,8 @@ await app.register(readinessRoutes);
 await app.register(rpcRoutes);
 await app.register(sweepRoutes);
 await app.register(rewardHistoryRoutes);
+await app.register(accountRewardRoutesFor({ ledger: canton, db: prisma, template: TEMPLATES.StakingPosition,
+  networkMode: config.networkMode, loopStakingEnabled: config.loopStakingEnabled }));
 
 // --- Validator scoring routes ---
 await app.register(validatorRoutes);
@@ -969,6 +951,7 @@ await app.register(chainsRoutes);
 
 // --- Polygon staking params + validator-share registry ---
 await app.register(polygonRoutes);
+await app.register((await import("./routes/polygon-liquid.js")).default);
 await app.register(polkadotRoutes);
 
 // --- Loop SDK reverse proxy (CORS bypass for dev origins) ---

@@ -1,0 +1,8 @@
+{
+  "testnet": {
+    "jsonApiUrl": "https://api.canton.cttestnet.pathrocknetwork.org/api/json-api",
+    "synchronizerId": "global-domain::1220f22a8b8f2d813c25b9a684dc4dd52b532a0174d8e73a13cdf2baabfff7518337"
+  },
+  "devnet": null,
+  "mainnet": null
+}

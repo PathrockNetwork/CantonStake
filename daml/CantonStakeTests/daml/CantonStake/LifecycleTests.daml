@@ -1,0 +1,108 @@
+module CantonStake.LifecycleTests where
+
+import Daml.Script
+import DA.Optional (isNone)
+import CantonStake.Staking
+
+bondProof : EvmProof
+bondProof = EvmProof with
+  txHash = "test-bond-proof"
+  blockNumber = 1
+  validatorShare = "test-validator"
+
+unbondProof : EvmProof
+unbondProof = EvmProof with
+  txHash = "test-unbond-proof"
+  blockNumber = 2
+  validatorShare = "test-validator"
+
+releaseProof : EvmProof
+releaseProof = EvmProof with
+  txHash = "test-release-proof"
+  blockNumber = 3
+  validatorShare = "test-validator"
+
+createBonded : () -> Script (Party, Party, ContractId StakingPosition)
+createBonded () = do
+  provider <- allocateParty "LifecycleProvider"
+  delegator <- allocateParty "LifecycleDelegator"
+  request <- submit delegator do
+    createCmd StakingRequest with
+      appProvider = provider
+      delegator = delegator
+      evmAddress = "0x0000000000000000000000000000000000000001"
+      amountPol = 1.0
+      requestedAt = "2026-10-03T00:00:00Z"
+  position <- submit provider do
+    exerciseCmd request StakingRequest_Accept with
+      proof = bondProof
+      featuredRightCid = None
+  pure (provider, delegator, position)
+
+assertStatus : Party -> ContractId StakingPosition -> PositionStatus -> Script ()
+assertStatus party cid expected = do
+  contract <- queryContractId party cid
+  case contract of
+    Some position -> assert (position.status == expected)
+    None -> abort "Expected position to remain active"
+
+testRequestUnbondPreservesPosition : Script ()
+testRequestUnbondPreservesPosition = do
+  (provider, delegator, position) <- createBonded ()
+  returned <- submit delegator do
+    exerciseCmd position StakingPosition_RequestUnbond
+  assert (returned == position)
+  assertStatus provider returned Bonded
+  assertStatus delegator returned Bonded
+
+testRequestUnbondThenConfirmAndRelease : Script ()
+testRequestUnbondThenConfirmAndRelease = do
+  (provider, delegator, position) <- createBonded ()
+  returned <- submit delegator do
+    exerciseCmd position StakingPosition_RequestUnbond
+  unbonding <- submit provider do
+    exerciseCmd returned StakingPosition_ConfirmUnbond with
+      proof = unbondProof
+      unbondingReadyEpoch = 0
+      featuredRightCid = None
+  assertStatus provider unbonding Unbonding
+  oldPosition <- queryContractId provider position
+  assert (isNone oldPosition)
+  released <- submit provider do
+    exerciseCmd unbonding StakingPosition_Release with proof = releaseProof
+  assertStatus provider released Released
+  oldUnbonding <- queryContractId provider unbonding
+  assert (isNone oldUnbonding)
+
+testRequestUnbondRequiresDelegator : Script ()
+testRequestUnbondRequiresDelegator = do
+  (provider, delegator, position) <- createBonded ()
+  submitMustFail provider do
+    exerciseCmd position StakingPosition_RequestUnbond
+  assertStatus delegator position Bonded
+
+testRequestUnbondRejectsUnbonding : Script ()
+testRequestUnbondRejectsUnbonding = do
+  (provider, delegator, position) <- createBonded ()
+  unbonding <- submit provider do
+    exerciseCmd position StakingPosition_ConfirmUnbond with
+      proof = unbondProof
+      unbondingReadyEpoch = 0
+      featuredRightCid = None
+  submitMustFail delegator do
+    exerciseCmd unbonding StakingPosition_RequestUnbond
+  assertStatus delegator unbonding Unbonding
+
+testRequestUnbondRejectsReleased : Script ()
+testRequestUnbondRejectsReleased = do
+  (provider, delegator, position) <- createBonded ()
+  unbonding <- submit provider do
+    exerciseCmd position StakingPosition_ConfirmUnbond with
+      proof = unbondProof
+      unbondingReadyEpoch = 0
+      featuredRightCid = None
+  released <- submit provider do
+    exerciseCmd unbonding StakingPosition_Release with proof = releaseProof
+  submitMustFail delegator do
+    exerciseCmd released StakingPosition_RequestUnbond
+  assertStatus delegator released Released

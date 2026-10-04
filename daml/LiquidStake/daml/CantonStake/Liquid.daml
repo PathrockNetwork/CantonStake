@@ -1,0 +1,29 @@
+module CantonStake.Liquid where
+
+-- Isolated testnet balance evidence, NOT a validator delegation or CC claim.
+-- Values remain integer base-unit strings, avoiding Decimal rounding of shares.
+template LiquidBalance
+  with
+    operator : Party
+    wallet : Text
+    chainId : Int
+    token : Text
+    sharesBaseUnits : Text
+    observedBlock : Int
+    observedBlockHash : Text
+  where
+    signatory operator
+    ensure chainId == 80002 && observedBlock >= 0
+
+    choice LiquidBalance_Observe : ContractId LiquidBalance
+      with
+        newSharesBaseUnits : Text
+        newBlock : Int
+        newBlockHash : Text
+      controller operator
+      do
+        assertMsg "Observation cannot go backwards" (newBlock > observedBlock)
+        create this with
+          sharesBaseUnits = newSharesBaseUnits
+          observedBlock = newBlock
+          observedBlockHash = newBlockHash

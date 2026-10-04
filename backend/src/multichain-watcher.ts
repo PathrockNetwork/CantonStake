@@ -23,14 +23,12 @@ import {
   decodeFunctionData,
   http,
   parseAbi,
-  parseAbiItem,
   toFunctionSelector,
   toEventSelector,
   formatEther,
   parseUnits,
   toHex,
   type Address,
-  type Log,
 } from "viem";
 import { fromBase64 } from "@cosmjs/encoding";
 import { decodeTxRaw } from "@cosmjs/proto-signing";
@@ -69,11 +67,6 @@ import { assertSuiChainIdentifier } from "./services/native-network.js";
 import { withWatcherFreshness, watcherChainsForLifecycle } from "./services/watcher-gate.js";
 
 // === Shared types ===
-
-interface ChainWatcher {
-  start(): void;
-  stop(): void;
-}
 
 interface StakingEvent {
   evmAddress: string;
@@ -1058,114 +1051,8 @@ async function watchSolana(): Promise<void> {
 // SCALE decoding needs the runtime metadata, hence @polkadot/api. The
 // connection is HTTPS JSON-RPC (no WebSocket), polling finalized heads.
 
-async function watchPolkadot(): Promise<void> {
-  const POLL_MS = 15_000;
-  const { ApiPromise, HttpProvider } = await import("@polkadot/api");
-  const provider = new HttpProvider(rpcUrls["polkadot"]);
-  const api = await ApiPromise.create({ provider, noInitWarn: true });
-  await api.isReady;
-  console.log(`[polkadot-watcher] connected to ${rpcUrls["polkadot"]}`);
-
-  let lastProcessed: number | undefined;
-
-  const poll = async () => {
-    const head = await api.rpc.chain.getFinalizedHead();
-    const header = await api.rpc.chain.getHeader(head);
-    const number = header.number.toNumber();
-    if (lastProcessed === undefined) {
-      // Start from the current finalized tip — replaying history would
-      // re-settle ancient bonds into stale Canton requests.
-      lastProcessed = number;
-      return;
-    }
-    if (number <= lastProcessed) return;
-
-    for (let n = lastProcessed + 1; n <= number; n++) {
-      const hash = await api.rpc.chain.getBlockHash(n);
-      const at = await api.at(hash);
-
-      // The runtime-augmented EventRecord typing isn't available without
-      // codegen; the shape is stable across Substrate runtimes.
-      const records = (await at.query.system.events()) as unknown as Array<{
-        event: { section: string; method: string; data: { toArray(): unknown[] } };
-      }>;
-      for (const { event } of records) {
-        if (event.section === "nominationPools" && event.method === "Bonded") {
-          // [member, poolId, bonded, free]
-          const dataArr = event.data.toArray();
-          const member = dataArr[0];
-          const poolId = dataArr[1];
-          const bonded = dataArr[2];
-          const amountPlanks = BigInt(bonded?.toString() ?? "0");
-          if (amountPlanks === 0n || !member) continue;
-
-          await handleStakeEvent({
-            evmAddress: member.toString(),
-            // WND/DOT have 10 decimals (planks) — scale to 18 units.
-            amount: toStakeUnits(amountPlanks, 10),
-            txHash: hash.toHex(),
-            blockNumber: n,
-            chain: "polkadot",
-            // Nomination pools: the pool id IS the staking identifier.
-            validatorShare: `pool:${poolId?.toString() ?? "?"}`,
-          });
-        } else if (event.section === "staking" && event.method === "Bonded") {
-          // [stash, controller, amount] — direct (non-pool) nomination.
-          const dataArr = event.data.toArray();
-          const stash = dataArr[0];
-          const amountRaw = dataArr[2];
-          const amountPlanks = BigInt(amountRaw?.toString() ?? "0");
-          if (amountPlanks === 0n || !stash) continue;
-
-          await handleStakeEvent({
-            evmAddress: stash.toString(),
-            amount: toStakeUnits(amountPlanks, 10),
-            txHash: hash.toHex(),
-            blockNumber: n,
-            chain: "polkadot",
-            validatorShare: "nomination",
-          });
-        }
-      }
-    }
-    lastProcessed = number;
-    reportWatcherOk("polkadot");
-  };
-
-  // A transient RPC failure on the FIRST poll must not kill the watcher:
-  // the exception would escape startMultichainWatchers() and this chain
-  // would never be polled again for the life of the process. Report it
-  // and let the tick loop retry with backoff.
-  try {
-    await poll();
-  } catch (err) {
-    console.error(`[polkadot-watcher] initial poll failed:`, err);
-    reportWatcherError("polkadot", err);
-  }
-  return new Promise(() => {
-    let stopped = false;
-    const tick = async () => {
-      if (stopped) return;
-      try {
-        await poll();
-      } catch (err) {
-        console.error("[polkadot-watcher]", err);
-        reportWatcherError("polkadot", err);
-      }
-      const failures = watcherHealth.get("polkadot")?.consecutiveFailures ?? 0;
-      setTimeout(() => void tick(), backoffDelayMs(failures, POLL_MS));
-    };
-    void tick();
-    return () => {
-      stopped = true;
-    };
-  });
-}
-
-// Asset Hub nomination pools are the actual staking runtime in 2026. The
-// historical relay-chain scanner above is intentionally never started: it
-// reads the wrong pallet, wrongly assumes 10 WND decimals, uses block hashes
-// as transaction proofs, and cannot verify member exits.
+// Asset Hub nomination pools are the staking runtime. The obsolete
+// relay-chain scanner was removed; it could not verify member exits.
 function canonicalPolkadotAddress(address: string): string | null {
   try {
     return encodeAddress(decodeAddress(address), config.networkMode === "mainnet" ? 0 : 42);
@@ -2382,6 +2269,17 @@ async function findPendingRequest(
     };
 
     const intent = intentByCid.get(r.contractId);
+    if (config.networkMode === "testnet" && config.loopStakingEnabled) {
+      // A real Loop create may arrive before adoption. It carries no native
+      // chain/validator proof and must never use the legacy Polygon fallback.
+      const preserved = r.ledgerOrigin === "legacy" &&
+        r.templateId === `${config.cantonLegacyPackageId}:CantonStake.Staking:StakingRequest` &&
+        r.argument.appProvider === config.cantonLegacyProviderParty;
+      const reviewed = r.ledgerOrigin !== "legacy" &&
+        r.templateId === `${config.cantonPackageId}:CantonStake.Staking:StakingRequest` &&
+        r.argument.appProvider === config.cantonAppProviderParty;
+      if (!intent?.userId || (!preserved && !reviewed)) return [];
+    }
     // Old requests have no persisted network. Retain the legacy Polygon
     // path only; accepting one on another chain could misattribute funds.
     if (intent ? intent.chain !== chain : chain !== "polygon") return [];

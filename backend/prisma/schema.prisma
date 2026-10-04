@@ -179,7 +179,7 @@ model RewardEvent {
 }
 
 /// CIP-0104 traffic-attribution record per (party, round) ingested from the
-/// SV's Scan API or from the seeded mock generator. The SV publishes one
+/// SV's Scan API. The SV publishes one
 /// AppActivityRecord per app per round summarizing the traffic burned by
 /// that app's parties; CantonStake also tracks per-delegator records so
 /// the visualizer can render the 75/25 split per user.
@@ -189,8 +189,7 @@ model RewardEvent {
 model AppActivityRecord {
   id            String   @id @default(cuid())
 
-  // Composite idempotency key. eventId is the Scan API-supplied event id,
-  // or a deterministic hash in mock mode.
+  // Composite idempotency key derived from the observed Scan update.
   roundNumber   Int
   party         String
   eventId       String
@@ -201,9 +200,7 @@ model AppActivityRecord {
   // CC attributed to this record before the BeneficiarySplit is applied.
   ccAttributed  String   // decimal string
 
-  // Source of the record: "scan" = real Scan API data. The seeded
-  // "mock" source was removed with the reward mock (real-data
-  // migration, Phase 1).
+  // Source of the record: "scan" = real Scan API data.
   source        String
 
   // Optional pointer to the OnchainEvent contract that originated this
@@ -376,8 +373,9 @@ model AutoCompoundRun {
   @@index([status])
 }
 
-/// Mock native staking reward sweep with protocol-fee accounting.
-/// In production this maps to withdrawRewards() and an on-chain split.
+/// Native staking reward sweep record with protocol-fee accounting.
+/// evmTxHash identifies the withdrawal when supplied; the record alone
+/// is not proof of an on-chain withdrawal or fee transfer.
 model RewardSweep {
   id              String   @id @default(cuid())
   userId          String

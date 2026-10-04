@@ -14,9 +14,10 @@ import IORedis from "ioredis";
 import { config } from "../config.js";
 import { canton, TEMPLATES } from "../canton.js";
 import { prisma } from "../db.js";
-import { getUsdPrices, usdPrice } from "./prices.js";
+import { getUsdPrices } from "./prices.js";
 import { normalizeWalletAddress, sameWalletAddress } from "./wallet-address.js";
 import { PORTFOLIO_CHAINS, portfolioUsdTotal, recordedDelegations } from "./portfolio-recorded.js";
+import { deploymentPositions } from "./deployment-scope.js";
 import {
   listActiveValidatorShares,
   settlementClient,
@@ -137,7 +138,7 @@ async function fetchRecorded(address: string) {
     where: { contractId: { in: matching.map((contract) => contract.contractId) } },
     select: { contractId: true, chain: true, validatorAddress: true, validatorShare: true },
   });
-  return recordedDelegations(matching, mirrors, address, config.networkMode);
+  return recordedDelegations(deploymentPositions(matching, mirrors, config.networkMode), mirrors, address, config.networkMode);
 }
 
 // --- Public API ----------------------------------------------------------
@@ -193,9 +194,7 @@ export async function getPortfolio(
     [chain, chain === "polygon" ? polygon.source : "canton"],
   )) as PortfolioSnapshot["source"];
 
-  const { prices, source: priceSource } = await getUsdPrices(
-    [...new Set(delegations.map((r) => r.symbol))]
-  );
+  const { prices, source: priceSource } = await getUsdPrices();
 
   // Faucet assets are not worth their namesake mainnet token's market price.
   // Missing market data or mirror metadata must not become a fake $0 total.
@@ -211,12 +210,4 @@ export async function getPortfolio(
     unclassifiedPositions: recorded.unclassifiedPositions,
     priceSource,
   };
-}
-
-/** Compute the USD value of a single delegation row. */
-export function delegationUsd(row: DelegationRow): number | null {
-  if (config.networkMode !== "mainnet") return null;
-  const price = usdPrice(row.symbol);
-  const value = Number(row.amount) * price;
-  return price > 0 && Number.isFinite(value) ? value : null;
 }

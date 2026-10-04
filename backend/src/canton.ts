@@ -1,331 +1,10 @@
-/**
- * Thin client over the Canton JSON Ledger API.
- *
- * Docs:
- *   https://docs.digitalasset.com/build/3.5/quickstart/tutorials/using-the-json-ledger-api.html
- *
- * Endpoints used:
- *   POST /v2/commands/submit-and-wait-for-transaction
- *   POST /v2/state/active-contracts
- *
- * The JSON API speaks in terms of templateIds, choices, and party-filtered views.
- * We keep this minimal — no fancy schema validation, just typed wrappers.
- */
 import { config } from "./config.js";
+import { CantonClient } from "./services/canton-ledger-client.js";
+import { CantonCutoverClient } from "./services/canton-cutover-client.js";
+export { CantonClient } from "./services/canton-ledger-client.js";
+export type { ActiveContract, SubmitAndWaitResult, CantonClientOptions } from "./services/canton-ledger-client.js";
 
-export interface SubmitAndWaitResult {
-  transactionId: string;
-  completionOffset: string;
-  events: unknown[];
-}
-
-export interface ActiveContract {
-  contractId: string;
-  templateId: string;
-  argument: Record<string, unknown>;
-}
-
-/**
- * The Canton 3.5 JSON API encodes Daml Int (and Numeric) as JSON
- * *strings* — a raw JSON number in a payload fails server-side with
- * `LEDGER_API_INTERNAL_ERROR: Expected ujson.Str`. Every JS number in a
- * choice argument / create argument therefore becomes a string here,
- * centrally, rather than at each call site.
- */
-function damlEncode(value: unknown): unknown {
-  if (typeof value === "number") return String(value);
-  if (typeof value === "bigint") return value.toString();
-  if (Array.isArray(value)) return value.map(damlEncode);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
-        k,
-        damlEncode(v),
-      ])
-    );
-  }
-  return value;
-}
-
-class CantonClient {
-  constructor(
-    private readonly baseUrl: string,
-    private readonly authToken: string,
-    private readonly party: string
-  ) {}
-
-  private headers(): Record<string, string> {
-    const h: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    if (this.authToken) {
-      h["Authorization"] = `Bearer ${this.authToken}`;
-    }
-    return h;
-  }
-
-  /**
-   * Exercise a choice on an existing contract.
-   */
-  async exerciseChoice<T = unknown>(args: {
-    templateId: string;
-    contractId: string;
-    choice: string;
-    argument: Record<string, unknown>;
-    actAs?: string[];
-  }): Promise<SubmitAndWaitResult> {
-    const body = {
-      commands: {
-        commands: [
-          {
-            ExerciseCommand: {
-              templateId: args.templateId,
-              contractId: args.contractId,
-              choice: args.choice,
-              choiceArgument: damlEncode(args.argument),
-            },
-          },
-        ],
-        commandId: `cantonstake-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        actAs: args.actAs ?? [this.party],
-        readAs: [],
-        workflowId: "cantonstake",
-        deduplicationPeriod: { Empty: {} },
-        disclosedContracts: [],
-        domainId: "",
-        packageIdSelectionPreference: [],
-      },
-    };
-
-    const res = await fetch(
-      `${this.baseUrl}/v2/commands/submit-and-wait-for-transaction`,
-      {
-        method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify(body),
-      }
-    );
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Canton exercise failed (${res.status}): ${errText}`);
-    }
-    return normalizeSubmitResult(await res.json());
-  }
-
-  /**
-   * Create a new contract on the ledger.
-   */
-  async createContract(args: {
-    templateId: string;
-    argument: Record<string, unknown>;
-    actAs?: string[];
-  }): Promise<SubmitAndWaitResult> {
-    const body = {
-      commands: {
-        commands: [
-          {
-            CreateCommand: {
-              templateId: args.templateId,
-              createArguments: damlEncode(args.argument),
-            },
-          },
-        ],
-        commandId: `cantonstake-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        actAs: args.actAs ?? [this.party],
-        readAs: [],
-        workflowId: "cantonstake",
-        deduplicationPeriod: { Empty: {} },
-        disclosedContracts: [],
-        domainId: "",
-        packageIdSelectionPreference: [],
-      },
-    };
-
-    const res = await fetch(
-      `${this.baseUrl}/v2/commands/submit-and-wait-for-transaction`,
-      {
-        method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify(body),
-      }
-    );
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Canton create failed (${res.status}): ${errText}`);
-    }
-    return normalizeSubmitResult(await res.json());
-  }
-
-  private async ledgerEndOffset(signal?: AbortSignal): Promise<string> {
-    const res = await fetch(`${this.baseUrl}/v2/state/ledger-end`, {
-      signal,
-      method: "GET",
-      headers: this.headers(),
-    });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Canton ledger-end failed (${res.status}): ${errText}`);
-    }
-
-    const json = (await res.json()) as Record<string, unknown>;
-    const offset = findString(json, [
-      "offset",
-      "ledgerEnd",
-      "ledgerEndOffset",
-      "currentLedgerEnd",
-      "absolute",
-    ]);
-    if (!offset) {
-      throw new Error(`Canton ledger-end response missing offset: ${JSON.stringify(json)}`);
-    }
-    return offset;
-  }
-
-  /** Lightweight authenticated readiness check; does not scan contracts. */
-  async probe(signal?: AbortSignal): Promise<void> {
-    await this.ledgerEndOffset(signal);
-  }
-
-  /**
-   * Query active contracts for a given template.
-   */
-  async activeContracts(templateId: string, signal?: AbortSignal): Promise<ActiveContract[]> {
-    const activeAtOffset = await this.ledgerEndOffset(signal);
-    const body = {
-      filter: {
-        filtersByParty: {
-          [this.party]: {
-            cumulative: [
-              {
-                identifierFilter: {
-                  TemplateFilter: {
-                    value: { templateId, includeCreatedEventBlob: false },
-                  },
-                },
-              },
-            ],
-          },
-        },
-      },
-      verbose: false,
-      activeAtOffset,
-    };
-
-    const res = await fetch(`${this.baseUrl}/v2/state/active-contracts`, {
-      signal,
-      method: "POST",
-      headers: this.headers(),
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Canton ACS query failed (${res.status}): ${errText}`);
-    }
-
-    const json = await res.json();
-
-    // Canton JSON API v2 returns either { contractEntries: [...] } or a flat array
-    const entries: Array<Record<string, unknown>> = Array.isArray(json)
-      ? json
-      : (json as Record<string, unknown>).contractEntries != null
-        ? ((json as Record<string, unknown>).contractEntries as Array<Record<string, unknown>>)
-        : [];
-
-    return entries
-      .map(extractCreatedEvent)
-      .filter((e): e is CreatedEvent => e !== undefined)
-      .map((e) => ({
-        contractId: e.contractId,
-        templateId: e.templateId,
-        argument: e.createArgument,
-      }));
-  }
-}
-
-interface CreatedEvent {
-  contractId: string;
-  templateId: string;
-  createArgument: Record<string, unknown>;
-}
-
-function normalizeSubmitResult(json: unknown): SubmitAndWaitResult {
-  const root = asRecord(json) ?? {};
-  const transaction = asRecord(root.transaction) ?? {};
-  const completion = asRecord(root.completion) ?? {};
-  const events = Array.isArray(root.events)
-    ? root.events
-    : Array.isArray(transaction.events)
-    ? transaction.events
-    : [];
-
-  return {
-    transactionId:
-      stringValue(root.transactionId) ??
-      stringValue(root.updateId) ??
-      stringValue(transaction.transactionId) ??
-      stringValue(transaction.updateId) ??
-      stringValue(completion.transactionId) ??
-      stringValue(completion.updateId) ??
-      "",
-    completionOffset:
-      stringValue(root.completionOffset) ??
-      stringValue(transaction.offset) ??
-      stringValue(completion.offset) ??
-      "",
-    events,
-  };
-}
-
-function extractCreatedEvent(entry: Record<string, unknown>): CreatedEvent | undefined {
-  const contractEntry = asRecord(entry.contractEntry) ?? {};
-  const activeContract = asRecord(entry.activeContract) ?? {};
-  const jsActiveContract = asRecord(contractEntry.JsActiveContract) ?? {};
-  const createdEvent =
-    asRecord(activeContract.createdEvent) ??
-    asRecord(jsActiveContract.createdEvent) ??
-    asRecord(entry.createdEvent);
-
-  const contractId = stringValue(createdEvent?.contractId);
-  const templateId = stringValue(createdEvent?.templateId);
-  const createArgument = asRecord(createdEvent?.createArgument);
-
-  if (!contractId || !templateId || !createArgument) return undefined;
-  return { contractId, templateId, createArgument };
-}
-
-function findString(value: unknown, keys: string[]): string | undefined {
-  const record = asRecord(value);
-  if (!record) return undefined;
-
-  for (const key of keys) {
-    const found = stringValue(record[key]);
-    if (found) return found;
-  }
-  for (const child of Object.values(record)) {
-    const found = findString(child, keys);
-    if (found) return found;
-  }
-  return undefined;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function stringValue(value: unknown): string | undefined {
-  if (typeof value === "string" && value.length > 0) return value;
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  if (typeof value === "bigint") return value.toString();
-  return undefined;
-}
-
-function urlWithPort(rawUrl: string, port: string): string {
+export function urlWithPort(rawUrl: string, port: string): string {
   try {
     const url = new URL(rawUrl);
     url.port = port;
@@ -335,24 +14,58 @@ function urlWithPort(rawUrl: string, port: string): string {
   }
 }
 
-export const canton = new CantonClient(
+export const cantonPrimary = new CantonClient(
   config.cantonJsonApiUrl,
   config.cantonAuthToken,
-  config.cantonAppProviderParty
+  config.cantonAppProviderParty,
+  { userId: config.cantonUserId, synchronizerId: config.cantonSynchronizerId,
+    packageId: config.cantonPackageId, eventFormat: config.cantonModernEventFormat,
+    writeAccessProtected: config.cantonWriteAccessProtected },
 );
+
+function legacyPreservationClient(): CantonClient | null {
+  if (config.networkMode !== "testnet" || !config.loopStakingEnabled || !config.cantonLegacyJsonApiUrl) return null;
+  const endpoint = new URL(config.cantonLegacyJsonApiUrl);
+  if (!["localhost", "127.0.0.1", "[::1]", "host.docker.internal"].includes(endpoint.hostname) ||
+      !["http:", "https:"].includes(endpoint.protocol) || endpoint.username || endpoint.password ||
+      !/^[^\s:]+::[a-f0-9]{68}$/.test(config.cantonLegacyProviderParty) ||
+      !/^[a-f0-9]{64}$/.test(config.cantonLegacyPackageId) ||
+      config.cantonLegacyProviderParty === config.cantonAppProviderParty ||
+      config.cantonLegacyJsonApiUrl.replace(/\/$/, "") === config.cantonJsonApiUrl.replace(/\/$/, "")) {
+    throw new Error("Legacy preservation requires a distinct, explicitly configured existing LocalNet provider and package");
+  }
+  return new CantonClient(config.cantonLegacyJsonApiUrl, config.cantonLegacyAuthToken, config.cantonLegacyProviderParty,
+    { packageId: config.cantonLegacyPackageId });
+}
+
+export const cantonLegacy = legacyPreservationClient();
+export const canton = cantonLegacy ? new CantonCutoverClient(cantonPrimary, cantonLegacy) : cantonPrimary;
+// LiquidBalance belongs to its separate existing DAR, not the new remote package.
+export const liquidCanton = cantonLegacy ?? cantonPrimary;
+export const liquidProviderParty = cantonLegacy ? config.cantonLegacyProviderParty : config.cantonAppProviderParty;
 
 export const cantonDelegator = new CantonClient(
-  urlWithPort(config.cantonJsonApiUrl, "2975"),
+  config.cantonDelegatorJsonApiUrl || urlWithPort(config.cantonJsonApiUrl, "2975"),
   config.cantonDelegatorAuthToken,
-  config.cantonDelegatorParty
+  config.cantonDelegatorParty,
+  { userId: config.cantonDelegatorUserId, synchronizerId: config.cantonSynchronizerId,
+    packageId: config.cantonPackageId, eventFormat: config.cantonModernEventFormat,
+    writeAccessProtected: config.cantonWriteAccessProtected },
 );
 
-// Template IDs — replace with your actual package id after `daml build`.
-// Get it from `daml damlc inspect-dar .daml/dist/cantonstake-0.0.1.dar | head -20`
-export const TEMPLATES = {
-  StakingRequest:           "#cantonstake:CantonStake.Staking:StakingRequest",
-  StakingPosition:          "#cantonstake:CantonStake.Staking:StakingPosition",
-  BeneficiarySplit:         "#cantonstake:CantonStake.Staking:BeneficiarySplit",
-  BeneficiarySplitUpdated:  "#cantonstake:CantonStake.Staking:BeneficiarySplitUpdated",
-  OnchainEvent:             "#cantonstake:CantonStake.Staking:OnchainEvent",
-} as const;
+// Canton 3.5 requires package-name identifiers in filters. Pin command
+// interpretation through packageIdSelectionPreference, not an ACS hash filter.
+export function stakingTemplates(packageId = "") {
+  if (packageId && !/^[a-f0-9]{64}$/.test(packageId)) {
+    throw new Error("CANTON_PACKAGE_ID must be a 64-character lowercase package hash");
+  }
+  const prefix = "#cantonstake:CantonStake.Staking";
+  return {
+    StakingRequest: `${prefix}:StakingRequest`,
+    StakingPosition: `${prefix}:StakingPosition`,
+    BeneficiarySplit: `${prefix}:BeneficiarySplit`,
+    BeneficiarySplitUpdated: `${prefix}:BeneficiarySplitUpdated`,
+    OnchainEvent: `${prefix}:OnchainEvent`,
+  };
+}
+export const TEMPLATES = stakingTemplates(config.cantonPackageId);

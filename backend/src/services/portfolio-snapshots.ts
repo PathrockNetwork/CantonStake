@@ -10,7 +10,7 @@
  * per 60 s anyway — Redis absorbs the duplicate calls.
  */
 
-import { Queue, Worker, type Job } from "bullmq";
+import { Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
 import { config } from "../config.js";
 import { prisma } from "../db.js";

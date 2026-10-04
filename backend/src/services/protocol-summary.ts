@@ -1,3 +1,5 @@
+import { deploymentChain, deploymentPositions, type NetworkMode } from "./deployment-scope.js";
+
 /** Aggregate-only public read model. Never returns parties, wallets or contract IDs. */
 export interface SummaryPosition {
   status: string;
@@ -35,22 +37,23 @@ export async function readProtocolSummary(deps: {
   readLedger: () => Promise<LedgerPosition[]>;
   readRecorded: () => Promise<RecordedPosition[]>;
   now: () => Date;
+  networkMode: NetworkMode;
 }) {
   const [ledger, recorded] = await Promise.allSettled([deps.readLedger(), deps.readRecorded()]);
+  // Ledger visibility alone cannot identify the deployment. A failed local
+  // database read must never fall back to counting every shared contract.
+  if (recorded.status !== "fulfilled") throw new Error("Protocol totals are temporarily unavailable");
   if (ledger.status === "fulfilled") {
-    const mirrors = new Map(recorded.status === "fulfilled" ? recorded.value.map((p) => [p.contractId, p.chain]) : []);
-    const positions = ledger.value.map((p): SummaryPosition => {
-      const address = String(p.argument.evmAddress ?? "");
-      // EVM addresses alone cannot distinguish Polygon from other EVM chains.
-      const chain = mirrors.get(p.contractId) ?? (address.startsWith("cosmos1") ? "cosmos" : /^0x[\da-f]{64}$/i.test(address) ? "sui" : "unknown");
-      return { status: String(p.argument.status ?? ""), amount: String(p.argument.amountPol ?? ""), chain };
-    });
+    const positions = deploymentPositions(ledger.value, recorded.value, deps.networkMode).map((p): SummaryPosition => ({
+      status: String(p.argument.status ?? ""), amount: String(p.argument.amountPol ?? ""), chain: p.chainMeta.chain,
+    }));
     return { ...aggregatePositions(positions), source: "ledger" as const, asOf: deps.now().toISOString() };
   }
   if (recorded.status === "fulfilled") {
-    const latestUpdate = recorded.value.reduce((latest, p) => Math.max(latest, p.updatedAt.getTime()), 0);
+    const scoped = recorded.value.filter(p => deploymentChain(p.chain, deps.networkMode));
+    const latestUpdate = scoped.reduce((latest, p) => Math.max(latest, p.updatedAt.getTime()), 0);
     return {
-      ...aggregatePositions(recorded.value), source: "recorded" as const,
+      ...aggregatePositions(scoped), source: "recorded" as const,
       asOf: latestUpdate ? new Date(latestUpdate).toISOString() : null,
     };
   }

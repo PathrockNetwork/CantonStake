@@ -5,14 +5,14 @@
   "scripts": {
     "compile": "hardhat compile",
     "test": "hardhat test",
-    "deploy:amoy": "hardhat run scripts/deploy.ts --network amoy",
-    "fund:amoy": "hardhat run scripts/fund.ts --network amoy",
-    "verify:amoy": "hardhat verify --network amoy",
-    "verify:amoy:deployed": "hardhat run scripts/verify.ts --network amoy"
+    "verify:amoy": "hardhat verify --network amoy"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@openzeppelin/contracts": "5.0.2",
     "@types/node": "^20.11.0",
+    "@uniswap/v3-core": "1.0.1",
+    "@uniswap/v3-periphery": "1.4.4",
     "dotenv": "^16.4.5",
     "hardhat": "^2.22.0",
     "ts-node": "^10.9.2",

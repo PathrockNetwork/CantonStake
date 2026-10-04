@@ -42,11 +42,20 @@ export function upstreamUrl(endpoint: string, path = ""): string {
   return url.toString();
 }
 
-export function retryableResponse(result: RpcResult): boolean {
+export function retryableResponse(result: RpcResult, readRequest?: RpcRequest): boolean {
   if ([401, 403, 408, 429].includes(result.status) || result.status >= 500) return true;
   const bodies = Array.isArray(result.body) ? result.body : [result.body];
   return bodies.some((body) => {
-    const error = (body as { error?: { code?: number; message?: string }; errors?: Array<{ message?: string; extensions?: { code?: string } }> } | null);
+    const error = (body as { id?: unknown; error?: { code?: number; message?: string; data?: unknown }; errors?: Array<{ message?: string; extensions?: { code?: string } }> } | null);
+    const items = Array.isArray(readRequest?.body) ? readRequest.body : [readRequest?.body];
+    const txLookup = ((readRequest?.method === "GET") && readRequest.path?.split("?")[0] === "/tx") ||
+      items.some(item => item?.method === "tx" && item.id === error?.id);
+    // CometBFT reports an unindexed/missing tx as -32603. It is a normal
+    // read result, not a broken node: do not quarantine every healthy endpoint.
+    // Only this exact response to a tx READ is exempted; internal errors on
+    // other operations (especially broadcasts) retain their outage behavior.
+    if (txLookup && error?.error?.code === -32603 && error.error.message === "Internal error" &&
+        typeof error.error.data === "string" && /^tx \([A-Fa-f0-9]{64}\) not found$/.test(error.error.data)) return false;
     if ([-32601, -32603, -32002, -32005, -32016].includes(error?.error?.code ?? 0)) return true;
     if (error?.errors?.some((item) => ["INTERNAL_SERVER_ERROR", "SERVICE_UNAVAILABLE", "RATE_LIMITED", "TOO_MANY_REQUESTS"].includes(item.extensions?.code ?? ""))) return true;
     const messages = [error?.error?.message, ...(error?.errors?.map((e) => e.message) ?? [])].filter(Boolean).join(" ");
@@ -99,7 +108,7 @@ export class RpcPool {
     const response = await (this.options.fetch ?? fetch)(upstreamUrl(endpoint.url, input.path), {
       method: input.method ?? "POST", signal, redirect: "error",
       headers: { "content-type": "application/json", accept: "application/json", ...input.headers },
-      body: input.body === undefined ? undefined : JSON.stringify(input.body),
+      body: input.body === undefined ? undefined : Buffer.isBuffer(input.body) ? new Uint8Array(input.body) : JSON.stringify(input.body),
     });
     // Keep the deadline in force through body consumption, not just headers.
     // Bound memory even if a remote returns a very large/malformed document.
@@ -156,7 +165,7 @@ export class RpcPool {
         const response = readOnly
           ? await this.exchange(endpoint, input, deadline)
           : await this.exchange(endpoint, input, this.now() + writeTimeout, writeTimeout);
-        if (retryableResponse(response)) throw new Error("RPC provider error");
+        if (retryableResponse(response, readOnly ? input : undefined)) throw new Error("RPC provider error");
         endpoint.failures = 0;
         endpoint.retryAt = 0;
         endpoint.lastFailure = null;

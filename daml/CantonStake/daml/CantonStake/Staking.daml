@@ -2,15 +2,15 @@
 --
 --   This is a HACKATHON-SCOPED, single-chain version of the CantonStake concept.
 --   The Daml layer is the canonical source of truth for each user's staking
---   position. EVM events on Polygon Amoy (real buyVoucher/sellVoucher_new calls
---   against our MockValidatorShare) trigger state transitions here.
+--   position. Verified native staking events trigger state transitions here;
+--   Polygon validator staking uses the real ValidatorShare on Ethereum settlement.
 --
 --   State machine:
 --     Pending     -- user has signed StakingRequest, waiting for EVM confirmation
 --        v
 --     Bonded      -- EVM confirmed ShareMinted; delegation active; earns APY + CC
 --        v
---     Unbonding   -- user requested unbond; 21-day (mock: 60s) WITHDRAWAL_DELAY
+--     Unbonding   -- native protocol withdrawal conditions must be met
 --        v
 --     Released    -- tokens claimable; position closed
 --
@@ -64,7 +64,7 @@ data EvmProof = EvmProof
   with
     txHash : Text
     blockNumber : Int
-    validatorShare : Text  -- Mock ValidatorShare contract address on Amoy
+    validatorShare : Text  -- Verified native staking contract or account reference
   deriving (Eq, Show)
 
 -- -----------------------------------------------------------------------------
@@ -288,7 +288,9 @@ template StakingPosition
 
     -- User requests an unbond. PROPOSE step — no traffic event emitted here
     -- (per CIP-0047/0104 guidance to avoid spam attribution on intents).
-    choice StakingPosition_RequestUnbond : ContractId StakingPosition
+    -- This is an intent only. Keep the bonded contract active for the
+    -- provider's later ConfirmUnbond once the chain transaction has settled.
+    nonconsuming choice StakingPosition_RequestUnbond : ContractId StakingPosition
       controller delegator
       do
         assertMsg "Position must be Bonded to unbond" (status == Bonded)

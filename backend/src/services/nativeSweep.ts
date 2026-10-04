@@ -1,17 +1,14 @@
 /**
  * Native reward sweep against the REAL Polygon ValidatorShare (P2.5).
  *
- * The mock paid "rewards" out of a balance the owner pre-funded the contract
- * with, accruing at a fixed `aprBasisPoints`. That is not where real yield
- * comes from. On the production contract:
+ * On the production contract:
  *
  *   - `getLiquidRewards(delegator)` is the delegator's share of the rewards
  *     the StakeManager has actually distributed to the validator at
  *     checkpoints, minus the validator's commission and anything already
  *     withdrawn. It is protocol yield, not a subsidy.
  *   - `withdrawRewards()` transfers those rewards in the ERC-20 stake token.
- *     Nothing has to be pre-funded, and `evm/scripts/fund.ts` is now a
- *     mock-only script.
+ *     Nothing has to be pre-funded.
  *   - The resulting `DelegatorClaimedRewards(validatorId, user, rewards)`
  *     event is emitted by the shared StakingInfo logger, NOT by the
  *     ValidatorShare, and `rewards` is an indexed topic.

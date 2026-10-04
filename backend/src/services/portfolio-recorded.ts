@@ -1,5 +1,6 @@
 import type { ActiveContract } from "../canton.js";
 import { sameWalletAddress } from "./wallet-address.js";
+import { deploymentChain } from "./deployment-scope.js";
 
 export const PORTFOLIO_CHAINS = [
   "polygon", "monad", "cosmos", "celestia", "osmosis", "sui",
@@ -55,11 +56,7 @@ const symbols: Record<PortfolioChain, string> = {
 };
 
 function knownChain(raw: string, mode: "testnet" | "mainnet"): PortfolioChain | null {
-  const suffix = raw.match(/-(amoy|testnet|mainnet)$/)?.[1];
-  if (suffix && (suffix === "mainnet" ? mode !== "mainnet" : mode !== "testnet")) return null;
-  if (suffix === "amoy" && raw !== "polygon-amoy") return null;
-  const chain = suffix ? raw.slice(0, -(suffix.length + 1)) : raw;
-  return (PORTFOLIO_CHAINS as readonly string[]).includes(chain) ? chain as PortfolioChain : null;
+  return deploymentChain(raw, mode) as PortfolioChain | null;
 }
 
 /** Canton owns lifecycle and amount; Postgres supplies the chain/validator.

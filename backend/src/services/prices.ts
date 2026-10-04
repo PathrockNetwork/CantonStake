@@ -77,16 +77,14 @@ async function fetchCoinGecko(): Promise<Record<string, number> | null> {
 }
 
 /**
- * USD reference prices for the requested symbols. Testnet returns the fixed
+ * USD reference prices. Testnet returns the fixed
  * reference table, but callers must not value faucet assets with it.
  * Mainnet refreshes from CoinGecko at most once per
  * CACHE_TTL_MS and falls back to the last known prices (the fixed table on
  * a cold start) whenever the API errors — a price-provider outage must not
  * take the portfolio endpoints down with it.
  */
-export async function getUsdPrices(
-  symbols: string[],
-): Promise<{ prices: Record<string, number>; source: PriceSource }> {
+export async function getUsdPrices(): Promise<{ prices: Record<string, number>; source: PriceSource }> {
   if (config.networkMode !== "mainnet") return lastKnownPrices();
 
   const now = Date.now();
@@ -105,9 +103,4 @@ export async function getUsdPrices(
   }
   const { prices, source } = await inflight;
   return { prices, source };
-}
-
-/** Sync view for callers without an async context: last known prices. */
-export function usdPrice(symbol: string): number {
-  return lastKnownPrices().prices[symbol] ?? 0;
 }

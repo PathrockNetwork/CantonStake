@@ -3,8 +3,8 @@
  *
  *   GET /api/rewards/rounds?address=0x..&limit=10
  *     Recent completed reward rounds. When address is supplied, joins
- *     AppActivityRecord on the user's Canton party id so the response
- *     includes per-user traffic share + CC.
+ *     RewardEvent on the position's native wallet, including records from
+ *     both preserved legacy and newly associated Loop parties.
  *
  *   GET /api/analytics/markers?address=0x..&hours=24
  *     Hourly histogram of FeaturedAppActivityMarker emissions over the
@@ -36,6 +36,9 @@ function relativeTime(from: Date | null): string {
 const rewardsRoutes: FastifyPluginAsync = async (app) => {
   app.get<{ Querystring: RoundsQuery }>(
     "/api/rewards/rounds",
+    { schema: { querystring: { type: "object", properties: {
+      address: { type: "string", pattern: "^0x[a-fA-F0-9]{40}$" }, limit: { type: "string" },
+    } } } },
     async (req, reply) => {
       const limit = Math.min(
         Math.max(parseInt(req.query.limit ?? "10", 10) || 10, 1),
@@ -50,18 +53,14 @@ const rewardsRoutes: FastifyPluginAsync = async (app) => {
           take: limit,
         });
 
-        const user = address
-          ? await prisma.user.findFirst({ where: { evmAddress: address } })
-          : null;
-
         // Per-user attribution comes from rewardEvents: under real
         // (provider-party) attribution the user's share of a round is
         // their stake-weighted slice of the app's CC, recorded at
         // distribution time.
-        const events = user
+        const events = address
           ? await prisma.rewardEvent.findMany({
               where: {
-                userId: user.id,
+                position: { evmAddress: address },
                 round: { roundNumber: { in: rounds.map((r) => r.roundNumber) } },
               },
               select: { ccAmount: true, round: { select: { roundNumber: true } } },
@@ -103,6 +102,9 @@ const rewardsRoutes: FastifyPluginAsync = async (app) => {
 
   app.get<{ Querystring: MarkersQuery }>(
     "/api/analytics/markers",
+    { schema: { querystring: { type: "object", properties: {
+      address: { type: "string", pattern: "^0x[a-fA-F0-9]{40}$" }, hours: { type: "string" },
+    } } } },
     async (req, reply) => {
       const hours = Math.min(
         Math.max(parseInt(req.query.hours ?? "24", 10) || 24, 1),
@@ -113,14 +115,14 @@ const rewardsRoutes: FastifyPluginAsync = async (app) => {
       const priorSince = new Date(since.getTime() - hours * 60 * 60 * 1000);
 
       try {
-        const userId = address
-          ? (await prisma.user.findFirst({ where: { evmAddress: address } }))?.id
-          : undefined;
+        // An unknown supplied wallet must stay account-scoped and empty;
+        // only an omitted address intentionally requests global analytics.
+        const eventScope = address ? { position: { evmAddress: address } } : {};
 
         const events = await prisma.rewardEvent.findMany({
           where: {
             createdAt: { gte: since },
-            ...(userId ? { userId } : {}),
+            ...eventScope,
           },
           select: { createdAt: true, ccAmount: true },
         });
@@ -128,7 +130,7 @@ const rewardsRoutes: FastifyPluginAsync = async (app) => {
         const priorEvents = await prisma.rewardEvent.findMany({
           where: {
             createdAt: { gte: priorSince, lt: since },
-            ...(userId ? { userId } : {}),
+            ...eventScope,
           },
           select: { id: true },
         });
@@ -157,7 +159,7 @@ const rewardsRoutes: FastifyPluginAsync = async (app) => {
 
         // Bond/unbond breakdown across StakingPosition.status — reflects
         // lifecycle activity (positions currently bonded vs unbonding).
-        const positionScope = userId ? { userId } : {};
+        const positionScope = address ? { evmAddress: address } : {};
         const [bondedCount, unbondingCount] = await Promise.all([
           prisma.stakingPosition.count({
             where: { ...positionScope, status: "Bonded" },
@@ -178,7 +180,7 @@ const rewardsRoutes: FastifyPluginAsync = async (app) => {
         return {
           since: since.toISOString(),
           hours,
-          scope: userId ? "user" : "global",
+          scope: address ? "user" : "global",
           series: buckets.map((b, i) => ({
             t: new Date(startMs + i * bucketMs).toISOString(),
             markers: b.markers,

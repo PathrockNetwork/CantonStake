@@ -3,7 +3,7 @@ import { formatUnits } from "viem";
 import { prisma } from "../db.js";
 
 /** Account-scoped, read-only history for the native and CC reward panels. */
-export function rewardHistoryRoutesFor(db: Pick<typeof prisma, "user" | "rewardSweep" | "rewardEvent">): FastifyPluginAsync {
+export function rewardHistoryRoutesFor(db: Pick<typeof prisma, "rewardSweep" | "rewardEvent">): FastifyPluginAsync {
 return async (app) => {
   app.get<{ Querystring: { address: string; days?: number; limit?: number } }>("/api/rewards/history", {
     schema: { querystring: { type: "object", required: ["address"], properties: {
@@ -15,12 +15,13 @@ return async (app) => {
     const days = req.query.days ?? 30, limit = req.query.limit ?? 100;
     const since = new Date(Date.now() - days * 86_400_000);
     try {
-      const user = await db.user.findFirst({ where: { evmAddress: req.query.address.toLowerCase() }, select: { id: true } });
-      if (!user) return { events: [], since: since.toISOString(), hasMore: false };
+      // A native wallet may have positions under multiple Canton parties.
+      // Scope by the position's actual wallet, not a user's primary address.
+      const position = { evmAddress: req.query.address.toLowerCase() };
       const [native, cc] = await Promise.all([
-        db.rewardSweep.findMany({ where: { userId: user.id, sweptAt: { gte: since } }, orderBy: { sweptAt: "desc" }, take: limit + 1,
+        db.rewardSweep.findMany({ where: { position, sweptAt: { gte: since } }, orderBy: { sweptAt: "desc" }, take: limit + 1,
           select: { id: true, sweptAt: true, userPayoutWei: true, evmTxHash: true, position: { select: { contractId: true, chain: true } } } }),
-        db.rewardEvent.findMany({ where: { userId: user.id, createdAt: { gte: since } }, orderBy: { createdAt: "desc" }, take: limit + 1,
+        db.rewardEvent.findMany({ where: { position, createdAt: { gte: since } }, orderBy: { createdAt: "desc" }, take: limit + 1,
           select: { id: true, createdAt: true, userShare: true, cantonTxId: true, round: { select: { roundNumber: true } }, position: { select: { contractId: true, chain: true } } } }),
       ]);
       const events = [

@@ -313,7 +313,12 @@ export async function buildNarratorContext(
   evmAddress: string
 ): Promise<NarratorContext> {
   const lower = evmAddress.toLowerCase();
-  const user = await prisma.user.findFirst({ where: { evmAddress: lower } });
+  const users = await prisma.user.findMany({
+    where: { positions: { some: { evmAddress: lower } } },
+    select: { cantonPartyId: true },
+  });
+  // Never choose an arbitrary party when a wallet has legacy and Loop records.
+  const user = users.length === 1 ? users[0] : null;
 
   // Pull the two most recent completed rounds for trend detection.
   const recentRounds = await prisma.rewardRound.findMany({
@@ -334,9 +339,9 @@ export async function buildNarratorContext(
   let crossedHundred = false;
   let crossedThousand = false;
 
-  if (user) {
+  {
     const events = await prisma.rewardEvent.findMany({
-      where: { userId: user.id },
+      where: { position: { evmAddress: lower } },
       orderBy: { createdAt: "asc" },
     });
     rewardEventCount = events.length;
@@ -406,6 +411,13 @@ export async function narrate(
   evmAddress: string
 ): Promise<NarratorResponse> {
   const ctx = await buildNarratorContext(evmAddress);
+
+  if (config.networkMode === "testnet" && config.loopStakingEnabled) {
+    return {
+      text: "CC claims and payments to Loop users are not enabled yet. Recorded legacy allocations are historical attribution, not proof of payment to your Loop wallet.",
+      model: "rule-based", context: ctx,
+    };
+  }
 
   // Anthropic path is opt-in. When the key is set we try Claude first;
   // any failure falls through to the rule-based generator (never empty).

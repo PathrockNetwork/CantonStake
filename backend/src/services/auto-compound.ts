@@ -14,10 +14,9 @@ import { rpcUrls } from "./rpc-registry.js";
  * for implementing verified per-chain authorization and lifecycle tests.
  */
 
-import { Queue, Worker, type Job } from "bullmq";
+import { Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
 import {
-  createPublicClient,
   createWalletClient,
   encodeFunctionData,
   http,
@@ -26,7 +25,6 @@ import {
   type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { polygonAmoy } from "viem/chains";
 import { config } from "../config.js";
 import { prisma } from "../db.js";
 import { autoCompoundStatus, runAutoCompoundTickIfEnabled } from "./auto-compound-gate.js";
@@ -72,8 +70,7 @@ const queue = new Queue(QUEUE_NAME, { connection: redis });
 // --- Polygon executor (the only live implementation) ---
 
 // Real ValidatorShare surface. `getLiquidRewards` is the delegator's share
-// of checkpoint-distributed protocol yield — the mock's `pendingRewards`
-// (a simulated APR paid from a pre-funded balance) does not exist here, and
+// of checkpoint-distributed protocol yield, and
 // `restake()` returns (amountRestaked, totalStaked), not a bool.
 const compoundValidatorShareAbi = [
   parseAbiItem("function getLiquidRewards(address user) view returns (uint256)"),
@@ -480,7 +477,7 @@ const worker = new Worker<TickPayload>(QUEUE_NAME, (job) =>
   concurrency: 1,
 });
 
-worker.on("failed", (job, err) => {
+worker.on("failed", (_job, err) => {
   console.warn(`[auto-compound] tick failed:`, err.message);
 });
 

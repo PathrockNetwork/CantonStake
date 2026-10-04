@@ -121,23 +121,17 @@ function weiToPol(value: string | null | undefined): number {
  */
 export async function buildKoinlyCsv(evmAddress: string): Promise<string> {
   const lower = evmAddress.toLowerCase();
-  const user = await prisma.user.findFirst({ where: { evmAddress: lower } });
-
-  if (!user) {
-    return HEADER_LINE + "\n";
-  }
-
   const [positions, sweeps, rewardEvents] = await Promise.all([
     prisma.stakingPosition.findMany({
-      where: { userId: user.id },
+      where: { evmAddress: lower },
       orderBy: { createdAt: "asc" },
     }),
     prisma.rewardSweep.findMany({
-      where: { userId: user.id },
+      where: { position: { evmAddress: lower } },
       orderBy: { sweptAt: "asc" },
     }),
     prisma.rewardEvent.findMany({
-      where: { userId: user.id },
+      where: { position: { evmAddress: lower } },
       include: { round: true },
       orderBy: { createdAt: "asc" },
     }),
