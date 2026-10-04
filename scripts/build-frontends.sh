@@ -7,8 +7,19 @@ cd "$repo_dir"
 echo "Validating frontend TypeScript once..."
 npm --prefix frontend run typecheck
 
-echo "Building mainnet and testnet frontend images in parallel..."
 export SKIP_FRONTEND_BUILD_CHECKS=true
+
+# Production shares this host with Canton. Serial builds keep both Next.js
+# compiler trees from competing with the live participant for memory.
+if [[ "${FRONTEND_BUILD_PARALLEL:-false}" != "true" ]]; then
+  echo "Building frontend images serially (testnet, then mainnet)..."
+  docker compose -p cantonstake-testnet --env-file .env --env-file .env.testnet build frontend
+  docker compose -p cantonstake --env-file .env build frontend
+  echo "Built cantonstake-frontend:testnet and cantonstake-frontend:local."
+  exit 0
+fi
+
+echo "Building frontend images in parallel (explicit opt-in)..."
 
 docker compose -p cantonstake --env-file .env build frontend &
 mainnet_pid=$!

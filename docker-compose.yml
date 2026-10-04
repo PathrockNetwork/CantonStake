@@ -6,7 +6,7 @@
 #
 # Usage:
 #   1. Start LocalNet: cd ../cn-quickstart/quickstart && make start
-#   2. Deploy MockValidatorShare to Amoy: cd evm && npm run deploy:amoy
+#   2. Configure the real staking-network endpoints and validator registry.
 #   3. Copy the deployed address, party IDs, and FeaturedAppRight CID into .env
 #   4. From the cantonstake root: docker compose up --build
 #
@@ -49,8 +49,15 @@ services:
   redis:
     image: redis:7-alpine
     container_name: ${STACK_NAME:-cantonstake}-redis
+    # Backends use redis:6379 on their private Compose network. Host access
+    # is loopback-only: an unauthenticated public Redis port permits takeover.
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
     volumes:
       - redisdata:/data
     healthcheck:
@@ -78,6 +85,11 @@ services:
       - NETWORK_MODE=${NETWORK_MODE:-testnet}
       - MAINNET_CONFIRMED=${MAINNET_CONFIRMED:-no}
       - ENABLED_CHAINS=${ENABLED_CHAINS:-polygon}
+      - SPOL_TEST_ENABLED=${SPOL_TEST_ENABLED:-false}
+      - SPOL_TEST_ROUTER=${SPOL_TEST_ROUTER:-}
+      - SPOL_TEST_QUOTER=${SPOL_TEST_QUOTER:-}
+      - SPOL_TEST_WRAPPER=${SPOL_TEST_WRAPPER:-}
+      - SPOL_TEST_POOL=${SPOL_TEST_POOL:-}
       - RPC_FALLBACK_URLS=${RPC_FALLBACK_URLS:-}
       - AMOY_RPC_URL=${AMOY_RPC_URL:-}
       - STAKE_SETTLEMENT_RPC_URL=${STAKE_SETTLEMENT_RPC_URL:-}
@@ -86,11 +98,24 @@ services:
       - POLYGON_STAKE_MANAGER_ADDRESS=${POLYGON_STAKE_MANAGER_ADDRESS:-}
       - POLYGON_STAKING_LOGGER_ADDRESS=${POLYGON_STAKING_LOGGER_ADDRESS:-}
       - CANTON_JSON_API_URL=${CANTON_JSON_API_URL:-http://host.docker.internal:3975}
+      - CANTON_DELEGATOR_JSON_API_URL=${CANTON_DELEGATOR_JSON_API_URL:-}
+      - CANTON_USER_ID=${CANTON_USER_ID:-}
+      - CANTON_DELEGATOR_USER_ID=${CANTON_DELEGATOR_USER_ID:-}
+      - CANTON_SYNCHRONIZER_ID=${CANTON_SYNCHRONIZER_ID:-}
+      - CANTON_PACKAGE_ID=${CANTON_PACKAGE_ID:-}
+      - CANTON_MODERN_EVENT_FORMAT=${CANTON_MODERN_EVENT_FORMAT:-false}
+      - CANTON_WRITE_ACCESS_PROTECTED=${CANTON_WRITE_ACCESS_PROTECTED:-false}
+      - CANTON_LEGACY_JSON_API_URL=${CANTON_LEGACY_JSON_API_URL:-}
+      - CANTON_LEGACY_AUTH_TOKEN=${CANTON_LEGACY_AUTH_TOKEN:-}
+      - CANTON_LEGACY_APP_PROVIDER_PARTY=${CANTON_LEGACY_APP_PROVIDER_PARTY:-}
+      - CANTON_LEGACY_PACKAGE_ID=${CANTON_LEGACY_PACKAGE_ID:-}
       - CANTON_APP_PROVIDER_PARTY=${CANTON_APP_PROVIDER_PARTY}
       - CANTON_AUTH_TOKEN=${CANTON_AUTH_TOKEN:-}
       - CANTON_DELEGATOR_PARTY=${CANTON_DELEGATOR_PARTY}
       - CANTON_DELEGATOR_AUTH_TOKEN=${CANTON_DELEGATOR_AUTH_TOKEN:-}
       - FEATURED_APP_RIGHT_CID=${FEATURED_APP_RIGHT_CID:-}
+      - BENEFICIARY_SPLIT_CID=${BENEFICIARY_SPLIT_CID:-}
+      - USE_LEGACY_MARKERS=${USE_LEGACY_MARKERS:-false}
       - DATABASE_URL=postgresql://cantonstake:cantonstake@postgres:5432/cantonstake
       - REDIS_URL=redis://redis:6379
       - SCAN_API_URL=${SCAN_API_URL:-}
@@ -123,6 +148,8 @@ services:
       - SENTRY_ENV=${SENTRY_ENV:-production}
       - LOOP_PROXY_ENABLED=${LOOP_PROXY_ENABLED:-true}
       - LOOP_API_UPSTREAM=${LOOP_API_UPSTREAM:-https://devnet.cantonloop.com}
+      - LOOP_STAKING_ENABLED=${LOOP_STAKING_ENABLED:-false}
+      - LOOP_REVIEWED_PACKAGE_ID=${LOOP_REVIEWED_PACKAGE_ID:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -147,6 +174,7 @@ services:
         NEXT_PUBLIC_POLYGON_STAKE_TOKEN: ${NEXT_PUBLIC_POLYGON_STAKE_TOKEN:-}
         NEXT_PUBLIC_SHARE_SLIPPAGE_BPS: ${NEXT_PUBLIC_SHARE_SLIPPAGE_BPS:-}
         NEXT_PUBLIC_LOOP_NETWORK: ${NEXT_PUBLIC_LOOP_NETWORK:-devnet}
+        NEXT_PUBLIC_LOOP_STAKING_FLOW: ${NEXT_PUBLIC_LOOP_STAKING_FLOW:-legacy}
         NEXT_PUBLIC_LOOP_SDK_ENABLED: ${NEXT_PUBLIC_LOOP_SDK_ENABLED:-true}
         NEXT_PUBLIC_CC_USD: ${NEXT_PUBLIC_CC_USD:-0.16}
         NEXT_PUBLIC_REAL_VALIDATOR_SHARES: ${NEXT_PUBLIC_REAL_VALIDATOR_SHARES:-{}}
