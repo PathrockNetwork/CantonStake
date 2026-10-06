@@ -13,7 +13,7 @@
  * client it becomes the highest-priority provider once the SDK initialises.
  */
 
-import { loopSessionScope, resolveLoopNetwork, scopeLoopSession } from "./loop-network";
+import { isLoopStakingNetwork, loopSessionScope, resolveLoopNetwork, scopeLoopSession } from "./loop-network";
 import { approveLoopStakingAction } from "./loop-transactions";
 import type { LoopStakingAction, LoopStakingDeployment, LoopTransactionSigner } from "./loop-transactions";
 import type {
@@ -275,8 +275,8 @@ export async function approveConnectedLoopStake(deployment: LoopStakingDeploymen
 }
 
 /** Short-lived pass-through to our own backend only; never persist or log it. */
-export async function connectedLoopTestnetAuthorization(expectedParty: string): Promise<string> {
-  if (resolveNetwork() !== "testnet") throw new Error("Connect Loop on Canton TestNet before preparing a stake.");
+export async function connectedLoopAuthorization(expectedParty: string): Promise<string> {
+  if (!isLoopStakingNetwork(resolveNetwork())) throw new Error("Connect Loop on Canton DevNet or TestNet before preparing a stake.");
   const signer = await getConnectedLoopSigner(expectedParty);
   if (signer !== verifiedProvider) throw new Error("Loop account changed; reconnect before staking.");
   const token = verifiedProvider.getAuthToken();

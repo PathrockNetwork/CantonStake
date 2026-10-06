@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { assertPolygonSettlementMode } from "./services/evm-network.js";
+import { CANTON_NETWORKS, type CantonNetwork } from "./services/canton-network.js";
 
 function required(key: string): string {
   const v = process.env[key];
@@ -11,6 +12,19 @@ function required(key: string): string {
 
 function optional(key: string, fallback = ""): string {
   return process.env[key] ?? fallback;
+}
+
+/** An enumerated setting; unset or empty takes the fallback, anything else must be listed. */
+function oneOf<T extends string>(key: string, values: readonly T[], fallback: T): T {
+  const value = (process.env[key] || fallback).toLowerCase() as T;
+  if (!values.includes(value)) throw new Error(`${key} must be one of: ${values.join(", ")}`);
+  return value;
+}
+
+/** Settings that must all be present once a feature is switched on. */
+function requireWhen(enabled: boolean, feature: string, keys: string[]): void {
+  const missing = keys.filter(key => !process.env[key]);
+  if (enabled && missing.length) throw new Error(`${feature} requires ${missing.join(", ")}`);
 }
 
 // --- Network mode ----------------------------------------------------------
@@ -43,6 +57,21 @@ function modeDefault<T>(envKey: string, testnet: T, mainnet: T): T {
 // Unknown ids in the env are ignored rather than
 // fatal so a typo cannot brick startup.
 
+// Which Canton network the ledger and Loop wallet use. Independent of the
+// native chains: a "testnet" deployment may run on Canton DevNet or TestNet.
+const CANTON_NETWORK = oneOf<CantonNetwork>("CANTON_NETWORK", ["devnet", "testnet", "mainnet"], isMainnet ? "mainnet" : "testnet");
+if (isMainnet !== (CANTON_NETWORK === "mainnet")) {
+  throw new Error("CANTON_NETWORK must be devnet or testnet for testnet deployments, and mainnet for mainnet deployments");
+}
+const CANTON_NETWORK_INFO = CANTON_NETWORKS[CANTON_NETWORK];
+// A remote ledger must be on the selected network (LocalNet leaves it unset).
+const synchronizer = process.env.CANTON_SYNCHRONIZER_ID;
+if (synchronizer && synchronizer !== CANTON_NETWORK_INFO.synchronizerId) {
+  throw new Error(`CANTON_SYNCHRONIZER_ID is not the ${CANTON_NETWORK_INFO.label} global synchronizer`);
+}
+requireWhen(!!process.env.CANTON_OAUTH_CLIENT_ID, "CANTON_OAUTH_CLIENT_ID", ["CANTON_OAUTH_CLIENT_SECRET", "CANTON_OAUTH_TOKEN_URL", "CANTON_OAUTH_AUDIENCE"]);
+requireWhen(!!process.env.CANTON_DELEGATOR_OAUTH_CLIENT_ID, "CANTON_DELEGATOR_OAUTH_CLIENT_ID", ["CANTON_DELEGATOR_OAUTH_CLIENT_SECRET", "CANTON_OAUTH_TOKEN_URL", "CANTON_OAUTH_AUDIENCE"]);
+
 const KNOWN_CHAINS = [
   "polygon",
   "monad",
@@ -71,6 +100,8 @@ if (parsedEnabledChains.length === 0) {
 
 export const config = {
   networkMode: (isMainnet ? "mainnet" : "testnet") as "testnet" | "mainnet",
+  cantonNetwork: CANTON_NETWORK,
+  cantonNetworkInfo: CANTON_NETWORK_INFO,
   mainnetConfirmed: optional("MAINNET_CONFIRMED", "no").toLowerCase() === "yes",
 
   enabledChains: new Set<string>(parsedEnabledChains),
@@ -156,19 +187,23 @@ export const config = {
   cantonPackageId: optional("CANTON_PACKAGE_ID"),
   cantonModernEventFormat: optional("CANTON_MODERN_EVENT_FORMAT", "false") === "true",
   cantonWriteAccessProtected: optional("CANTON_WRITE_ACCESS_PROTECTED", "false") === "true",
-  // Existing LocalNet preservation; never inferred from primary credentials.
-  cantonLegacyJsonApiUrl: optional("CANTON_LEGACY_JSON_API_URL"),
-  cantonLegacyAuthToken: optional("CANTON_LEGACY_AUTH_TOKEN"),
-  cantonLegacyProviderParty: optional("CANTON_LEGACY_APP_PROVIDER_PARTY"),
-  cantonLegacyPackageId: optional("CANTON_LEGACY_PACKAGE_ID"),
-  // Disabled until real Loop custom-DAR review/deployment and legacy-position
-  // preservation have been verified. Never a hosted-wallet fallback.
+  // Disabled until real Loop custom-DAR review/deployment has been verified.
+  // Never a hosted-wallet fallback.
   loopStakingEnabled: optional("LOOP_STAKING_ENABLED", "false") === "true",
   loopReviewedPackageId: optional("LOOP_REVIEWED_PACKAGE_ID"),
   cantonAppProviderParty: required("CANTON_APP_PROVIDER_PARTY"),
   cantonAuthToken: optional("CANTON_AUTH_TOKEN"),
   cantonDelegatorParty: required("CANTON_DELEGATOR_PARTY"),
   cantonDelegatorAuthToken: optional("CANTON_DELEGATOR_AUTH_TOKEN"),
+  // OAuth2 client credentials for Ledger APIs with expiring tokens (MainNet
+  // Auth0 M2M, 24 h). When a client ID is set it replaces the static token.
+  cantonOauthTokenUrl: optional("CANTON_OAUTH_TOKEN_URL"),
+  cantonOauthAudience: optional("CANTON_OAUTH_AUDIENCE"),
+  cantonOauthScope: optional("CANTON_OAUTH_SCOPE", "daml_ledger_api"),
+  cantonOauthClientId: optional("CANTON_OAUTH_CLIENT_ID"),
+  cantonOauthClientSecret: optional("CANTON_OAUTH_CLIENT_SECRET"),
+  cantonDelegatorOauthClientId: optional("CANTON_DELEGATOR_OAUTH_CLIENT_ID"),
+  cantonDelegatorOauthClientSecret: optional("CANTON_DELEGATOR_OAUTH_CLIENT_SECRET"),
 
   featuredAppRightCid: optional("FEATURED_APP_RIGHT_CID"),
 
@@ -347,10 +382,7 @@ export const config = {
   // once fivenorth allowlists your real origin.
   loopProxyEnabled:
     optional("LOOP_PROXY_ENABLED", "true").toLowerCase() === "true",
-  loopProxyUpstream: modeDefault("LOOP_API_UPSTREAM",
-    "https://devnet.cantonloop.com",
-    "https://cantonloop.com"
-  ),
+  loopProxyUpstream: optional("LOOP_API_UPSTREAM") || CANTON_NETWORK_INFO.loopOrigin,
 
   // Observability (§6). Sentry DSN unset = error capture is a no-op.
   // Prometheus /metrics is always available and never gated on env.

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { TokenSource } from "./canton-oauth.js";
 
 export interface SubmitAndWaitResult {
   transactionId: string;
@@ -10,7 +11,6 @@ export interface ActiveContract {
   contractId: string;
   templateId: string;
   argument: Record<string, unknown>;
-  ledgerOrigin?: "primary" | "legacy";
 }
 
 export interface ActiveInterfaceContract {
@@ -76,7 +76,7 @@ export interface CantonClientOptions {
 export class CantonClient {
   constructor(
     private readonly baseUrl: string,
-    private readonly authToken: string,
+    private readonly authToken: string | TokenSource,
     private readonly party: string,
     private readonly options: CantonClientOptions = {},
   ) {
@@ -109,22 +109,24 @@ export class CantonClient {
     };
   }
 
-  private request(path: string, init: RequestInit = {}): Promise<Response> {
+  private async request(path: string, init: RequestInit = {}): Promise<Response> {
+    const signal = init.signal ?? AbortSignal.timeout(30_000);
     return fetch(`${this.baseUrl}${path}`, {
       ...init,
-      headers: this.headers(),
+      headers: await this.headers(signal),
       // Never forward bearer credentials to a redirected endpoint.
       redirect: "error",
-      signal: init.signal ?? AbortSignal.timeout(30_000),
+      signal,
     });
   }
 
-  private headers(): Record<string, string> {
+  private async headers(signal?: AbortSignal): Promise<Record<string, string>> {
     const h: Record<string, string> = {
       "Content-Type": "application/json",
     };
-    if (this.authToken) {
-      h["Authorization"] = `Bearer ${this.authToken}`;
+    const token = typeof this.authToken === "function" ? await this.authToken(signal) : this.authToken;
+    if (token) {
+      h["Authorization"] = `Bearer ${token}`;
     }
     return h;
   }

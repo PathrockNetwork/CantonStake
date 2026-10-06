@@ -2272,13 +2272,9 @@ async function findPendingRequest(
     if (config.networkMode === "testnet" && config.loopStakingEnabled) {
       // A real Loop create may arrive before adoption. It carries no native
       // chain/validator proof and must never use the legacy Polygon fallback.
-      const preserved = r.ledgerOrigin === "legacy" &&
-        r.templateId === `${config.cantonLegacyPackageId}:CantonStake.Staking:StakingRequest` &&
-        r.argument.appProvider === config.cantonLegacyProviderParty;
-      const reviewed = r.ledgerOrigin !== "legacy" &&
-        r.templateId === `${config.cantonPackageId}:CantonStake.Staking:StakingRequest` &&
+      const reviewed = r.templateId === `${config.cantonPackageId}:CantonStake.Staking:StakingRequest` &&
         r.argument.appProvider === config.cantonAppProviderParty;
-      if (!intent?.userId || (!preserved && !reviewed)) return [];
+      if (!intent?.userId || !reviewed) return [];
     }
     // Old requests have no persisted network. Retain the legacy Polygon
     // path only; accepting one on another chain could misattribute funds.

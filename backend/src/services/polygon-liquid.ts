@@ -1,7 +1,7 @@
 import { createPublicClient, http, parseAbi, isAddress, type Address } from "viem";
 import { config } from "../config.js";
 import { rpcUrls } from "./rpc-registry.js";
-import { liquidCanton as canton, liquidProviderParty } from "../canton.js";
+import { canton } from "../canton.js";
 
 export const SPOL = "0x3c7a9412b9ab03aad2129a2c2159372516011e45" as const;
 export const liquidAbi = parseAbi([
@@ -55,7 +55,7 @@ export async function syncLiquidWallet(wallet: Address, allowCreate = false) {
     const shares = await liquidClient.readContract({ address: SPOL, abi: liquidAbi, functionName: "balanceOf", args: [wallet], blockNumber: block.number });
     if (existing && BigInt(String(existing.argument.observedBlock)) >= block.number) return { synchronized: true, shares: String(shares) };
     if (!existing) {
-      await canton.createContract({ templateId: template, argument: { operator: liquidProviderParty, wallet: normalized, chainId: 80002, token: SPOL, sharesBaseUnits: String(shares), observedBlock: String(block.number), observedBlockHash: block.hash } });
+      await canton.createContract({ templateId: template, argument: { operator: config.cantonAppProviderParty, wallet: normalized, chainId: 80002, token: SPOL, sharesBaseUnits: String(shares), observedBlock: String(block.number), observedBlockHash: block.hash } });
     } else if (existing.argument.sharesBaseUnits !== String(shares)) {
       await canton.exerciseChoice({ templateId: template, contractId: existing.contractId, choice: "LiquidBalance_Observe", argument: { newSharesBaseUnits: String(shares), newBlock: String(block.number), newBlockHash: block.hash } });
     }

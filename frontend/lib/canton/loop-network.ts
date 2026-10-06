@@ -30,3 +30,7 @@ export function scopeLoopSession(storage: LoopStorage, scope: string): void {
 export function loopSessionScope(network: CantonNetwork, walletUrl?: string, apiUrl?: string): string {
   return JSON.stringify([network, walletUrl || loopWalletUrl(network), apiUrl || loopWalletUrl(network)]);
 }
+
+/** Canton networks where the external Loop staking flow may run. */
+export const isLoopStakingNetwork = (network: CantonNetwork): network is "devnet" | "testnet" =>
+  network === "devnet" || network === "testnet";

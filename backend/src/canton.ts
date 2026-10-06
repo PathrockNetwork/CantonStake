@@ -1,6 +1,6 @@
 import { config } from "./config.js";
 import { CantonClient } from "./services/canton-ledger-client.js";
-import { CantonCutoverClient } from "./services/canton-cutover-client.js";
+import { clientCredentialsTokenSource, type TokenSource } from "./services/canton-oauth.js";
 export { CantonClient } from "./services/canton-ledger-client.js";
 export type { ActiveContract, SubmitAndWaitResult, CantonClientOptions } from "./services/canton-ledger-client.js";
 
@@ -14,39 +14,25 @@ export function urlWithPort(rawUrl: string, port: string): string {
   }
 }
 
-export const cantonPrimary = new CantonClient(
+/** A configured OAuth client replaces the static token; never mixes identities. */
+function ledgerAuth(staticToken: string, clientId: string, clientSecret: string): string | TokenSource {
+  if (!clientId) return staticToken;
+  return clientCredentialsTokenSource({ tokenUrl: config.cantonOauthTokenUrl, clientId, clientSecret,
+    audience: config.cantonOauthAudience, scope: config.cantonOauthScope });
+}
+
+export const canton = new CantonClient(
   config.cantonJsonApiUrl,
-  config.cantonAuthToken,
+  ledgerAuth(config.cantonAuthToken, config.cantonOauthClientId, config.cantonOauthClientSecret),
   config.cantonAppProviderParty,
   { userId: config.cantonUserId, synchronizerId: config.cantonSynchronizerId,
     packageId: config.cantonPackageId, eventFormat: config.cantonModernEventFormat,
     writeAccessProtected: config.cantonWriteAccessProtected },
 );
 
-function legacyPreservationClient(): CantonClient | null {
-  if (config.networkMode !== "testnet" || !config.loopStakingEnabled || !config.cantonLegacyJsonApiUrl) return null;
-  const endpoint = new URL(config.cantonLegacyJsonApiUrl);
-  if (!["localhost", "127.0.0.1", "[::1]", "host.docker.internal"].includes(endpoint.hostname) ||
-      !["http:", "https:"].includes(endpoint.protocol) || endpoint.username || endpoint.password ||
-      !/^[^\s:]+::[a-f0-9]{68}$/.test(config.cantonLegacyProviderParty) ||
-      !/^[a-f0-9]{64}$/.test(config.cantonLegacyPackageId) ||
-      config.cantonLegacyProviderParty === config.cantonAppProviderParty ||
-      config.cantonLegacyJsonApiUrl.replace(/\/$/, "") === config.cantonJsonApiUrl.replace(/\/$/, "")) {
-    throw new Error("Legacy preservation requires a distinct, explicitly configured existing LocalNet provider and package");
-  }
-  return new CantonClient(config.cantonLegacyJsonApiUrl, config.cantonLegacyAuthToken, config.cantonLegacyProviderParty,
-    { packageId: config.cantonLegacyPackageId });
-}
-
-export const cantonLegacy = legacyPreservationClient();
-export const canton = cantonLegacy ? new CantonCutoverClient(cantonPrimary, cantonLegacy) : cantonPrimary;
-// LiquidBalance belongs to its separate existing DAR, not the new remote package.
-export const liquidCanton = cantonLegacy ?? cantonPrimary;
-export const liquidProviderParty = cantonLegacy ? config.cantonLegacyProviderParty : config.cantonAppProviderParty;
-
 export const cantonDelegator = new CantonClient(
   config.cantonDelegatorJsonApiUrl || urlWithPort(config.cantonJsonApiUrl, "2975"),
-  config.cantonDelegatorAuthToken,
+  ledgerAuth(config.cantonDelegatorAuthToken, config.cantonDelegatorOauthClientId, config.cantonDelegatorOauthClientSecret),
   config.cantonDelegatorParty,
   { userId: config.cantonDelegatorUserId, synchronizerId: config.cantonSynchronizerId,
     packageId: config.cantonPackageId, eventFormat: config.cantonModernEventFormat,

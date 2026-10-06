@@ -1,7 +1,8 @@
 import { getPublicClient, signMessage } from "@wagmi/core";
 import { wagmiConfig } from "../wagmi";
 import { networkMode } from "../network";
-import { approveConnectedLoopStake, connectedLoopTestnetAuthorization } from "./loop-sdk-provider";
+import { approveConnectedLoopStake, connectedLoopAuthorization } from "./loop-sdk-provider";
+import { resolveLoopNetwork } from "./loop-network";
 import { LoopSubmissionUncertainError, type LoopStakingAction, type LoopStakingDeployment } from "./loop-transactions";
 import { decodeFunctionData, parseAbi, parseEther, TransactionReceiptNotFoundError, type Address, type Hash } from "viem";
 import { normalizedNativeWallet } from "../native-wallet-addresses";
@@ -37,8 +38,11 @@ export interface PendingLoopRequest {
   chain: string | null; validator: string | null; canCancel: boolean;
 }
 
+/** Canton network the Loop staking deployment must match (built into this image). */
+const stakingNetwork = resolveLoopNetwork(process.env.NEXT_PUBLIC_LOOP_NETWORK);
+
 export interface LoopRewardEntitlements {
-  network: "testnet";
+  network: "devnet" | "testnet";
   source: "canton-reward-assignment-interface";
   beneficiary: string;
   ledgerOffset: string;
@@ -84,9 +88,9 @@ export function unresolvedLoopCancellations(delegator: string): CancellationRefe
 
 async function post<T>(path: string, body: unknown, party: string): Promise<T> {
   if (networkMode !== "testnet" || process.env.NEXT_PUBLIC_LOOP_STAKING_FLOW !== "external") {
-    throw new Error("External Loop TestNet workflow is not enabled on this page.");
+    throw new Error("The external Loop staking workflow is not enabled on this page.");
   }
-  const authorization = await connectedLoopTestnetAuthorization(party);
+  const authorization = await connectedLoopAuthorization(party);
   const response = await fetch(`${BACKEND.replace(/\/$/, "")}${path}`, {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: authorization },
     body: JSON.stringify(body), redirect: "error", cache: "no-store", signal: AbortSignal.timeout(30_000),
@@ -101,7 +105,7 @@ async function post<T>(path: string, body: unknown, party: string): Promise<T> {
 export async function fetchLoopRewardEntitlements(beneficiary: string): Promise<LoopRewardEntitlements> {
   const result = await post<LoopRewardEntitlements>("/api/loop/rewards/entitlements", { delegator: beneficiary }, beneficiary);
   const amount = /^(?:0|[1-9]\d{0,27})(?:\.\d{1,10})?$/;
-  if (result.network !== "testnet" || result.source !== "canton-reward-assignment-interface" || result.beneficiary !== beneficiary ||
+  if (result.network !== stakingNetwork || result.source !== "canton-reward-assignment-interface" || result.beneficiary !== beneficiary ||
       typeof result.ledgerOffset !== "string" || !/^\d+$/.test(result.ledgerOffset) || !Number.isFinite(Date.parse(result.observedAt)) ||
       typeof result.observedUnexpiredAmount !== "string" || !amount.test(result.observedUnexpiredAmount) ||
       result.paymentsEnabled !== false || result.paymentStatus !== "unverified" || result.coverage !== "provider-visible-active-coupons-only" ||
@@ -149,7 +153,7 @@ export async function cancelPendingLoopRequest(request: PendingLoopRequest): Pro
     delegator: request.delegator, contractId: request.contractId,
   }, request.delegator);
   if (prepared.action?.kind !== "cancel-request" || prepared.action.delegator !== request.delegator ||
-      prepared.action.contractId !== request.contractId || prepared.deployment?.network !== "testnet") {
+      prepared.action.contractId !== request.contractId || prepared.deployment?.network !== stakingNetwork) {
     throw new Error("Backend prepared a mismatched cancellation.");
   }
   localStorage.setItem(cancellationKey(request), "submission-attempted");
@@ -186,7 +190,7 @@ async function verifiedLoopUnbondPosition(position: LoopUnbondPosition) {
     delegator: position.delegator, contractId: position.contractId,
   }, position.delegator);
   if (prepared.action?.kind !== "request-unbond" || prepared.action.contractId !== position.contractId ||
-      prepared.action.delegator !== position.delegator || prepared.deployment?.network !== "testnet" ||
+      prepared.action.delegator !== position.delegator || prepared.deployment?.network !== stakingNetwork ||
       prepared.position?.contractId !== position.contractId || prepared.position.chain !== position.chain ||
       normalizedNativeWallet(prepared.position.evmAddress) !== normalizedNativeWallet(position.evmAddress) ||
       normalizedNativeWallet(prepared.position.validator) !== normalizedNativeWallet(position.validator) ||
@@ -313,7 +317,7 @@ export async function approveLoopPositionUnbond(position: LoopUnbondPosition): P
 export async function createLoopStakingRequest(body: StakeInput,
   signNativeOwnership?: (message: string, expectedWallet: string) => Promise<string>,
 ): Promise<AdoptedIntent> {
-  if (networkMode !== "testnet") throw new Error("This Loop staking flow is TestNet-only.");
+  if (networkMode !== "testnet") throw new Error("This Loop staking flow is only available on the test deployment.");
   const chain = body.chain ?? "polygon";
   const cosmosFamily = ["cosmos", "celestia", "osmosis"].includes(chain);
   const nativeSignerRequired = cosmosFamily || chain === "sui" || chain === "solana" || chain === "aptos" || chain === "polkadot";
@@ -323,7 +327,7 @@ export async function createLoopStakingRequest(body: StakeInput,
   let attempt = pending.get(context);
   if (!attempt) {
     const prepared = await post<PreparedIntent>("/api/loop/staking/prepare", { ...body, chain, clientNetworkMode: networkMode }, body.delegator);
-    if (prepared.deployment?.network !== "testnet" || prepared.action?.delegator !== body.delegator ||
+    if (prepared.deployment?.network !== stakingNetwork || prepared.action?.delegator !== body.delegator ||
         prepared.action.kind !== "create-request" ||
         normalizedNativeWallet(prepared.action.evmAddress) !== normalizedNativeWallet(body.evmAddress) ||
         (chain === "solana" && (prepared.stakeAccountAddress !== body.stakeAccountAddress || !/^[1-9]\d*$/.test(prepared.stakeRentLamports ?? ""))) ||

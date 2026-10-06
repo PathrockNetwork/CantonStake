@@ -16,7 +16,7 @@ import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import cors from "@fastify/cors";
 import { formatEther, parseUnits } from "viem";
 import { config } from "./config.js";
-import { canton, cantonPrimary, cantonDelegator, TEMPLATES } from "./canton.js";
+import { canton, cantonDelegator, TEMPLATES } from "./canton.js";
 import { startReleaseChecker, extractCreatedContractId } from "./orchestrator.js";
 import { startMultichainWatchers, watchersHealth } from "./multichain-watcher.js";
 import { prisma } from "./db.js";
@@ -41,7 +41,6 @@ import {
   shutdownAutoCompound,
 } from "./services/auto-compound.js";
 import sweepRoutes from "./routes/sweep.js";
-import rewardHistoryRoutes from "./routes/reward-history.js";
 import { accountRewardRoutesFor } from "./routes/account-rewards.js";
 import validatorRoutes from "./routes/validators.js";
 import notificationsRoutes from "./routes/notifications.js";
@@ -56,7 +55,7 @@ import polkadotRoutes from "./routes/polkadot.js";
 import readinessRoutes from "./routes/readiness.js";
 import loopProxyRoutes from "./routes/loop-proxy.js";
 import rpcRoutes from "./routes/rpc.js";
-import { normalizeWalletAddress, sameWalletAddress } from "./services/wallet-address.js";
+import { normalizeWalletAddress } from "./services/wallet-address.js";
 import { assertSolanaNetwork, solanaRpc, SOLANA_STAKE_ACCOUNT_SPACE } from "./services/solana-rpc.js";
 import { polkadotApi, POLKADOT_ASSET_HUB, parsePolkadotPoolKey } from "./services/polkadot-rpc.js";
 import { decodeAddress, encodeAddress } from "@polkadot/util-crypto";
@@ -796,9 +795,7 @@ app.post<{ Body: { delegator: string } }>("/api/loop/rewards/entitlements", { bo
     const delegator = req.body?.delegator;
     if (typeof delegator !== "string") return reply.code(400).send({ error: "Your connected Loop party is required" });
     await verifyLoopSession(req.headers.authorization, delegator);
-    // Remote primary only: never blend old LocalNet allocations or coupons
-    // into the verified Loop party's current TestNet minting entitlements.
-    return await observeLoopRewardEntitlements(cantonPrimary, config.cantonAppProviderParty, delegator);
+    return await observeLoopRewardEntitlements(canton, config.cantonAppProviderParty, delegator);
   } catch (error) {
     if (error instanceof LoopWorkflowError) return reply.code(error.statusCode).send({ error: error.message });
     return reply.code(503).send({ error: "Canton reward entitlement observation is unavailable; no payment status was inferred" });
@@ -923,7 +920,6 @@ app.post("/api/admin/rounds/trigger", async (req, reply) => {
 await app.register(readinessRoutes);
 await app.register(rpcRoutes);
 await app.register(sweepRoutes);
-await app.register(rewardHistoryRoutes);
 await app.register(accountRewardRoutesFor({ ledger: canton, db: prisma, template: TEMPLATES.StakingPosition,
   networkMode: config.networkMode, loopStakingEnabled: config.loopStakingEnabled }));
 

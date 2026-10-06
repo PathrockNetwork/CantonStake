@@ -14,11 +14,13 @@ import { readAptosUnbondReceipt } from "./aptos-unbond-receipt.js";
 import { readPolkadotUnbondReceipt } from "./polkadot-unbond-receipt.js";
 import { parsePolkadotPoolKey } from "./polkadot-rpc.js";
 import { loopWorkflowGate, loopDeployment } from "./loop-deployment.js";
+import { isCantonParty, isContractId } from "./canton-network.js";
+
+const { label: cantonLabel, loopOrigin } = config.cantonNetworkInfo;
 export { loopWorkflowGate, loopDeployment } from "./loop-deployment.js";
 
 const TTL_SECONDS = 1800;
 const KEY_PREFIX = "cantonstake:loop-testnet:intent:";
-const PARTY = /^[^\s:]+::[a-f0-9]{68}$/;
 
 export class LoopWorkflowError extends Error {
   constructor(readonly statusCode: number, message: string) { super(message); }
@@ -42,22 +44,22 @@ export async function loopPreservationGate(): Promise<string | null> {
 export async function verifyLoopSession(authorization: string | undefined, expectedParty: string): Promise<void> {
   const gate = loopWorkflowGate();
   if (gate) throw new LoopWorkflowError(503, gate);
-  if (!authorization || !/^Bearer [^\s]{1,8192}$/.test(authorization) || !PARTY.test(expectedParty)) {
-    throw new LoopWorkflowError(401, "A verified Loop TestNet wallet session is required");
+  if (!authorization || !/^Bearer [^\s]{1,8192}$/.test(authorization) || !isCantonParty(expectedParty)) {
+    throw new LoopWorkflowError(401, `A verified Loop wallet session on ${cantonLabel} is required`);
   }
   let response: Response;
   try {
     // Fixed origin: never send a user's Loop bearer token to a body-supplied
     // endpoint, arbitrary proxy upstream or redirect.
-    response = await fetch("https://testnet.cantonloop.com/api/v1/.connect/pair/account", {
+    response = await fetch(`${loopOrigin}/api/v1/.connect/pair/account`, {
       headers: { Authorization: authorization, Accept: "application/json" },
       redirect: "error", signal: AbortSignal.timeout(5000),
     });
   } catch {
-    throw new LoopWorkflowError(503, "Loop TestNet session verification is unavailable");
+    throw new LoopWorkflowError(503, "Loop session verification is unavailable");
   }
   if ([400, 401, 403, 404].includes(response.status)) throw new LoopWorkflowError(401, "Loop session expired or was rejected; reconnect your wallet");
-  if (!response.ok) throw new LoopWorkflowError(503, "Loop TestNet session verification is unavailable");
+  if (!response.ok) throw new LoopWorkflowError(503, "Loop session verification is unavailable");
   let account: { party_id?: string; public_key?: string };
   try { account = await response.json(); } catch { throw new LoopWorkflowError(503, "Loop returned an invalid account response"); }
   if (account.party_id !== expectedParty || !account.public_key) throw new LoopWorkflowError(403, "The verified Loop party does not match this staking intent");
@@ -91,7 +93,7 @@ async function boundedRedis<T>(operation: Promise<T>): Promise<T> {
 }
 
 export function nativeIntentMessage(intent: PreparedLoopIntent): string {
-  return ["CantonStake: authorize one Canton TestNet staking intent", "This signature does not transfer funds.",
+  return [`CantonStake: authorize one ${cantonLabel} staking intent`, "This signature does not transfer funds.",
     "Link this native wallet to the Loop party below for this request only.",
     "Existing identities, positions and rewards are not reassigned.",
     `Intent: ${intent.id}`, `Loop party: ${intent.delegator}`, `Native wallet: ${intent.evmAddress}`,
@@ -209,7 +211,7 @@ function ownsLoopRequest(contract: ActiveContract, delegator: string): boolean {
 }
 
 function requireContractId(contractId: string): void {
-  if (!/^[a-f0-9]{2,512}$/.test(contractId) || contractId.length % 2 !== 0) {
+  if (!isContractId(contractId)) {
     throw new LoopWorkflowError(400, "Invalid Canton request contract ID");
   }
 }
@@ -285,7 +287,7 @@ export async function prepareLoopUnbond(delegator: string, contractId: string) {
     row.templateId === `${config.cantonPackageId}:CantonStake.Staking:StakingPosition` &&
     row.argument.appProvider === config.cantonAppProviderParty && row.argument.delegator === delegator);
   if (!contract || contract.argument.status !== "Bonded") {
-    throw new LoopWorkflowError(409, "This Loop party has no matching bonded position on the reviewed TestNet deployment");
+    throw new LoopWorkflowError(409, "This Loop party has no matching bonded position on the reviewed deployment");
   }
   const [mirror, user] = await Promise.all([
     prisma.stakingPosition.findUnique({ where: { contractId } }),
