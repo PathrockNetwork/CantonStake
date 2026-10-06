@@ -2,7 +2,6 @@ import type { PositionRow, RoundSummary } from "./api";
 import { CHAINS, chainFromAddress } from "./chains";
 import { lookupPositionChain } from "./position-chain-map";
 import type { PriceSnapshot } from "./prices";
-import { isMainnet } from "./network";
 
 function recordedAccountChain(raw: string | undefined) {
   return CHAINS.find(chain => raw === chain.id || raw === `${chain.id}-mainnet` ||
@@ -18,11 +17,9 @@ export function shortId(value?: string | null, length = 8) {
   if (!value) return "—";
   return value.length > length + 5 ? `${value.slice(0, length)}…${value.slice(-4)}` : value;
 }
-export function positionUsd(position: PositionRow, prices?: PriceSnapshot, mainnet = isMainnet): number | null {
-  // Faucet/testnet assets do not have a real USD price, even when the native
-  // mainnet token happens to use the same symbol.
-  if (!prices || !mainnet) return null;
-  if (position.chainMeta?.chain?.endsWith("-testnet") || position.chainMeta?.chain === "polygon-amoy") return null;
+/** USD value at live MainNet prices; test deployments label it as such (test tokens have no cash value). */
+export function positionUsd(position: PositionRow, prices?: PriceSnapshot): number | null {
+  if (!prices) return null;
   const keys: Record<string, keyof PriceSnapshot> = { polygon: "polUsd", monad: "monUsd", cosmos: "atomUsd", sui: "suiUsd", celestia: "tiaUsd", osmosis: "osmoUsd", aptos: "aptUsd", polkadot: "dotUsd", bnb: "bnbUsd", solana: "solUsd" };
   const chain = recordedAccountChain(position.chainMeta?.chain);
   if (!chain) return null;
@@ -32,10 +29,10 @@ export function positionUsd(position: PositionRow, prices?: PriceSnapshot, mainn
   const value = price * amount;
   return Number.isFinite(value) ? value : null;
 }
-export function totalPositionUsd(positions: PositionRow[], prices?: PriceSnapshot, mainnet = isMainnet): number | null {
+export function totalPositionUsd(positions: PositionRow[], prices?: PriceSnapshot): number | null {
   if (!prices) return null;
   let total = 0;
-  for (const position of positions) { const value = positionUsd(position, prices, mainnet); if (value === null) return null; total += value; if (!Number.isFinite(total)) return null; }
+  for (const position of positions) { const value = positionUsd(position, prices); if (value === null) return null; total += value; if (!Number.isFinite(total)) return null; }
   return total;
 }
 export function validatorLabel(position: PositionRow) {

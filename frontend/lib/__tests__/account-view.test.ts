@@ -11,16 +11,16 @@ const prices = { polUsd: 2, atomUsd: 5 } as PriceSnapshot;
 describe("account reference screen data", () => {
   it("uses recorded chain metadata and does not price missing data as zero", () => {
     expect(accountChain(position).id).toBe("polygon");
-    expect(positionUsd(position, prices, true)).toBe(21);
-    expect(positionUsd(position, prices, false)).toBeNull();
+    expect(positionUsd(position, prices)).toBe(21);
     expect(positionUsd(position)).toBeNull();
-    expect(positionUsd({ ...position, chainMeta: undefined }, prices, true)).toBeNull();
-    expect(positionUsd({ ...position, chainMeta: { ...position.chainMeta!, chain: "unknown-evm" } }, prices, true)).toBeNull();
-    expect(positionUsd({ ...position, chainMeta: { ...position.chainMeta!, chain: "polygon-unknown" } }, prices, true)).toBeNull();
-    expect(positionUsd({ ...position, chainMeta: { ...position.chainMeta!, chain: "polygon-amoy" } }, prices, true)).toBeNull();
-    expect(positionUsd({ ...position, chainMeta: { ...position.chainMeta!, chain: "polygon-testnet" } }, prices, true)).toBeNull();
-    expect(positionUsd({ ...position, argument: { ...position.argument, amountPol: "-1" } }, prices, true)).toBeNull();
-    expect(positionUsd(position, { polUsd: 0 } as PriceSnapshot, true)).toBeNull();
+    expect(positionUsd({ ...position, chainMeta: undefined }, prices)).toBeNull();
+    expect(positionUsd({ ...position, chainMeta: { ...position.chainMeta!, chain: "unknown-evm" } }, prices)).toBeNull();
+    expect(positionUsd({ ...position, chainMeta: { ...position.chainMeta!, chain: "polygon-unknown" } }, prices)).toBeNull();
+    // Test chains are valued at MainNet prices (labelled as such in the UI).
+    expect(positionUsd({ ...position, chainMeta: { ...position.chainMeta!, chain: "polygon-amoy" } }, prices)).toBe(21);
+    expect(positionUsd({ ...position, chainMeta: { ...position.chainMeta!, chain: "polygon-testnet" } }, prices)).toBe(21);
+    expect(positionUsd({ ...position, argument: { ...position.argument, amountPol: "-1" } }, prices)).toBeNull();
+    expect(positionUsd(position, { polUsd: 0 } as PriceSnapshot)).toBeNull();
     const cosmos = { ...position, chainMeta: { ...position.chainMeta!, chain: "cosmos" } };
     expect(accountChain(cosmos).id).toBe("cosmos");
     expect(accountChain({ ...position, argument: { ...position.argument, evmAddress: "celestia1wallet" }, chainMeta: undefined }).id).toBe("celestia");
@@ -29,15 +29,13 @@ describe("account reference screen data", () => {
     const westend = { ...position, argument: { ...position.argument, evmAddress: "5GF4poPj97U3JgThX7KHYvSwVbG3SNYWRugHvk8eJoedErFN" }, chainMeta: undefined };
     expect(accountChain(westend).id).toBe("polkadot");
     expect(accountChain({ ...position, argument: { ...position.argument, evmAddress: "ARdcMV5iHw2uWFGZ9GkYyvNaSRJshFCbDxG7C69c1WHa" }, chainMeta: undefined }).id).toBe("solana");
-    expect(positionUsd({ ...westend, chainMeta: { ...position.chainMeta!, chain: "polkadot" } }, { dotUsd: 7 } as PriceSnapshot, false)).toBeNull();
-    expect(positionUsd({ ...westend, chainMeta: { ...position.chainMeta!, chain: "polkadot-testnet" } }, { dotUsd: 7 } as PriceSnapshot, true)).toBeNull();
-    expect(positionUsd({ ...westend, chainMeta: { ...position.chainMeta!, chain: "polkadot-mainnet" } }, { dotUsd: 7 } as PriceSnapshot, true)).toBe(73.5);
-    expect(totalPositionUsd([position, cosmos], prices, true)).toBe(73.5);
-    expect(totalPositionUsd([position, cosmos], prices, false)).toBeNull();
-    expect(totalPositionUsd([position], { polUsd: NaN } as PriceSnapshot, true)).toBeNull();
+    expect(positionUsd({ ...westend, chainMeta: { ...position.chainMeta!, chain: "polkadot-testnet" } }, { dotUsd: 7 } as PriceSnapshot)).toBe(73.5);
+    expect(positionUsd({ ...westend, chainMeta: { ...position.chainMeta!, chain: "polkadot-mainnet" } }, { dotUsd: 7 } as PriceSnapshot)).toBe(73.5);
+    expect(totalPositionUsd([position, cosmos], prices)).toBe(73.5);
+    expect(totalPositionUsd([position], { polUsd: NaN } as PriceSnapshot)).toBeNull();
     const large = { ...position, argument: { ...position.argument, amountPol: "1e308" } };
-    expect(positionUsd(large, { polUsd: 2 } as PriceSnapshot, true)).toBeNull();
-    expect(totalPositionUsd([large, large], { polUsd: 1 } as PriceSnapshot, true)).toBeNull();
+    expect(positionUsd(large, { polUsd: 2 } as PriceSnapshot)).toBeNull();
+    expect(totalPositionUsd([large, large], { polUsd: 1 } as PriceSnapshot)).toBeNull();
   });
   it("does not turn global rounds into personal reward events", () => {
     expect(accountEvents([position], [round])).toHaveLength(1);

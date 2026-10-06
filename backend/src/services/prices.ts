@@ -3,12 +3,10 @@
 // refreshed at most once per CACHE_TTL_MS, so the test deployment shows what
 // the same amounts would be worth on MainNet. The fixed table is only the
 // offline/cold fallback, and the response says which source served it.
+// Cold-start fallback: CoinGecko MainNet prices as of 2026-10-06.
 const FIXED_USD_PER: Record<string, number> = {
-  POL: 0.45,
-  MON: 0.55,
-  ATOM: 4.5,
-  SUI: 1.2,
-  CC: 0.147,
+  POL: 0.107, MON: 0.0288, ATOM: 1.8, TIA: 0.478, OSMO: 0.0354, SUI: 1.18,
+  APT: 0.831, DOT: 1.21, BNB: 780, SOL: 120, CC: 0.1286,
 };
 
 // CoinGecko coin ids (MON is "monad", not "mon"; CC is "canton-network").

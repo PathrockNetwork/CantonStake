@@ -20,17 +20,11 @@ export interface PriceSnapshot {
 
 // Offline fallbacks only. Both deployments value assets at live MainNet
 // market prices, so the test deployment shows realistic amounts.
+// CoinGecko MainNet prices as of 2026-10-06; shown only before the first
+// fetch or when it fails, and labelled "fallback".
 const TESTNET_PRICES = {
-  pol: 0.42,   // Polygon Amoy POL (same as mainnet POL)
-  mon: 0.50,   // Monad Testnet MON (not on CoinGecko)
-  atom: 5.00,  // ATOM fallback when the live price feed is unavailable
-  tia: 2.20,   // Celestia testnet TIA (mainnet proxy)
-  osmo: 0.20,  // Osmosis testnet OSMO (mainnet proxy)
-  sui: 1.50,   // Sui testnet SUI (same as mainnet SUI)
-  apt: 4.00,   // Aptos testnet APT (mainnet proxy)
-  dot: 3.50,   // Westend WND (using DOT proxy)
-  bnb: 550.0,  // Chapel tBNB (using BNB proxy)
-  sol: 140.0,  // Solana testnet SOL (mainnet proxy)
+  pol: 0.107, mon: 0.0288, atom: 1.8, tia: 0.478, osmo: 0.0354,
+  sui: 1.18, apt: 0.831, dot: 1.21, bnb: 780, sol: 120,
 };
 
 const CC_FROM_ENV = (() => {
@@ -38,7 +32,7 @@ const CC_FROM_ENV = (() => {
   const n = raw ? Number(raw) : NaN;
   return Number.isFinite(n) && n > 0 ? n : null;
 })();
-const CC_FALLBACK = 0.16;
+const CC_FALLBACK = 0.1286;
 
 function fallbackSnapshot(): PriceSnapshot {
   return {
