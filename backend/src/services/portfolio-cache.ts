@@ -196,8 +196,8 @@ export async function getPortfolio(
 
   const { prices, source: priceSource } = await getUsdPrices();
 
-  // Faucet assets are not worth their namesake mainnet token's market price.
-  // Missing market data or mirror metadata must not become a fake $0 total.
+  // Test deployments are valued at MainNet market prices (faucet assets have
+  // no cash value; the label says so). Missing data never becomes a fake $0.
   const totalUsd = polygon.source === "unavailable" ? null : portfolioUsdTotal(
     delegations, prices, config.networkMode, recorded.unclassifiedPositions);
 

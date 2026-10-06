@@ -57,7 +57,8 @@ test("accepts supported native wallet shapes without requiring an EVM address", 
 test("does not assign a mainnet price to testnet or incomplete positions", () => {
   const rows = [{ amount: "1.25", symbol: "SUI" }];
   assert.equal(portfolioUsdTotal(rows, { SUI: 2 }, "mainnet", 0), 2.5);
-  assert.equal(portfolioUsdTotal(rows, { SUI: 2 }, "testnet", 0), null);
+  assert.equal(portfolioUsdTotal(rows, { SUI: 2 }, "testnet", 0), 2.5);
+  assert.equal(portfolioUsdTotal([{ amount: "2", symbol: "WND" }], { DOT: 3 }, "testnet", 0), 6);
   assert.equal(portfolioUsdTotal(rows, { SUI: 2 }, "mainnet", 1), null);
   assert.equal(portfolioUsdTotal(rows, {}, "mainnet", 0), null);
   assert.equal(portfolioUsdTotal([{ amount: "Infinity", symbol: "SUI" }], { SUI: 2 }, "mainnet", 0), null);

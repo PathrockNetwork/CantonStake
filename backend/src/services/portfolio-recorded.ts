@@ -36,11 +36,12 @@ export function portfolioUsdTotal(
   mode: "testnet" | "mainnet",
   unclassifiedPositions: number,
 ): number | null {
-  if (mode !== "mainnet" || unclassifiedPositions > 0) return null;
+  if (unclassifiedPositions > 0) return null;
   let total = 0;
   for (const row of rows) {
     const amount = Number(row.amount);
-    const price = prices[row.symbol];
+    // Test deployments are valued at MainNet prices; Westend WND tracks DOT.
+    const price = prices[mode === "testnet" && row.symbol === "WND" ? "DOT" : row.symbol];
     if (!Number.isFinite(amount) || amount < 0 ||
         typeof price !== "number" || !Number.isFinite(price) || price <= 0) return null;
     total += amount * price;

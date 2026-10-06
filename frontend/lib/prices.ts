@@ -1,11 +1,6 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { isMainnet } from "@/lib/network";
-
-// CoinGecko asset id for Monad is not guaranteed to exist; the fetch
-// handles its absence gracefully either way.
-const MAINNET_MONAD_ID = true;
 
 export interface PriceSnapshot {
   polUsd: number;
@@ -20,11 +15,11 @@ export interface PriceSnapshot {
   solUsd: number;
   polUsd24hChange: number | null;
   ccUsd: number;
-  source: { pol: "coingecko" | "fallback"; cc: "env" | "fallback" };
+  source: { pol: "coingecko" | "fallback"; cc: "env" | "coingecko" | "fallback" };
 }
 
-// Testnet tokens don't have real market data — use reasonable fixed values
-// for USD estimation.
+// Offline fallbacks only. Both deployments value assets at live MainNet
+// market prices, so the test deployment shows realistic amounts.
 const TESTNET_PRICES = {
   pol: 0.42,   // Polygon Amoy POL (same as mainnet POL)
   mon: 0.50,   // Monad Testnet MON (not on CoinGecko)
@@ -64,16 +59,10 @@ function fallbackSnapshot(): PriceSnapshot {
 }
 
 async function fetchPrices(): Promise<PriceSnapshot> {
-  // Testnet mode: fixed reference prices — no market call needed.
-  if (!isMainnet) return fallbackSnapshot();
-
-  // Mainnet mode: real market prices from CoinGecko's public simple-price
-  // API (CORS-enabled, no key). Monad keeps its reference price if
-  // CoinGecko doesn't list it. Any failure falls back and is labelled.
+  // Live MainNet market prices from CoinGecko's public simple-price API
+  // (CORS-enabled, no key) in both modes. Any failure falls back and is labelled.
   try {
-    const ids =
-      "polygon-ecosystem-token,cosmos,celestia,osmosis,sui,aptos,polkadot,binancecoin,solana"
-      + (MAINNET_MONAD_ID ? ",monad" : "");
+    const ids = "polygon-ecosystem-token,cosmos,celestia,osmosis,sui,aptos,polkadot,binancecoin,solana,monad,canton-network";
     const res = await fetch(
       `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true`,
       { signal: AbortSignal.timeout(8_000) },
@@ -100,8 +89,9 @@ async function fetchPrices(): Promise<PriceSnapshot> {
       solUsd: g("solana") ?? TESTNET_PRICES.sol,
       polUsd24hChange:
         d["polygon-ecosystem-token"]?.usd_24h_change ?? null,
-      ccUsd: CC_FROM_ENV ?? CC_FALLBACK,
-      source: { pol: g("polygon-ecosystem-token") !== undefined ? "coingecko" : "fallback", cc: CC_FROM_ENV !== null ? "env" : "fallback" },
+      ccUsd: CC_FROM_ENV ?? g("canton-network") ?? CC_FALLBACK,
+      source: { pol: g("polygon-ecosystem-token") !== undefined ? "coingecko" : "fallback",
+        cc: CC_FROM_ENV !== null ? "env" : g("canton-network") !== undefined ? "coingecko" : "fallback" },
     };
   } catch {
     return fallbackSnapshot();

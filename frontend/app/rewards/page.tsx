@@ -71,12 +71,12 @@ export default function RewardsPage() {
             <td><time dateTime={event.time}>{new Date(event.time).toLocaleDateString()}<small>{new Date(event.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</small></time></td>
             <td>{event.kind === "cc" ? "CC attribution" : "Native payout"}<small title={event.positionId}>{positionLabels.get(event.positionId) ?? shortId(event.positionId)}</small></td>
             <td className="mono" style={{ color: event.kind === "cc" ? "#f3c442" : "#c78aff" }}>{fmt(Number(event.amount), 4)} {event.symbol}</td>
-            <td>{networkMode === "mainnet" && prices && (event.kind === "cc" || event.symbol === "POL") ? fmtUsd(Number(event.amount) * (event.kind === "cc" ? prices.ccUsd : prices.polUsd)) : "—"}</td>
+            <td>{prices && (event.kind === "cc" || event.symbol === "POL") ? fmtUsd(Number(event.amount) * (event.kind === "cc" ? prices.ccUsd : prices.polUsd)) : "—"}</td>
             <td>{event.roundNumber !== null ? `#${event.roundNumber.toLocaleString()}` : "—"}</td><td><StatusBadge status={event.status} /></td>
           </tr>)}</tbody></table></div>
           {!filtered.length && <AccountEmpty>{positionId === liquidPosition?.id ? "No recorded liquid rewards. CC allocations are disabled and liquid yield reporting is not available yet." : history.length ? "No rewards match these filters." : empty}</AccountEmpty>}
           <AccountPagination page={page} count={filtered.length} onChange={setPage} />
-        <div className="account-results"><span>{historyAvailable ? `${filtered.length} recorded events` : "Events unavailable"}{rewards?.history?.hasMore ? " · latest 250; narrow the period for more detail" : ""}</span><small>{networkMode === "testnet" ? "Test tokens have no cash value." : "USD values use current indicative prices when available."}</small></div>
+        <div className="account-results"><span>{historyAvailable ? `${filtered.length} recorded events` : "Events unavailable"}{rewards?.history?.hasMore ? " · latest 250; narrow the period for more detail" : ""}</span><small>{networkMode === "testnet" ? "Test tokens have no cash value; USD shows what the same amounts would be worth at MainNet market prices." : "USD values use current indicative prices when available."}</small></div>
         </AccountPanel>
       </div>
       <div className="account-stack">

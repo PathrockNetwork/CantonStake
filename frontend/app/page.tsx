@@ -150,7 +150,7 @@ export default function HomePage() {
       <section className="home-metrics" aria-label="Protocol activity and rewards">
         <div className="home-metrics__frame">
           <div className="home-metric"><I size={29}><circle cx="6" cy="4" r="2.5" /><path d="M1 14v-3a5 5 0 0 1 10 0v3M11 2a2.5 2.5 0 0 1 0 5M13 9c2 1 2 3 2 5" /></I><div><strong className="mono">{compact(summary?.activePositions)}<BarsIcon size={21} /></strong><small>ACTIVE POSITIONS<br />ACROSS CHAINS</small></div></div>
-          <div className="home-metric"><IconLock size={29} /><div><strong className="mono">{usdLabel}</strong><small>EST. VALUE STAKED<br />{isMainnet && prices?.source.pol === "coingecko" ? "USD · MARKET PRICE" : "USD · INDICATIVE"}</small></div></div>
+          <div className="home-metric"><IconLock size={29} /><div><strong className="mono">{usdLabel}</strong><small>EST. VALUE STAKED<br />{prices?.source.pol !== "coingecko" ? "USD · INDICATIVE" : isMainnet ? "USD · MARKET PRICE" : "USD · MAINNET PRICES"}</small></div></div>
           <div className="home-metric"><I size={29} fill="#b8e4d5" strokeWidth={0}><path d="M7 1a7 7 0 1 0 8 8H7Z" /><path d="M9 0v7h7a7 7 0 0 0-7-7Z" fill="#00e8a2" /></I><div><strong className="mono">75 / 25</strong><small>REWARD SPLIT<br />ON-LEDGER</small></div></div>
           <div className="home-metric"><IconBolt size={29} /><div><strong className="mono">10 min</strong><small>CC ROUND CADENCE<br />AUTOMATED REWARDS</small></div></div>
           <blockquote>“The promised split<br />is the executed split.”<cite className="mono">BUILT ON CANTON <span /></cite></blockquote>

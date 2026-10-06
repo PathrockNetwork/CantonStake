@@ -1,18 +1,8 @@
-import { config } from "../config.js";
-
-// USD reference prices for portfolio valuation (routes/portfolio.ts,
-// services/portfolio-snapshots.ts). Split by network mode:
-//
-//   - testnet: the fixed table remains available for legacy reference views,
-//     but portfolio totals are null: faucet assets have no real USD value.
-//     No market calls.
-//   - mainnet: live CoinGecko prices, refreshed at most once per
-//     CACHE_TTL_MS, with the fixed table as the offline/cold fallback.
-//     The response carries which source served the numbers.
-//
-// CC has no market price in either mode — the Canton ledger stays
-// LocalNet/DevNet in both (docs/NETWORK_MODES.md), so the fixed reference
-// value applies everywhere.
+// USD prices for portfolio valuation and CC reward sizing. Both network modes
+// use live MainNet market prices from CoinGecko (CC = "canton-network"),
+// refreshed at most once per CACHE_TTL_MS, so the test deployment shows what
+// the same amounts would be worth on MainNet. The fixed table is only the
+// offline/cold fallback, and the response says which source served it.
 const FIXED_USD_PER: Record<string, number> = {
   POL: 0.45,
   MON: 0.55,
@@ -21,10 +11,9 @@ const FIXED_USD_PER: Record<string, number> = {
   CC: 0.147,
 };
 
-// CoinGecko coin ids for staked tokens (all resolved against the live API
-// on 2026-09-17 — MON is "monad", not "mon"). Symbols without an entry
-// (CC, and any testnet-only token like WND/tBNB) keep the fixed value.
+// CoinGecko coin ids (MON is "monad", not "mon"; CC is "canton-network").
 const COINGECKO_IDS: Record<string, string> = {
+  CC: "canton-network",
   POL: "polygon-ecosystem-token",
   MON: "monad",
   ATOM: "cosmos",
@@ -77,16 +66,11 @@ async function fetchCoinGecko(): Promise<Record<string, number> | null> {
 }
 
 /**
- * USD reference prices. Testnet returns the fixed
- * reference table, but callers must not value faucet assets with it.
- * Mainnet refreshes from CoinGecko at most once per
- * CACHE_TTL_MS and falls back to the last known prices (the fixed table on
- * a cold start) whenever the API errors — a price-provider outage must not
- * take the portfolio endpoints down with it.
+ * Live USD prices, refreshed at most once per CACHE_TTL_MS. Falls back to the
+ * last known prices (the fixed table on a cold start) whenever the API
+ * errors — a price-provider outage must not take dependent endpoints down.
  */
 export async function getUsdPrices(): Promise<{ prices: Record<string, number>; source: PriceSource }> {
-  if (config.networkMode !== "mainnet") return lastKnownPrices();
-
   const now = Date.now();
   if (cache && now - cache.at < CACHE_TTL_MS) return lastKnownPrices();
   if (!inflight) {
@@ -104,3 +88,4 @@ export async function getUsdPrices(): Promise<{ prices: Record<string, number>; 
   const { prices, source } = await inflight;
   return { prices, source };
 }
+
