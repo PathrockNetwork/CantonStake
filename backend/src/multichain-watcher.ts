@@ -1887,7 +1887,14 @@ async function watchCosmosChain(net: CosmosNetwork): Promise<void> {
         if (event.type !== "complete_unbonding") continue;
         const delegator = cosmosEventAttribute(event, "delegator");
         const validator = cosmosEventAttribute(event, "validator");
-        const amountBaseUnits = cosmosAmount(cosmosEventAttribute(event, "amount"), net.bondDenom);
+        const rawAmount = cosmosEventAttribute(event, "amount");
+        // An empty coin list is a zero-value completion (nothing left to return);
+        // it cannot release a tracked stake, which always holds a positive amount.
+        if (rawAmount === "") {
+          console.warn(`[cosmos-watcher] skipping zero-value completion for ${delegator ?? "?"} at ${height}`);
+          continue;
+        }
+        const amountBaseUnits = cosmosAmount(rawAmount, net.bondDenom);
         if (!delegator || !validator || amountBaseUnits === undefined) throw new Error(`Malformed completion event at ${height}`);
         await handleCosmosCompletionEvent({ net, delegator, validator, amountBaseUnits, height, blockHash, blockTime });
       }
