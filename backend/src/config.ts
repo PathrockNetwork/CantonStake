@@ -21,6 +21,13 @@ function oneOf<T extends string>(key: string, values: readonly T[], fallback: T)
   return value;
 }
 
+/** A nonnegative numeric setting; unset or empty takes the fallback. */
+function nonNegativeNumber(key: string, fallback: number): number {
+  const value = process.env[key] ? Number(process.env[key]) : fallback;
+  if (!Number.isFinite(value) || value < 0) throw new Error(`${key} must be a nonnegative number`);
+  return value;
+}
+
 /** Settings that must all be present once a feature is switched on. */
 function requireWhen(enabled: boolean, feature: string, keys: string[]): void {
   const missing = keys.filter(key => !process.env[key]);
@@ -247,6 +254,20 @@ export const config = {
   tokenRegistryUrl: optional("TOKEN_REGISTRY_URL"),
   cantonTreasuryParty: optional("CANTON_TREASURY_PARTY"),
   payoutMinimumCc: optional("PAYOUT_MIN_CC", "1.0"),
+  // "devnet-actual" distributes every coupon the network issues;
+  // "mainnet-traffic" distributes only what MainNet would pay for this app's
+  // traffic (see services/mainnet-reward-simulation.ts) and leaves the rest
+  // in the provider wallet. Defaults: CIP-0084 $60/MB, ~4 KB per transaction,
+  // 0.1 MB free per round, rewards <= 1.0x fees, $1.50/tx cap, $0.50 minimum.
+  rewardModel: oneOf("REWARD_MODEL", ["devnet-actual", "mainnet-traffic"] as const, "devnet-actual"),
+  mainnetRewardParams: {
+    usdPerMb: nonNegativeNumber("SIM_TRAFFIC_USD_PER_MB", 60),
+    bytesPerTx: nonNegativeNumber("SIM_BYTES_PER_TX", 4000),
+    freeBytesPerRound: nonNegativeNumber("SIM_FREE_BYTES_PER_ROUND", 100_000),
+    rewardToFeeRatio: nonNegativeNumber("SIM_REWARD_TO_FEE_RATIO", 1.0),
+    maxUsdPerTx: nonNegativeNumber("SIM_MAX_USD_PER_TX", 1.5),
+    minRoundUsd: nonNegativeNumber("SIM_MIN_ROUND_USD", 0.5),
+  },
   // Page size for the /v0/events poll. The LocalNet Scan does not expose a
   // cursor, so this is a single bounded fetch per round tick.
   scanPageSize: Number(optional("SCAN_PAGE_SIZE", "500")),

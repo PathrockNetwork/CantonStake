@@ -7,21 +7,25 @@ import { fromUnits, toUnits } from "./daml-decimal.js";
 export const REWARD_COUPON_TEMPLATE = "#splice-amulet:Splice.Amulet:RewardCouponV2";
 const CURSOR_PREFIX = "canton-reward-coupons:";
 
-export interface RoundAllocationInput { positionId: string; userId: string; stake: string }
+export interface RoundAllocationInput {
+  positionId: string;
+  userId: string;
+  /** Stake value in integer micro-USD; positions without a price weigh 0. */
+  weight: bigint;
+}
 export interface RoundAllocation { positionId: string; userId: string; total: string; userShare: string; treasuryShare: string }
 
 /**
- * Split `totalCc` across positions pro rata by stake, then 75/25 between the
- * staker and the treasury. Exact: allocations always sum to `totalCc`; the
- * rounding remainder goes to a treasury share, never to a staker. Returns no
- * allocations when nothing was earned or nothing is staked.
+ * Split `totalCc` across positions pro rata by stake value, then 75/25
+ * between the staker and the treasury. Exact: allocations always sum to
+ * `totalCc`; the rounding remainder goes to a treasury share, never to a
+ * staker. Returns no allocations when nothing was earned or nothing is staked.
  */
 export function allocateRound(totalCc: string, positions: RoundAllocationInput[]): RoundAllocation[] {
   const total = toUnits(totalCc);
-  const stakes = positions.map(p => toUnits(p.stake));
-  const totalStake = stakes.reduce((sum, stake) => sum + stake, 0n);
-  if (total === 0n || totalStake === 0n) return [];
-  const shares = stakes.map(stake => total * stake / totalStake);
+  const totalWeight = positions.reduce((sum, p) => sum + p.weight, 0n);
+  if (total === 0n || totalWeight === 0n) return [];
+  const shares = positions.map(p => total * p.weight / totalWeight);
   // Floor division leaves at most (positions - 1) units; assign them to the treasury.
   const remainder = total - shares.reduce((sum, share) => sum + share, 0n);
   return positions.map((position, index) => {

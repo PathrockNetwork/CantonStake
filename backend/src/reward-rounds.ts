@@ -26,6 +26,8 @@ import IORedis from "ioredis";
 import { config } from "./config.js";
 import { canton, TEMPLATES } from "./canton.js";
 import { allocateRound, syncProviderCoupons } from "./services/canton-reward-coupons.js";
+import { measureAppTransactions, simulateMainnetReward } from "./services/mainnet-reward-simulation.js";
+import { getUsdPrices, priceSymbolForChain } from "./services/prices.js";
 import { fromUnits, toUnits } from "./services/daml-decimal.js";
 import { executePayouts, planPayouts, reconcilePayouts } from "./services/reward-payouts.js";
 import { TokenRegistry } from "./services/token-registry.js";
@@ -51,7 +53,17 @@ async function runPayouts() {
   }
 }
 
-type BondedPosition = { id: string; userId: string; amountPol: string; totalCcEarned: string };
+type BondedPosition = { id: string; userId: string; chain: string; amountPol: string; totalCcEarned: string };
+
+/** Weight each position by its stake's USD value at live MainNet prices; unpriced stakes weigh 0. */
+function valuedStakes(bonded: BondedPosition[], prices: Record<string, number>) {
+  return bonded.map(p => {
+    const symbol = priceSymbolForChain(p.chain);
+    const stakeUsd = Number(p.amountPol) * (symbol ? prices[symbol] ?? 0 : 0);
+    const valued = Number.isFinite(stakeUsd) && stakeUsd > 0 ? stakeUsd : 0;
+    return { positionId: p.id, userId: p.userId, weight: BigInt(Math.round(valued * 1e6)) };
+  });
+}
 
 /**
  * Reward source "ledger-coupons": the app's earned CC is the DSO-issued
@@ -66,8 +78,17 @@ async function processLedgerCouponRound(roundId: string, roundNumber: number, bo
     where: { roundId: null, synchronizerId: config.cantonSynchronizerId, providerParty: config.cantonAppProviderParty },
     orderBy: { createdOffset: "asc" },
   });
-  const earned = fromUnits(coupons.reduce((sum, c) => sum + toUnits(c.amount), 0n));
-  const allocations = allocateRound(earned, bonded.map(p => ({ positionId: p.id, userId: p.userId, stake: p.amountPol })));
+  const issuedUnits = coupons.reduce((sum, c) => sum + toUnits(c.amount), 0n);
+  const { prices } = await getUsdPrices();
+  // MainNet model: distribute only what MainNet would pay for this app's traffic,
+  // never more than the network actually issued; the rest stays in the provider wallet.
+  const simulation = config.rewardModel === "mainnet-traffic"
+    ? simulateMainnetReward(await measureAppTransactions(canton, prisma, {
+        synchronizerId: config.cantonSynchronizerId, provider: config.cantonAppProviderParty,
+      }), prices.CC ?? 0, config.mainnetRewardParams)
+    : null;
+  const earned = fromUnits(simulation && simulation.rewardCc < issuedUnits ? simulation.rewardCc : issuedUnits);
+  const allocations = allocateRound(earned, valuedStakes(bonded, prices));
   await prisma.$transaction(async tx => {
     await tx.rewardEvent.createMany({ data: allocations.map(a => ({ userId: a.userId, positionId: a.positionId, roundId,
       ccAmount: a.total, userShare: a.userShare, treasuryShare: a.treasuryShare, userWeight: 0.75, treasuryWeight: 0.25 })) });
@@ -80,14 +101,17 @@ async function processLedgerCouponRound(roundId: string, roundNumber: number, bo
     if (claimed.count !== coupons.length) throw new Error("Reward coupons were allocated concurrently; retrying round");
     await tx.rewardRound.update({ where: { id: roundId }, data: {
       status: "completed", completedAt: new Date(), totalCcMinted: earned, totalTxns: bonded.length, totalMarkers: bonded.length,
-      markerToTxRatio: bonded.length ? 1 : null,
-      error: coupons.length && !allocations.length ? `No bonded positions: ${earned} CC retained by the treasury` : null,
+      markerToTxRatio: bonded.length ? 1 : null, networkCouponCc: fromUnits(issuedUnits),
+      appTxCount: simulation?.txCount ?? null, appTrafficUsd: simulation ? simulation.trafficUsd.toFixed(6) : null,
+      error: toUnits(earned) > 0n && !allocations.length ? `No valued bonded positions: ${earned} CC retained by the treasury` : null,
     } });
   });
   counter("cantonstake_reward_rounds_total", "Completed reward rounds", { source: "ledger-coupons" });
   counter("cantonstake_cc_minted_total", "Cumulative CC minted across rounds", {}, Number(earned));
-  console.log(`[reward-rounds] round #${roundNumber} complete from ledger coupons: ${coupons.length} coupon(s), ` +
-    `${earned} CC across ${allocations.length} position(s); sync +${sync.created}/-${sync.archived} @${sync.cursor}`);
+  console.log(`[reward-rounds] round #${roundNumber} complete from ledger coupons: ${coupons.length} coupon(s) = ${fromUnits(issuedUnits)} CC issued, ` +
+    `${earned} CC distributed across ${allocations.length} position(s)` +
+    (simulation ? ` [mainnet-traffic: ${simulation.txCount} tx, $${simulation.trafficUsd.toFixed(4)} traffic, $${simulation.rewardUsd.toFixed(4)} reward]` : "") +
+    `; sync +${sync.created}/-${sync.archived} @${sync.cursor}`);
 }
 
 // --- Configuration ---

@@ -89,3 +89,12 @@ export async function getUsdPrices(): Promise<{ prices: Record<string, number>; 
   return { prices, source };
 }
 
+/** Market symbol for a staking chain id (test chains map to their MainNet asset). */
+export function priceSymbolForChain(chain: string): string | null {
+  const base = chain.replace(/-(?:amoy|testnet|mainnet)$/, "");
+  const symbols: Record<string, string> = {
+    polygon: "POL", monad: "MON", cosmos: "ATOM", celestia: "TIA", osmosis: "OSMO",
+    sui: "SUI", aptos: "APT", polkadot: "DOT", bnb: "BNB", solana: "SOL",
+  };
+  return symbols[base] ?? null;
+}

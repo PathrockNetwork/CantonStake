@@ -144,6 +144,12 @@ model RewardRound {
   // Network share data for this round
   networkTotalTxns Int?
 
+  // REWARD_MODEL=mainnet-traffic: what the network actually issued versus the
+  // MainNet-equivalent amount distributed (totalCcMinted), and its basis
+  networkCouponCc  String?
+  appTxCount       Int?
+  appTrafficUsd    String?
+
   // Round status
   status         String   @default("pending") // pending | processing | completed | skipped | failed
   error          String?

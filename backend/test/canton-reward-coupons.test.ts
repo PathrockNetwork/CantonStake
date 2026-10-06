@@ -16,10 +16,10 @@ test("exact decimal round trip", () => {
   assert.throws(() => toUnits("1.12345678901"));
 });
 
-test("allocation is stake-weighted, 75/25, and sums exactly to the earned CC", () => {
+test("allocation is value-weighted, 75/25, and sums exactly to the earned CC", () => {
   const allocations = allocateRound("100.0000000001", [
-    { positionId: "a", userId: "u1", stake: "10.0000000000" },
-    { positionId: "b", userId: "u2", stake: "20.0000000000" },
+    { positionId: "a", userId: "u1", weight: 10_000_000n },
+    { positionId: "b", userId: "u2", weight: 20_000_000n },
   ]);
   const sum = allocations.reduce((s, a) => s + toUnits(a.total), 0n);
   assert.equal(fromUnits(sum), "100.0000000001");
@@ -33,7 +33,8 @@ test("allocation is stake-weighted, 75/25, and sums exactly to the earned CC", (
 
 test("nothing is allocated without stake or earnings", () => {
   assert.deepEqual(allocateRound("5.0000000000", []), []);
-  assert.deepEqual(allocateRound("0", [{ positionId: "a", userId: "u", stake: "1" }]), []);
+  assert.deepEqual(allocateRound("0", [{ positionId: "a", userId: "u", weight: 1n }]), []);
+  assert.deepEqual(allocateRound("5.0", [{ positionId: "a", userId: "u", weight: 0n }]), []);
 });
 
 test("coupons must come from this network's DSO for this provider", () => {

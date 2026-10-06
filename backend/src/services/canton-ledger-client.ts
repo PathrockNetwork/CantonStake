@@ -328,6 +328,29 @@ export class CantonClient {
     return { events, lastOffset };
   }
 
+  /** One page of transactions visible to this party, counting those whose workflow ID starts with `workflowPrefix`. */
+  async workflowTransactions(workflowPrefix: string, beginExclusive: number, endInclusive: number, limit = 500,
+    signal?: AbortSignal): Promise<{ matching: number; lastOffset: number | null }> {
+    const response = await this.request(`/v2/updates?limit=${limit}`, {
+      method: "POST", signal,
+      body: JSON.stringify({ beginExclusive, endInclusive, verbose: false, updateFormat: { includeTransactions: {
+        transactionShape: "TRANSACTION_SHAPE_ACS_DELTA", eventFormat: { ...this.historyEventFormat(), verbose: false },
+      } } }),
+    });
+    if (!response.ok) throw new Error(`Canton update stream unavailable (${response.status})`);
+    const updates: unknown = await response.json();
+    if (!Array.isArray(updates) || updates.length > limit) throw new Error("Canton update page is malformed");
+    let matching = 0, lastOffset: number | null = null;
+    for (const item of updates) {
+      const update = asRecord(asRecord(item)?.update);
+      const tx = asRecord(asRecord(update?.Transaction)?.value);
+      const offset = Number(tx?.offset ?? asRecord(asRecord(update?.OffsetCheckpoint)?.value)?.offset);
+      if (Number.isSafeInteger(offset)) lastOffset = offset;
+      if (stringValue(tx?.workflowId)?.startsWith(workflowPrefix)) matching++;
+    }
+    return { matching, lastOffset };
+  }
+
   /** Read-only view including archived contracts, unlike an ACS query. Without a template, any visible template matches. */
   async contractHistory(contractId: string, templateId?: string, signal?: AbortSignal): Promise<ContractHistory | null> {
     if (!isContractId(contractId)) throw new Error("Invalid Canton contract ID");
