@@ -45,6 +45,7 @@ export default function RewardsPage() {
   const filtered = history.filter(event => (kind === "all" || event.kind === kind) && (positionId === "all" || event.positionId === positionId));
   const bonded = (rewards?.positions ?? []).filter(position => position.argument.status === "Bonded");
   const positionLabels = new Map((rewards?.positions ?? []).map(p => [p.contractId, rewardPositionLabel(p)]));
+  if (liquidPosition) positionLabels.set(liquidPosition.id, "Polygon Amoy · Liquid staking");
   const totals = new Map<string, number>();
   for (const event of cc) totals.set(event.positionId, (totals.get(event.positionId) ?? 0) + Number(event.amount));
   const empty = !isConnected ? "Connect your wallet to view your reward history." : historyFailed ? "Reward history is temporarily unavailable." : !historyAvailable ? "Loading reward history…" : "No recorded rewards in this period.";
@@ -64,7 +65,7 @@ export default function RewardsPage() {
         <AccountPanel title="Reward history" icon="activity" description="Native payouts and CC allocations recorded for your positions." id="reward-history">
           <div className="account-filters">
             <label><span className="sr-only">Reward type</span><select className="account-field" value={kind} onChange={e => { setKind(e.target.value); setPage(0); }} aria-label="Reward type"><option value="all">All types</option><option value="native">Native yield</option><option value="cc">Canton Coin</option></select></label>
-            <label><span className="sr-only">Reward position</span><select className="account-field" value={positionId} onChange={e => { setPositionId(e.target.value); setPage(0); }} aria-label="Reward position"><option value="all">All positions</option>{liquidPosition && <option value={liquidPosition.id}>Polygon Amoy · Liquid staking</option>}{[...new Set([...positionLabels.keys(), ...history.map(e => e.positionId)])].map(id => <option key={id} value={id}>{positionLabels.get(id) ?? shortId(id)}</option>)}</select></label>
+            <label><span className="sr-only">Reward position</span><select className="account-field" value={positionId} onChange={e => { setPositionId(e.target.value); setPage(0); }} aria-label="Reward position"><option value="all">All positions</option>{[...new Set([...positionLabels.keys(), ...history.map(e => e.positionId)])].map(id => <option key={id} value={id}>{positionLabels.get(id) ?? shortId(id)}</option>)}</select></label>
             <label><span className="sr-only">Reward period</span><select className="account-field" value={days} onChange={e => { setDays(Number(e.target.value)); setPage(0); }} aria-label="Reward period"><option value={7}>Last 7 days</option><option value={30}>Last 30 days</option><option value={90}>Last 90 days</option></select></label>
           </div>
           <div className="account-table-wrap"><table className="account-table"><thead><tr><th>Time</th><th>Type · position</th><th>Amount</th><th>Est. USD</th><th>Round</th><th>Status</th></tr></thead><tbody>{filtered.slice(page * 8, (page + 1) * 8).map(event => <tr key={event.id}>
@@ -74,7 +75,7 @@ export default function RewardsPage() {
             <td>{prices && (event.kind === "cc" || event.symbol === "POL") ? fmtUsd(Number(event.amount) * (event.kind === "cc" ? prices.ccUsd : prices.polUsd)) : "—"}</td>
             <td>{event.roundNumber !== null ? `#${event.roundNumber.toLocaleString()}` : "—"}</td><td><StatusBadge status={event.status} /></td>
           </tr>)}</tbody></table></div>
-          {!filtered.length && <AccountEmpty>{positionId === liquidPosition?.id ? "No recorded liquid rewards. CC allocations are disabled and liquid yield reporting is not available yet." : history.length ? "No rewards match these filters." : empty}</AccountEmpty>}
+          {!filtered.length && <AccountEmpty>{positionId === liquidPosition?.id ? "No recorded liquid CC allocations yet. Liquid yield reporting is not available yet." : history.length ? "No rewards match these filters." : empty}</AccountEmpty>}
           <AccountPagination page={page} count={filtered.length} onChange={setPage} />
         <div className="account-results"><span>{historyAvailable ? `${filtered.length} recorded events` : "Events unavailable"}{rewards?.history?.hasMore ? " · latest 250; narrow the period for more detail" : ""}</span><small>{networkMode === "testnet" ? "Test tokens have no cash value; USD shows what the same amounts would be worth at MainNet market prices." : "USD values use current indicative prices when available."}</small></div>
         </AccountPanel>

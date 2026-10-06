@@ -38,7 +38,7 @@ async function fixture(options: { disabled?: boolean; paused?: boolean; empty?: 
     liquidFixture: () => ({ router, wrapper, pool, quoter: factory }),
     liquidLedgerBalance: async () => null,
     startLiquidTracking: () => () => {},
-  }));
+  }, { user: { findUnique: async () => null } } as never));
   return { app, reads };
 }
 
@@ -52,6 +52,8 @@ test("liquid route binds wallet balances and uses one block", async () => {
     assert.equal(response.json().nativeBalance, "123");
     assert.equal(response.json().sharesBalance, "456");
     assert.equal(response.json().ccRewardsEnabled, false);
+    // 456 shares at 9,900 sPOL per 1e18 POL.
+    assert.equal(response.json().polValue, String(456n * 10n ** 18n / 9900n));
     assert(reads.every(read => read.blockNumber === 42n));
     const disconnected = (await app.inject("/api/polygon/liquid")).json();
     assert.equal(disconnected.wallet, null);

@@ -2,6 +2,8 @@ import type { PositionRow, RoundSummary } from "./api";
 import { CHAINS, chainFromAddress } from "./chains";
 import { lookupPositionChain } from "./position-chain-map";
 import type { PriceSnapshot } from "./prices";
+import { formatEther } from "viem";
+import type { LiquidState } from "./polygon-liquid";
 
 function recordedAccountChain(raw: string | undefined) {
   return CHAINS.find(chain => raw === chain.id || raw === `${chain.id}-mainnet` ||
@@ -28,6 +30,12 @@ export function positionUsd(position: PositionRow, prices?: PriceSnapshot): numb
   if (typeof price !== "number" || !Number.isFinite(price) || price <= 0 || !Number.isFinite(amount) || amount < 0) return null;
   const value = price * amount;
   return Number.isFinite(value) ? value : null;
+}
+/** USD value of a liquid sPOL holding: its POL value at the live POL price. */
+export function liquidUsd(state: LiquidState, prices?: PriceSnapshot): number | null {
+  if (!prices || !state.polValue || !/^\d+$/.test(state.polValue)) return null;
+  const value = Number(formatEther(BigInt(state.polValue))) * prices.polUsd;
+  return Number.isFinite(value) && value >= 0 ? value : null;
 }
 export function totalPositionUsd(positions: PositionRow[], prices?: PriceSnapshot): number | null {
   if (!prices) return null;

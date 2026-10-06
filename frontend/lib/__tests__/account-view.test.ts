@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { accountChain, accountEvents, positionUsd, totalPositionUsd, rewardPositionLabel } from "../account-view";
+import { accountChain, accountEvents, liquidUsd, positionUsd, totalPositionUsd, rewardPositionLabel } from "../account-view";
+import type { LiquidState } from "../polygon-liquid";
 import { stakeAmountWei } from "../stake-input";
 import type { PositionRow, RoundSummary } from "../api";
 import type { PriceSnapshot } from "../prices";
@@ -36,6 +37,10 @@ describe("account reference screen data", () => {
     const large = { ...position, argument: { ...position.argument, amountPol: "1e308" } };
     expect(positionUsd(large, { polUsd: 2 } as PriceSnapshot)).toBeNull();
     expect(totalPositionUsd([large, large], { polUsd: 1 } as PriceSnapshot)).toBeNull();
+    const liquid = { polValue: "2500000000000000000" } as LiquidState;
+    expect(liquidUsd(liquid, prices)).toBe(5);
+    expect(liquidUsd({ ...liquid, polValue: null }, prices)).toBeNull();
+    expect(liquidUsd(liquid)).toBeNull();
   });
   it("does not turn global rounds into personal reward events", () => {
     expect(accountEvents([position], [round])).toHaveLength(1);

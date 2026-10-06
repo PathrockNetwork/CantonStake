@@ -2,12 +2,14 @@ import type { FastifyPluginAsync } from "fastify";
 import { isAddress, parseAbi, verifyMessage, type Address, type Hex } from "viem";
 import { liquidAmount, liquidPriceImpact, liquidTrackingMessage } from "../services/liquid-policy.js";
 import * as liquidServices from "../services/polygon-liquid.js";
+import { prisma } from "../db.js";
 
 const quoterAbi = parseAbi(["function quoteExactInputSingle(address,address,uint24,uint256,uint160) returns(uint256)"]);
 const poolAbi = parseAbi(["function token0() view returns(address)", "function token1() view returns(address)", "function liquidity() view returns(uint128)", "function fee() view returns(uint24)", "function slot0() view returns(uint160,int24,uint16,uint16,uint16,uint8,bool)"]);
 const routingAbi = parseAbi(["function factory() view returns(address)", "function WETH9() view returns(address)", "function getPool(address,address,uint24) view returns(address)"]);
-export function polygonLiquidRoutesFor(services: typeof liquidServices = liquidServices): FastifyPluginAsync {
-const { SPOL, liquidAbi, liquidClient, liquidEnabled, liquidFixture, assertLiquidChain, syncLiquidWallet, startLiquidTracking, liquidLedgerBalance } = services;
+export function polygonLiquidRoutesFor(services: typeof liquidServices = liquidServices,
+  db: Pick<typeof prisma, "user"> = prisma): FastifyPluginAsync {
+const { SPOL, liquidAbi, liquidClient, liquidEnabled, liquidFixture, assertLiquidChain, syncLiquidWallet, startLiquidTracking, liquidLedgerBalance, liquidPolValue } = services;
 return async app => {
   const syncedAt = new Map<string, number>();
   let requests = 0, windowStart = Date.now();
@@ -18,6 +20,13 @@ return async app => {
     if (Date.now() - windowStart > 60000) { requests = 0; windowStart = Date.now(); }
     if (++requests > 300) return reply.code(429).send({error:"Test route capacity exceeded"});
   });
+  /** Shares, their POL value (wei) and whether the holding takes part in CC rewards. */
+  const walletHoldings = async (wallet: Address | undefined, blockNumber: bigint) => {
+    if (!wallet) return { sharesBalance: null, polValue: null, ccRewardsEnabled: false };
+    const shares = await liquidClient.readContract({address:SPOL,abi:liquidAbi,functionName:"balanceOf",args:[wallet],blockNumber});
+    const linked = await db.user.findUnique({ where: { evmAddress: wallet.toLowerCase() }, select: { id: true } });
+    return { sharesBalance: String(shares), polValue: String(await liquidPolValue(shares, blockNumber, liquidClient)), ccRewardsEnabled: !!linked };
+  };
   app.get<{Querystring:{wallet?:string}}>("/api/polygon/liquid", async (req, reply) => {
     if (req.query.wallet && !isAddress(req.query.wallet)) return reply.code(400).send({error:"Invalid wallet"});
     try {
@@ -31,8 +40,8 @@ return async app => {
       if(wallet){try{tracking=await liquidLedgerBalance(wallet);}catch{tracking="unavailable";}}
       return {chainId:80002,testOnly:true,token:SPOL,wallet:wallet?.toLowerCase()??null,...fixture,paused,rateFresh:BigInt(updated)+BigInt(delay)>=block.timestamp,safetyFeeBps:Number(fee),block:String(block.number),
         nativeBalance: wallet ? String(await liquidClient.getBalance({address:wallet,blockNumber:block.number})) : null,
-        sharesBalance: wallet ? String(await liquidClient.readContract({address:SPOL,abi:liquidAbi,functionName:"balanceOf",args:[wallet],blockNumber:block.number})) : null,
-        ccRewardsEnabled:false,trackingConfirmations:12,tracking};
+        ...(await walletHoldings(wallet, block.number)),
+        trackingConfirmations:12,tracking};
     } catch { return reply.code(503).send({error:"Amoy liquidity route unavailable"}); }
   });
   app.get<{Querystring:{amount:string;direction:string}}>("/api/polygon/liquid/quote", async (req, reply) => {

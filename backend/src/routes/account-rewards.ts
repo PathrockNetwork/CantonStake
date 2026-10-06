@@ -19,6 +19,11 @@ type AccountRewardsQuery = {
  * reads through User.evmAddress or substitute the hosted test delegator.
  * Allocation records are not evidence of a claimed or transferred CC payment.
  */
+/** Liquid holdings are reported under the frontend's stable holding ID, not their changing balance contract. */
+function rewardPositionId(position: { contractId: string; chain: string; evmAddress: string; validatorShare: string | null }): string {
+  return position.chain === "polygon-liquid" ? `liquid:80002:${position.validatorShare}:${position.evmAddress}`.toLowerCase() : position.contractId;
+}
+
 /** User-facing settlement state of an allocated CC share. */
 function payoutLabel(status: string | undefined): string {
   switch (status) {
@@ -86,14 +91,14 @@ export function accountRewardRoutesFor(deps: {
             orderBy: { createdAt: "desc" }, take: limit + 1,
             select: { id: true, createdAt: true, userShare: true, cantonTxId: true,
               userPayout: { select: { status: true, updateId: true } },
-              round: { select: { roundNumber: true } }, position: { select: { contractId: true, chain: true } } } }),
+              round: { select: { roundNumber: true } }, position: { select: { contractId: true, chain: true, evmAddress: true, validatorShare: true } } } }),
         ]);
         const events = [
           ...native.map(event => ({ id: `native-${event.id}`, kind: "native", time: event.sweptAt.toISOString(),
             amount: formatUnits(BigInt(event.userPayoutWei), 18), symbol: "POL", positionId: event.position.contractId,
             chain: event.position.chain, roundNumber: null, transactionId: event.evmTxHash, status: "Recorded" })),
           ...cc.map(event => ({ id: `cc-${event.id}`, kind: "cc", time: event.createdAt.toISOString(), amount: event.userShare,
-            symbol: "CC", positionId: event.position.contractId, chain: event.position.chain,
+            symbol: "CC", positionId: rewardPositionId(event.position), chain: event.position.chain,
             roundNumber: event.round.roundNumber, transactionId: event.userPayout?.updateId ?? event.cantonTxId,
             status: payoutLabel(event.userPayout?.status) })),
         ].sort((a, b) => Date.parse(b.time) - Date.parse(a.time) || a.id.localeCompare(b.id));

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { useAccount } from "wagmi";
 import { formatEther } from "viem";
+import { fmt } from "@/lib/format";
 import { networkMode } from "@/lib/network";
 import { AMOY_SPOL, assertLiquidState, fetchLiquidState } from "@/lib/polygon-liquid";
 import { AccountEmpty, ChainBadge, StatusBadge } from "./AccountUI";
@@ -41,13 +42,14 @@ export function LiquidHoldings({ holdings }: { holdings: ReturnType<typeof useLi
           <div>
             <div className="account-position-heading"><ChainBadge chainId="polygon" symbol="sPOL" label="Polygon Amoy · liquid staking" /><StatusBadge status={shares! > 0n ? "Active" : "No holdings"} /></div>
             <p><span className="account-status account-status--liquid mono">Liquid staking</span></p>
-            <div className="account-position-amount"><strong>{formatEther(shares!)} sPOL</strong><span className="account-muted">Current on-chain balance · Test tokens have no cash value.</span></div>
+            <div className="account-position-amount"><strong>{formatEther(shares!)} sPOL</strong><span className="account-muted">{state.polValue ? `≈ ${fmt(Number(formatEther(BigInt(state.polValue))), 6)} POL · ` : ""}Current on-chain balance · Test tokens have no cash value.</span></div>
             <p className="account-muted account-liquid-owner">Wallet: {address}</p>
             {shares === 0n && <p className="account-muted">No sPOL is currently held by this wallet. Deposits, transfers and swap exits update this balance.</p>}
           </div>
           <dl className="account-definition">
             <div><dt>Staking type</dt><dd>Pooled liquid staking</dd></div>
             <div><dt>Canton tracking</dt><dd>{tracking === "unavailable" ? "Unavailable" : tracking ? `Recorded at block ${tracking.observedBlock}` : "Not enabled"}</dd></div>
+            <div><dt>CC rewards</dt><dd>{state.ccRewardsEnabled ? "Included by POL value" : "Link this wallet to a CantonStake account"}</dd></div>
             <div><dt>CC rewards</dt><dd>Disabled</dd></div>
             <div><dt>Exit route</dt><dd>Swap sPOL to Amoy POL</dd></div>
           </dl>

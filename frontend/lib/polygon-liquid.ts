@@ -9,6 +9,8 @@ export type LiquidState = {
   router: Address; wrapper: Address; pool: Address;
   paused: boolean; rateFresh: boolean; safetyFeeBps: number;
   nativeBalance: string | null; sharesBalance: string | null;
+  /** POL value of the shares (wei) and whether the holding takes part in CC rewards. */
+  polValue?: string | null; ccRewardsEnabled?: boolean;
   tracking?: { shares: string; observedBlock: string } | "unavailable" | null;
 };
 export type LiquidQuote = {

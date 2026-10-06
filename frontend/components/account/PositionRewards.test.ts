@@ -26,10 +26,18 @@ describe("Position rewards", () => {
     expect(html).toContain("1.849246702846537452 sPOL");
     expect(html).toContain("Liquid staking");
     expect(html).toContain("Not measured");
-    expect(html).toContain("Disabled");
+    expect(html).toContain("Not linked");
     expect(html).toContain("3.00 CC");
     expect(html).toContain("Validator staking");
     expect(html).toContain("/positions?position=liquid%3A80002");
+  });
+  it("shows a linked liquid holding's CC allocation like validator stake", () => {
+    const p = props();
+    p.holdings = { ...p.holdings, state: { ...state, ccRewardsEnabled: true } };
+    p.totals.set(`liquid:80002:${AMOY_SPOL}:${wallet}`.toLowerCase(), 1.5);
+    const html = render(p);
+    expect(html).toContain("1.50 CC");
+    expect(html).not.toContain("Not linked");
   });
   it("shows liquid reward status without Canton registration or validator positions", () => {
     const p = props(); p.positions = []; p.totals.clear();
