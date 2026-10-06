@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { TokenSource } from "./canton-oauth.js";
+import { isContractId } from "./canton-network.js";
 
 export interface SubmitAndWaitResult {
   transactionId: string;
@@ -30,6 +31,34 @@ export interface ContractHistory {
   archived?: { synchronizerId: string; archivedEvent: {
     contractId: string; templateId: string; offset: number;
   } };
+}
+
+/** A rejected command. 4xx means the ledger definitively refused it. */
+export class CantonCommandError extends Error {
+  constructor(operation: string, readonly status: number, body: string) {
+    super(`Canton ${operation} failed (${status}): ${body.slice(0, 2000)}`);
+    this.name = "CantonCommandError";
+  }
+}
+
+export interface DisclosedContract { templateId?: string; contractId: string; createdEventBlob: string; synchronizerId: string }
+
+/** Contracts created by a submitted command, in event order. */
+export function createdContracts(events: unknown[]): Array<{ contractId: string; templateId: string }> {
+  return events.flatMap(event => {
+    const created = asRecord(asRecord(event)?.CreatedEvent);
+    const contractId = stringValue(created?.contractId), templateId = stringValue(created?.templateId);
+    return contractId && templateId ? [{ contractId, templateId }] : [];
+  });
+}
+
+export interface TemplateEvent {
+  kind: "created" | "archived";
+  contractId: string;
+  templateId: string;
+  offset: number;
+  effectiveAt: string | null;
+  argument: Record<string, unknown> | null;
 }
 
 export interface LedgerTransaction {
@@ -140,11 +169,18 @@ export class CantonClient {
     choice: string;
     argument: Record<string, unknown>;
     actAs?: string[];
+    /** Caller-chosen ID so a retry is deduplicated by the ledger, not executed twice. */
+    commandId?: string;
+    /** Registry-supplied contracts this party cannot see itself. */
+    disclosedContracts?: DisclosedContract[];
+    signal?: AbortSignal;
   }): Promise<SubmitAndWaitResult> {
     this.assertCanSubmit();
     const body = {
       commands: {
         ...this.commandContext(),
+        ...(args.commandId ? { commandId: args.commandId } : {}),
+        ...(args.disclosedContracts ? { disclosedContracts: args.disclosedContracts } : {}),
         commands: [
           {
             ExerciseCommand: {
@@ -164,13 +200,11 @@ export class CantonClient {
       {
         method: "POST",
         body: JSON.stringify(body),
+        signal: args.signal,
       }
     );
 
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Canton exercise failed (${res.status}): ${errText}`);
-    }
+    if (!res.ok) throw new CantonCommandError("exercise", res.status, await res.text());
     return normalizeSubmitResult(await res.json());
   }
 
@@ -206,10 +240,7 @@ export class CantonClient {
       }
     );
 
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Canton create failed (${res.status}): ${errText}`);
-    }
+    if (!res.ok) throw new CantonCommandError("create", res.status, await res.text());
     return normalizeSubmitResult(await res.json());
   }
 
@@ -249,12 +280,60 @@ export class CantonClient {
     } }] } }, verbose: true };
   }
 
-  /** Read-only provider view: includes archived contracts, unlike an ACS query. */
-  async contractHistory(contractId: string, templateId: string, signal?: AbortSignal): Promise<ContractHistory | null> {
-    if (!/^[a-f0-9]{2,512}$/.test(contractId) || contractId.length % 2 !== 0) throw new Error("Invalid Canton contract ID");
+  /** Current ledger end; the exclusive start for the next update page. */
+  async ledgerEnd(signal?: AbortSignal): Promise<number> {
+    const offset = Number(await this.ledgerEndOffset(signal));
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("Canton ledger offset is not a safe nonnegative integer");
+    return offset;
+  }
+
+  /** One page of create/archive events for a template visible to this party,
+   * in offset order. Contracts collected within minutes still appear here,
+   * unlike in an ACS snapshot. */
+  async templateEvents(templateId: string, beginExclusive: number, endInclusive: number, limit = 200,
+    signal?: AbortSignal): Promise<{ events: TemplateEvent[]; lastOffset: number | null }> {
+    const response = await this.request(`/v2/updates?limit=${limit}`, {
+      method: "POST", signal,
+      body: JSON.stringify({ beginExclusive, endInclusive, verbose: false, updateFormat: { includeTransactions: {
+        transactionShape: "TRANSACTION_SHAPE_ACS_DELTA",
+        eventFormat: { filtersByParty: { [this.party]: { cumulative: [{ identifierFilter: {
+          TemplateFilter: { value: { templateId, includeCreatedEventBlob: false } },
+        } }] } }, verbose: false },
+      } } }),
+    });
+    if (!response.ok) throw new Error(`Canton update stream unavailable (${response.status})`);
+    const updates: unknown = await response.json();
+    if (!Array.isArray(updates) || updates.length > limit) throw new Error("Canton update page is malformed");
+    const events: TemplateEvent[] = [];
+    let lastOffset: number | null = null;
+    for (const item of updates) {
+      const update = asRecord(asRecord(item)?.update);
+      const tx = asRecord(asRecord(update?.Transaction)?.value);
+      const checkpoint = asRecord(asRecord(update?.OffsetCheckpoint)?.value);
+      const offset = Number(tx?.offset ?? checkpoint?.offset);
+      if (!Number.isSafeInteger(offset)) continue;
+      lastOffset = offset;
+      if (!tx || !Array.isArray(tx.events)) continue;
+      for (const raw of tx.events) {
+        const created = asRecord(asRecord(raw)?.CreatedEvent), archived = asRecord(asRecord(raw)?.ArchivedEvent);
+        const event = created ?? archived;
+        const contractId = stringValue(event?.contractId), eventTemplate = stringValue(event?.templateId);
+        if (!contractId || !eventTemplate) continue;
+        events.push({ kind: created ? "created" : "archived", contractId, templateId: eventTemplate, offset,
+          effectiveAt: stringValue(tx.effectiveAt) ?? null, argument: asRecord(created?.createArgument) ?? null });
+      }
+    }
+    return { events, lastOffset };
+  }
+
+  /** Read-only view including archived contracts, unlike an ACS query. Without a template, any visible template matches. */
+  async contractHistory(contractId: string, templateId?: string, signal?: AbortSignal): Promise<ContractHistory | null> {
+    if (!isContractId(contractId)) throw new Error("Invalid Canton contract ID");
+    const eventFormat = templateId ? this.historyEventFormat(templateId) : { filtersByParty: { [this.party]: { cumulative: [{
+      identifierFilter: { WildcardFilter: { value: { includeCreatedEventBlob: false } } } }] } }, verbose: false };
     const response = await this.request("/v2/events/events-by-contract-id", {
       method: "POST", signal,
-      body: JSON.stringify({ contractId, eventFormat: this.historyEventFormat(templateId) }),
+      body: JSON.stringify({ contractId, eventFormat }),
     });
     if (response.status === 404) return null;
     if (!response.ok) throw new Error(`Canton contract history unavailable (${response.status})`);

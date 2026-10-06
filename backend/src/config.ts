@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { assertPolygonSettlementMode } from "./services/evm-network.js";
-import { CANTON_NETWORKS, type CantonNetwork } from "./services/canton-network.js";
+import { CANTON_NETWORKS, isCantonParty, type CantonNetwork } from "./services/canton-network.js";
 
 function required(key: string): string {
   const v = process.env[key];
@@ -71,6 +71,10 @@ if (synchronizer && synchronizer !== CANTON_NETWORK_INFO.synchronizerId) {
 }
 requireWhen(!!process.env.CANTON_OAUTH_CLIENT_ID, "CANTON_OAUTH_CLIENT_ID", ["CANTON_OAUTH_CLIENT_SECRET", "CANTON_OAUTH_TOKEN_URL", "CANTON_OAUTH_AUDIENCE"]);
 requireWhen(!!process.env.CANTON_DELEGATOR_OAUTH_CLIENT_ID, "CANTON_DELEGATOR_OAUTH_CLIENT_ID", ["CANTON_DELEGATOR_OAUTH_CLIENT_SECRET", "CANTON_OAUTH_TOKEN_URL", "CANTON_OAUTH_AUDIENCE"]);
+requireWhen(process.env.PAYOUTS_ENABLED === "true", "PAYOUTS_ENABLED", ["TOKEN_REGISTRY_URL", "CANTON_TREASURY_PARTY"]);
+if (process.env.PAYOUTS_ENABLED === "true" && !isCantonParty(process.env.CANTON_TREASURY_PARTY)) {
+  throw new Error("CANTON_TREASURY_PARTY must be a full Canton party ID");
+}
 
 const KNOWN_CHAINS = [
   "polygon",
@@ -233,6 +237,16 @@ export const config = {
   // {round_number, records: [{party, weight}]}. Unset = reward rounds run
   // but mint 0 CC (honest empty attribution, not a fabricated stream).
   scanApiUrl: optional("SCAN_API_URL"),
+  // Where reward rounds get the app's earned CC: "scan" (LocalNet Scan
+  // activity records) or "ledger-coupons" (DSO-issued RewardCouponV2 contracts
+  // observed on the configured ledger for the provider party).
+  rewardSource: oneOf("REWARD_SOURCE", ["scan", "ledger-coupons"] as const, "scan"),
+  // CC payouts of allocated reward shares via the token standard (CIP-0056).
+  // Off unless explicitly enabled with a registry and treasury party.
+  payoutsEnabled: optional("PAYOUTS_ENABLED", "false") === "true",
+  tokenRegistryUrl: optional("TOKEN_REGISTRY_URL"),
+  cantonTreasuryParty: optional("CANTON_TREASURY_PARTY"),
+  payoutMinimumCc: optional("PAYOUT_MIN_CC", "1.0"),
   // Page size for the /v0/events poll. The LocalNet Scan does not expose a
   // cursor, so this is a single bounded fetch per round tick.
   scanPageSize: Number(optional("SCAN_PAGE_SIZE", "500")),

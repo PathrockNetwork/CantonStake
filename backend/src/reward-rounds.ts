@@ -25,9 +25,70 @@ import { Queue, Worker, type Job } from "bullmq";
 import IORedis from "ioredis";
 import { config } from "./config.js";
 import { canton, TEMPLATES } from "./canton.js";
+import { allocateRound, syncProviderCoupons } from "./services/canton-reward-coupons.js";
+import { fromUnits, toUnits } from "./services/daml-decimal.js";
+import { executePayouts, planPayouts, reconcilePayouts } from "./services/reward-payouts.js";
+import { TokenRegistry } from "./services/token-registry.js";
 import { prisma } from "./db.js";
 import { ingestRoundRecords, recordsForRound } from "./scan-poller.js";
 import { counter, gauge } from "./services/observability.js";
+
+/** Settle allocated shares on-ledger. Failures are recorded per payout, never fatal to the round. */
+async function runPayouts() {
+  if (!config.payoutsEnabled) return;
+  try {
+    const cfg = { provider: config.cantonAppProviderParty, treasury: config.cantonTreasuryParty,
+      hostedDelegator: config.cantonDelegatorParty, synchronizerId: config.cantonSynchronizerId, minimumCc: config.payoutMinimumCc };
+    const registry = new TokenRegistry(config.tokenRegistryUrl);
+    const reconciled = await reconcilePayouts(prisma, canton, registry, cfg);
+    const planned = await planPayouts(prisma, cfg);
+    const executed = await executePayouts(prisma, canton, registry, cfg);
+    console.log(`[payouts] reconciled ${reconciled.length}, planned ${planned.planned} (skipped ${planned.skippedUsers} without a Canton party), ` +
+      `executed ${executed.map(r => `${r.id}:${r.status}`).join(", ") || "none"}`);
+    for (const r of executed) if (r.error) console.warn(`[payouts] ${r.id} ${r.status}: ${r.error}`);
+  } catch (error) {
+    console.error("[payouts] run failed:", error instanceof Error ? error.message : error);
+  }
+}
+
+type BondedPosition = { id: string; userId: string; amountPol: string; totalCcEarned: string };
+
+/**
+ * Reward source "ledger-coupons": the app's earned CC is the DSO-issued
+ * coupons observed for the provider since the last round. Allocations and the
+ * coupon claim commit atomically, so a coupon is never allocated twice.
+ */
+async function processLedgerCouponRound(roundId: string, roundNumber: number, bonded: BondedPosition[]) {
+  const sync = await syncProviderCoupons(canton, prisma, {
+    synchronizerId: config.cantonSynchronizerId, provider: config.cantonAppProviderParty,
+  });
+  const coupons = await prisma.providerRewardCoupon.findMany({
+    where: { roundId: null, synchronizerId: config.cantonSynchronizerId, providerParty: config.cantonAppProviderParty },
+    orderBy: { createdOffset: "asc" },
+  });
+  const earned = fromUnits(coupons.reduce((sum, c) => sum + toUnits(c.amount), 0n));
+  const allocations = allocateRound(earned, bonded.map(p => ({ positionId: p.id, userId: p.userId, stake: p.amountPol })));
+  await prisma.$transaction(async tx => {
+    await tx.rewardEvent.createMany({ data: allocations.map(a => ({ userId: a.userId, positionId: a.positionId, roundId,
+      ccAmount: a.total, userShare: a.userShare, treasuryShare: a.treasuryShare, userWeight: 0.75, treasuryWeight: 0.25 })) });
+    for (const [index, a] of allocations.entries()) {
+      await tx.stakingPosition.update({ where: { id: a.positionId }, data: {
+        totalCcEarned: fromUnits(toUnits(bonded[index]!.totalCcEarned || "0") + toUnits(a.total)),
+      } });
+    }
+    const claimed = await tx.providerRewardCoupon.updateMany({ where: { id: { in: coupons.map(c => c.id) }, roundId: null }, data: { roundId } });
+    if (claimed.count !== coupons.length) throw new Error("Reward coupons were allocated concurrently; retrying round");
+    await tx.rewardRound.update({ where: { id: roundId }, data: {
+      status: "completed", completedAt: new Date(), totalCcMinted: earned, totalTxns: bonded.length, totalMarkers: bonded.length,
+      markerToTxRatio: bonded.length ? 1 : null,
+      error: coupons.length && !allocations.length ? `No bonded positions: ${earned} CC retained by the treasury` : null,
+    } });
+  });
+  counter("cantonstake_reward_rounds_total", "Completed reward rounds", { source: "ledger-coupons" });
+  counter("cantonstake_cc_minted_total", "Cumulative CC minted across rounds", {}, Number(earned));
+  console.log(`[reward-rounds] round #${roundNumber} complete from ledger coupons: ${coupons.length} coupon(s), ` +
+    `${earned} CC across ${allocations.length} position(s); sync +${sync.created}/-${sync.archived} @${sync.cursor}`);
+}
 
 // --- Configuration ---
 
@@ -99,6 +160,12 @@ async function processRound(job: Job<RoundPayload>) {
       where: { status: "Bonded" },
       include: { user: true },
     });
+
+    if (config.rewardSource === "ledger-coupons") {
+      await processLedgerCouponRound(round.id, roundNumber, bondedPositions);
+      await runPayouts();
+      return;
+    }
 
     // Pull CIP-0104 attribution records for this round from the Scan API.
     // Unset Scan API = honest 0 CC (no attribution source). Idempotent
@@ -276,6 +343,7 @@ async function processRound(job: Job<RoundPayload>) {
         `CC minted: ${totalCcMinted.toFixed(2)}, positions: ${bondedPositions.length}, ` +
         `Canton markers: ${cantonMarkerCount}`
     );
+    await runPayouts();
   } catch (err) {
     console.error(`[reward-rounds] round #${roundNumber} failed:`, err);
 

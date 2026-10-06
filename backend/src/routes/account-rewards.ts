@@ -19,6 +19,19 @@ type AccountRewardsQuery = {
  * reads through User.evmAddress or substitute the hosted test delegator.
  * Allocation records are not evidence of a claimed or transferred CC payment.
  */
+/** User-facing settlement state of an allocated CC share. */
+function payoutLabel(status: string | undefined): string {
+  switch (status) {
+    case undefined: return "Allocated (unpaid)";
+    case "completed": return "Paid";
+    case "pending_acceptance": return "Offered: accept in Loop";
+    case "rejected": return "Declined in Loop";
+    case "expired": return "Offer expired";
+    case "failed": case "uncertain": case "submitting": return "Payout under review";
+    default: return "Payout queued";
+  }
+}
+
 export function accountRewardRoutesFor(deps: {
   ledger: Pick<typeof canton, "activeContracts">;
   db: Pick<typeof prisma, "stakingPosition" | "rewardSweep" | "rewardEvent" | "rewardRound">;
@@ -72,6 +85,7 @@ export function accountRewardRoutesFor(deps: {
           deps.db.rewardEvent.findMany({ where: { position, createdAt: { gte: since } },
             orderBy: { createdAt: "desc" }, take: limit + 1,
             select: { id: true, createdAt: true, userShare: true, cantonTxId: true,
+              userPayout: { select: { status: true, updateId: true } },
               round: { select: { roundNumber: true } }, position: { select: { contractId: true, chain: true } } } }),
         ]);
         const events = [
@@ -80,7 +94,8 @@ export function accountRewardRoutesFor(deps: {
             chain: event.position.chain, roundNumber: null, transactionId: event.evmTxHash, status: "Recorded" })),
           ...cc.map(event => ({ id: `cc-${event.id}`, kind: "cc", time: event.createdAt.toISOString(), amount: event.userShare,
             symbol: "CC", positionId: event.position.contractId, chain: event.position.chain,
-            roundNumber: event.round.roundNumber, transactionId: event.cantonTxId, status: "Attributed" })),
+            roundNumber: event.round.roundNumber, transactionId: event.userPayout?.updateId ?? event.cantonTxId,
+            status: payoutLabel(event.userPayout?.status) })),
         ].sort((a, b) => Date.parse(b.time) - Date.parse(a.time) || a.id.localeCompare(b.id));
         return { events: events.slice(0, limit), since: since.toISOString(), hasMore: events.length > limit };
       };

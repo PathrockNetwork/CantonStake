@@ -149,6 +149,28 @@ model RewardRound {
   error          String?
 
   events         RewardEvent[]
+  coupons        ProviderRewardCoupon[]
+}
+
+/// DSO-issued app reward coupon observed for this deployment's provider party.
+/// The validator's wallet automation collects coupons into the provider's
+/// wallet within minutes; this is the durable record of what was earned.
+model ProviderRewardCoupon {
+  id               String    @id @default(cuid())
+  contractId       String    @unique
+  synchronizerId   String
+  providerParty    String
+  networkRound     Int
+  amount           String    // exact Daml Decimal (10 fractional digits)
+  createdOffset    String
+  createdAt        DateTime  // ledger effective time of the coupon
+  archivedOffset   String?
+  archivedAt       DateTime?
+
+  roundId          String?
+  round            RewardRound? @relation(fields: [roundId], references: [id])
+
+  @@index([roundId])
 }
 
 /// Individual CC reward distribution within a round.
@@ -175,7 +197,43 @@ model RewardEvent {
   // Canton transaction proving the distribution
   cantonTxId      String?
 
+  // On-ledger CC transfers settling each share (null = not yet paid)
+  userPayoutId     String?
+  userPayout       RewardPayout? @relation("UserPayout", fields: [userPayoutId], references: [id])
+  treasuryPayoutId String?
+  treasuryPayout   RewardPayout? @relation("TreasuryPayout", fields: [treasuryPayoutId], references: [id])
+
   createdAt       DateTime @default(now())
+
+  @@index([userPayoutId])
+  @@index([treasuryPayoutId])
+}
+
+/// One CC transfer from the provider wallet settling allocated reward shares.
+/// The command ID is deterministic so a retried submission is deduplicated by
+/// the ledger instead of paying twice.
+model RewardPayout {
+  id                     String    @id @default(cuid())
+  recipientKind          String    // treasury | staker
+  recipientParty         String
+  userId                 String?
+  amount                 String    // exact Daml Decimal
+  status                 String    @default("planned") // planned | pending_acceptance | completed | rejected | expired | failed | uncertain
+  commandId              String    @unique
+  transferKind           String?   // direct | offer | self
+  updateId               String?
+  transferInstructionCid String?
+  executeBefore          DateTime?
+  error                  String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  submittedAt            DateTime?
+  settledAt              DateTime?
+
+  userEvents             RewardEvent[] @relation("UserPayout")
+  treasuryEvents         RewardEvent[] @relation("TreasuryPayout")
+
+  @@index([status])
 }
 
 /// CIP-0104 traffic-attribution record per (party, round) ingested from the

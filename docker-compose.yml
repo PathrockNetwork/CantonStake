@@ -123,6 +123,11 @@ services:
       - DATABASE_URL=postgresql://cantonstake:cantonstake@postgres:5432/cantonstake
       - REDIS_URL=redis://redis:6379
       - SCAN_API_URL=${SCAN_API_URL:-}
+      - REWARD_SOURCE=${REWARD_SOURCE:-}
+      - PAYOUTS_ENABLED=${PAYOUTS_ENABLED:-false}
+      - TOKEN_REGISTRY_URL=${TOKEN_REGISTRY_URL:-}
+      - CANTON_TREASURY_PARTY=${CANTON_TREASURY_PARTY:-}
+      - PAYOUT_MIN_CC=${PAYOUT_MIN_CC:-1.0}
       - SCAN_PAGE_SIZE=${SCAN_PAGE_SIZE:-500}
       - SCAN_ROUND_CC_POOL=${SCAN_ROUND_CC_POOL:-100}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
