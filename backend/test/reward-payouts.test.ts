@@ -103,7 +103,12 @@ test("reconciles an accepted offer to completed", async () => {
   const ledger: any = {
     contractHistory: async () => ({ created: { synchronizerId: "s", createdEvent: { contractId: "dd", templateId: "pkg:M:AmuletTransferInstruction", createArgument: {}, offset: 1 } },
       archived: { synchronizerId: "s", archivedEvent: { contractId: "dd", templateId: "pkg:M:AmuletTransferInstruction", offset: 42 } } }),
-    transactionAtOffset: async () => ({ updateId: "x", synchronizerId: "s", events: [{ ExercisedEvent: { contractId: "dd", templateId: "t", choice: "TransferInstruction_Accept", actingParties: [], consuming: true } }] }),
+    // Package-ID template IDs are rejected as filters by Canton 3.5: read all events at the offset.
+    transactionAtOffset: async (offset: number, templateId?: string) => {
+      assert.equal(offset, 42);
+      assert.equal(templateId, undefined);
+      return { updateId: "x", synchronizerId: "s", events: [{ ExercisedEvent: { contractId: "dd", templateId: "t", choice: "TransferInstruction_Accept", actingParties: [], consuming: true } }] };
+    },
   };
   assert.deepEqual(await reconcilePayouts(db, ledger, {} as any, cfg), [{ id: "p1", status: "completed" }]);
 });

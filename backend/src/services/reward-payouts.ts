@@ -132,8 +132,9 @@ export async function reconcilePayouts(db: Db, ledger: Ledger, registry: TokenRe
     if (!cid) continue;
     const history = await ledger.contractHistory(cid, undefined, AbortSignal.timeout(10_000));
     const archivedOffset = history?.archived?.archivedEvent.offset;
-    if (history?.created && archivedOffset) {
-      const tx = await ledger.transactionAtOffset(archivedOffset, history.created.createdEvent.templateId, AbortSignal.timeout(10_000));
+    if (archivedOffset) {
+      // Package-ID template IDs are not valid filters; read every event at that offset.
+      const tx = await ledger.transactionAtOffset(archivedOffset, undefined, AbortSignal.timeout(10_000));
       const choice = tx?.events.map(e => e.ExercisedEvent).find(e => e?.contractId === cid && e.consuming)?.choice ?? "";
       const status = /Accept/.test(choice) ? "completed" : /Reject/.test(choice) ? "rejected" : "expired";
       await db.rewardPayout.update({ where: { id: payout.id }, data: { status, settledAt: now() } });

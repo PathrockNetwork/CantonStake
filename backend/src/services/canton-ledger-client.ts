@@ -274,10 +274,12 @@ export class CantonClient {
     await this.ledgerEndOffset(signal);
   }
 
-  private historyEventFormat(templateId: string) {
-    return { filtersByParty: { [this.party]: { cumulative: [{ identifierFilter: {
-      TemplateFilter: { value: { templateId, includeCreatedEventBlob: false } },
-    } }] } }, verbose: true };
+  /** Events visible to this party; a package-name template narrows them, none means any template. */
+  private historyEventFormat(templateId?: string) {
+    const identifierFilter = templateId
+      ? { TemplateFilter: { value: { templateId, includeCreatedEventBlob: false } } }
+      : { WildcardFilter: { value: { includeCreatedEventBlob: false } } };
+    return { filtersByParty: { [this.party]: { cumulative: [{ identifierFilter }] } }, verbose: true };
   }
 
   /** Current ledger end; the exclusive start for the next update page. */
@@ -329,8 +331,7 @@ export class CantonClient {
   /** Read-only view including archived contracts, unlike an ACS query. Without a template, any visible template matches. */
   async contractHistory(contractId: string, templateId?: string, signal?: AbortSignal): Promise<ContractHistory | null> {
     if (!isContractId(contractId)) throw new Error("Invalid Canton contract ID");
-    const eventFormat = templateId ? this.historyEventFormat(templateId) : { filtersByParty: { [this.party]: { cumulative: [{
-      identifierFilter: { WildcardFilter: { value: { includeCreatedEventBlob: false } } } }] } }, verbose: false };
+    const eventFormat = this.historyEventFormat(templateId);
     const response = await this.request("/v2/events/events-by-contract-id", {
       method: "POST", signal,
       body: JSON.stringify({ contractId, eventFormat }),
@@ -341,17 +342,17 @@ export class CantonClient {
   }
 
   /** Modern Canton 3.5 ledger-effects view, not deprecated transaction trees. */
-  async transactionAtOffset(offset: number, templateId: string, signal?: AbortSignal): Promise<LedgerTransaction | null> {
+  async transactionAtOffset(offset: number, templateId?: string, signal?: AbortSignal): Promise<LedgerTransaction | null> {
     if (!Number.isSafeInteger(offset) || offset <= 0) throw new Error("Invalid Canton transaction offset");
     return this.readLedgerEffects("offset", offset, templateId, signal);
   }
 
-  async transactionById(updateId: string, templateId: string, signal?: AbortSignal): Promise<LedgerTransaction | null> {
+  async transactionById(updateId: string, templateId?: string, signal?: AbortSignal): Promise<LedgerTransaction | null> {
     if (!/^[A-Za-z0-9._:#-]{1,255}$/.test(updateId)) throw new Error("Invalid Canton update ID");
     return this.readLedgerEffects("id", updateId, templateId, signal);
   }
 
-  private async readLedgerEffects(kind: "offset" | "id", value: number | string, templateId: string,
+  private async readLedgerEffects(kind: "offset" | "id", value: number | string, templateId: string | undefined,
     signal?: AbortSignal): Promise<LedgerTransaction | null> {
     const response = await this.request(`/v2/updates/update-by-${kind}`, {
       method: "POST", signal,
