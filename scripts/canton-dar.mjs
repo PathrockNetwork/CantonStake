@@ -36,6 +36,7 @@ Optional secret: CANTON_DAR_<NETWORK>_AUTH_TOKEN
 validate changes no remote state. upload always validates first, then uploads
 with vetAllPackages=true on the explicit synchronizer. No automatic retries,
 redirects, package deletion, app restart, or production .env loading.
+HTTP deadlines: upload POST 280 seconds; validation and metadata 60 seconds.
 Compatibility validation does NOT establish business correctness or CC eligibility.
 `;
 
@@ -164,10 +165,13 @@ export function createRequest(target, token, fetchImpl = fetch) {
     const headers = { Accept: 'application/json' };
     if (token) headers.Authorization = `Bearer ${token}`;
     if (bytes) headers['Content-Type'] = 'application/octet-stream';
+    // Allow package administration below the operator gateway's 300-second limit.
+    // Validation and reads retain their shorter deadline; never retry a timed-out upload.
+    const timeoutMs = method === 'POST' && path.split('?')[0] === '/v2/dars' ? 280_000 : 60_000;
     let response;
     try {
       response = await fetchImpl(url, {
-        method, headers, body: bytes, redirect: 'manual', signal: AbortSignal.timeout(60_000),
+        method, headers, body: bytes, redirect: 'manual', signal: AbortSignal.timeout(timeoutMs),
       });
     } catch {
       throw new Error(`${method} ${url.pathname}: network error or timeout. No retry was attempted; check node state before retrying an upload.`);

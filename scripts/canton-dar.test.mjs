@@ -159,6 +159,27 @@ test('transport uses binary content and a bearer header, never retries/follows r
   assert.equal(attempts, 1);
 });
 
+test('only the exact upload POST gets a 280-second deadline', async t => {
+  const deadlines = [];
+  t.mock.method(AbortSignal, 'timeout', milliseconds => {
+    deadlines.push(milliseconds);
+    return new AbortController().signal;
+  });
+  const request = createRequest(target, '', async () => new Response('{}', { status: 200 }));
+  const cases = [
+    ['/v2/dars', 'POST', 280_000],
+    ['/v2/dars?vetAllPackages=true&synchronizerId=global', 'POST', 280_000],
+    ['/v2/dars/validate', 'POST', 60_000],
+    ['/v2/dars/validate?synchronizerId=global', 'POST', 60_000],
+    ['/v2/version', 'GET', 60_000],
+    ['/v2/packages', 'GET', 60_000],
+    ['/v2/dars', 'GET', 60_000],
+    ['/v2/dars/other', 'POST', 60_000],
+  ];
+  for (const [path, method] of cases) await request(path, { method });
+  assert.deepEqual(deadlines, cases.map(([, , milliseconds]) => milliseconds));
+});
+
 test('transport errors do not print reflected credentials', async () => {
   const request = createRequest(target, 'private-token', async () => new Response('private-token', { status: 401 }));
   await assert.rejects(request('/v2/dars'), e => e.message.includes('HTTP 401') && !e.message.includes('private-token'));
