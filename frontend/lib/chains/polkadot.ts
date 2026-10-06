@@ -36,7 +36,7 @@ export const polkadotAdapter: IChainAdapter = {
     const { pools } = await fetchPolkadotPools();
     return pools.map((pool) => ({
       address: `pool:${pool.id}`, name: pool.name, apr: 0,
-      commission: pool.commissionPct, uptime: Number.NaN,
+      commission: pool.commissionPct, uptime: null,
     }));
   },
 

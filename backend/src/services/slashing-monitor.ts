@@ -145,7 +145,7 @@ function deriveDropReason(
   if (after.commissionPct > before.commissionPct + 1) {
     return `commission raised from ${before.commissionPct}% to ${after.commissionPct}%`;
   }
-  if (after.uptimePct < before.uptimePct - 1) {
+  if (after.uptimePct !== null && before.uptimePct !== null && after.uptimePct < before.uptimePct - 1) {
     return `uptime fell from ${before.uptimePct.toFixed(2)}% to ${after.uptimePct.toFixed(2)}%`;
   }
   if (after.slashCount > before.slashCount) {

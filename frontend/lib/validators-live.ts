@@ -11,7 +11,7 @@ interface ScoreSnapshot {
     address: string;
     name: string;
     commissionPct: number;
-    uptimePct: number;
+    uptimePct: number | null;
     jailed: boolean;
     score: number;
     totalStaked: number;

@@ -18,7 +18,8 @@ export type Validator = {
   name: string;
   apr: number;
   commission: number;
-  uptime: number;
+  /** Percent, or null when the chain does not measure uptime. */
+  uptime: number | null;
 };
 
 export type Unsubscribe = () => void;

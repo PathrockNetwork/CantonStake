@@ -78,7 +78,7 @@ export interface ScoredValidator {
   validatorShare?: string;
   stakingCredit?: string;   // BNB StakeHub: per-validator credit contract
   commissionPct: number;    // 0..100
-  uptimePct: number;        // 0..100, best-effort (some chains don't expose; defaults to 99.0)
+  uptimePct: number | null; // 0..100 when the chain or its indexer measures it; null = not measured
   jailed: boolean;
   slashCount: number;       // best-effort (some chains don't expose; defaults to 0)
   totalStaked: number;      // chain-native units
@@ -103,7 +103,7 @@ const REDIS_PREFIX = `vscore:${config.networkMode}:`;
 
 function cacheKey(chain: SupportedChain): string {
   // Do not serve pre-fix Cosmos snapshots with 10^18-inflated commissions.
-  const revision = ["cosmos", "celestia", "osmosis"].includes(chain) ? ":commission-v2" : "";
+  const revision = (["cosmos", "celestia", "osmosis"].includes(chain) ? ":commission-v2" : "") + ":uptime-v2";
   return `${REDIS_PREFIX}${chain}${revision}`;
 }
 
@@ -141,7 +141,7 @@ function clamp(n: number, lo: number, hi: number): number {
 }
 
 function computeScore(args: {
-  uptimePct: number;
+  uptimePct: number | null;
   commissionPct: number;
   slashCount: number;
   jailed: boolean;
@@ -149,8 +149,9 @@ function computeScore(args: {
 }): number {
   if (args.jailed) return 0;
 
-  // Uptime: full credit at ≥99.95 %, linear down to 0 at ≤95 %.
-  const uptimeFactor = clamp((args.uptimePct - 95) / (99.95 - 95), 0, 1);
+  // Uptime: full credit at ≥99.95 %, linear down to 0 at ≤95 %. When uptime
+  // is not measured, score only the measured factors instead of assuming one.
+  const uptimeFactor = args.uptimePct === null ? null : clamp((args.uptimePct - 95) / (99.95 - 95), 0, 1);
 
   // Commission: 0 % → 1.0, 20+ % → 0.0, linear in between.
   const commissionFactor = clamp(1 - args.commissionPct / 20, 0, 1);
@@ -164,11 +165,8 @@ function computeScore(args: {
       ? 1
       : clamp(1 - (args.stakeSharePct - 0.5) / (5 - 0.5), 0, 1);
 
-  const raw =
-    50 * uptimeFactor +
-    25 * commissionFactor +
-    15 * slashSafety +
-    10 * concentrationFactor;
+  const measured = 25 * commissionFactor + 15 * slashSafety + 10 * concentrationFactor;
+  const raw = uptimeFactor === null ? measured * 2 : 50 * uptimeFactor + measured;
   return Math.round(clamp(raw, 0, 100));
 }
 
@@ -236,9 +234,10 @@ async function fetchPolygon(): Promise<ScoredValidator[]> {
     .map((v) => {
     const api = byId.get(v.validatorId);
     const matchingMetadata = api?.signer?.toLowerCase() === v.signer.toLowerCase() ? api : null;
-    const uptimePct = matchingMetadata
-      ? clamp(Number(matchingMetadata.uptimePercent ?? matchingMetadata.performanceIndex ?? 99), 0, 100)
-      : 99; // neutral placeholder; no uptime is exposed by StakeManager
+    // StakeManager exposes no uptime; only the staking API's metadata does.
+    const reported = matchingMetadata?.uptimePercent ?? matchingMetadata?.performanceIndex;
+    const uptimePct = reported === undefined || reported === null || !Number.isFinite(Number(reported))
+      ? null : clamp(Number(reported), 0, 100);
     const total = Number(formatEther(BigInt(v.selfStake))) +
       Number(formatEther(BigInt(v.delegatedAmount)));
     return {
@@ -266,7 +265,7 @@ async function fetchMonad(): Promise<ScoredValidator[]> {
     address: v.id,
     name: `Monad Validator #${v.id}`,
     commissionPct: v.commissionPct,
-    uptimePct: 99.0, // precompile does not expose uptime; score labels must not treat this as measured
+    uptimePct: null,
     jailed: false, // only the live execution validator set is enumerated
     slashCount: 0,
     totalStaked: v.totalStaked,
@@ -287,7 +286,7 @@ async function fetchCosmosChain(
     address: v.operatorAddress,
     name: v.description?.moniker || v.operatorAddress.slice(0, 14),
     commissionPct: cosmosCommissionPercent(v.commission?.commissionRates?.rate),
-    uptimePct: 99.0,            // x/staking doesn't ship uptime; would need signing info per validator
+    uptimePct: null,
     jailed: v.jailed,
     slashCount: 0,
     totalStaked: Number(v.tokens) / 10 ** denomDecimals,
@@ -344,7 +343,7 @@ async function fetchAptos(): Promise<ScoredValidator[]> {
     address: pool.staking_pool_address!,
     name: `Aptos pool ${pool.staking_pool_address!.slice(0, 10)}`,
     commissionPct: Number(pool.operator_commission_percentage ?? 0) / 100,
-    uptimePct: 99.0,
+    uptimePct: null,
     jailed: false,
     slashCount: 0,
     totalStaked: Number(pool.total_coins ?? "0") / 1e8, // octa → APT
@@ -383,7 +382,7 @@ async function fetchSolana(): Promise<ScoredValidator[]> {
     address: v.votePubkey,
     name: `Vote ${v.votePubkey.slice(0, 8)}…`,
     commissionPct: v.commission,   // percent on Solana, not bps
-    uptimePct: 99.0,
+    uptimePct: null,
     jailed: false,
     slashCount: 0,
     totalStaked: Number(v.activatedStake ?? "0") / 1e9, // lamports → SOL
@@ -398,7 +397,7 @@ async function fetchPolkadot(): Promise<ScoredValidator[]> {
   return attachScores(rows.map((row) => ({
     chain: "polkadot" as const,
     ...row,
-    uptimePct: 99.0, // no pool-specific uptime measurement
+    uptimePct: null,
     jailed: false, // only open pools
     slashCount: 0, // not measured; never label as verified no-slash history
   })));
@@ -412,7 +411,7 @@ async function fetchBnb(): Promise<ScoredValidator[]> {
     name: v.name,
     stakingCredit: v.credit,
     commissionPct: v.commissionPct,
-    uptimePct: 99.0, // StakeHub does not expose historical signing uptime.
+    uptimePct: null,
     jailed: v.jailed,
     slashCount: 0,
     totalStaked: v.totalStaked,
@@ -466,7 +465,7 @@ async function fetchSui(): Promise<ScoredValidator[]> {
     address: v.metadata!.sui_address!,
     name: v.metadata?.name ?? v.metadata!.sui_address!.slice(0, 14),
     commissionPct: Number(v.commission_rate ?? "0") / 100, // bps → %
-    uptimePct: 99.5,
+    uptimePct: null,
     jailed: false, // connection contains active validators only
     slashCount: 0,
     totalStaked: Number(v.staking_pool?.sui_balance ?? "0") / 1e9, // MIST → SUI

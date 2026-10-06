@@ -415,7 +415,7 @@ export interface ValidatorScore {
   name: string;
   stakingCredit?: string;
   commissionPct: number;
-  uptimePct: number;
+  uptimePct: number | null;
   jailed: boolean;
   slashCount: number;
   totalStaked: number;
