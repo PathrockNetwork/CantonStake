@@ -6,8 +6,6 @@ const BACKEND_URL =
 
 export interface PositionRow {
   contractId: string;
-  /** Set by the verified backend ledger router, never browser storage. */
-  ledgerOrigin?: "primary" | "legacy";
   argument: {
     delegator: string;
     evmAddress: string;
@@ -500,9 +498,3 @@ export async function fetchAccountRewards(addresses: string[], days: number, inc
   return body;
 }
 
-export async function fetchRewardHistory(address: string, days = 30): Promise<RewardHistory> {
-  const params = new URLSearchParams({ address, days: String(days), limit: "250" });
-  const response = await fetch(`${BACKEND_URL}/api/rewards/history?${params}`, { signal: AbortSignal.timeout(10_000) });
-  if (!response.ok) throw new Error("Reward history unavailable");
-  return response.json();
-}

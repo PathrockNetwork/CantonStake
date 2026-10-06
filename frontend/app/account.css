@@ -74,8 +74,6 @@
 .account-lifecycle li[aria-current] > span { filter: drop-shadow(0 0 7px #00efae99); }
 .account-lifecycle strong { display: block; font-weight: 500; font-size: 12px; }
 .account-lifecycle small { display: block; margin-top: 6px; font-size: 11px; line-height: 1.5; color: #8da99c; }
-.account-cadence { display: flex; align-items: center; justify-content: space-between; margin: 20px 0 12px; background: linear-gradient(#00c99644, #00c99644) center / 100% 1px no-repeat; }
-.account-cadence span { display: grid; place-items: center; width: 25px; height: 25px; border: 1px solid #228868; border-radius: 50%; color: #00edb1; background: #052118; }
 .account-table-wrap { width: 100%; overflow-x: auto; }
 .account-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 12px; }
 .account-table th { padding: 11px 12px; border-block: 1px solid #72b19733; color: #a0b6ad; font: 400 10px/1.4 'JetBrains Mono', monospace; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
@@ -233,8 +231,6 @@
   .account-reward-position-status { font-size: 9px; }
 }
 .account-rewards-footer { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
-.account-formula { font: italic 23px/1.5 Georgia, serif; }
-.account-formula span { color: #31e9ba; padding-inline: 4px; }
 #reward-history { scroll-margin-top: 215px; }
 @media (max-width: 760px) { .account-rewards-footer { grid-template-columns: 1fr; } }
 .account-positions-layout { grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr); }

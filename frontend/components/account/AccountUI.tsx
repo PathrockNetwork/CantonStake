@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useId, type CSSProperties, type ReactNode } from "react";
 import { I, IconArrowRight, IconClock, IconExternal, IconGear, IconLock, IconShield } from "@/components/icons";
 import { useWalletPicker } from "@/components/WalletPickerProvider";
-import { useRoundCountdown } from "@/lib/use-round-countdown";
 import type { PositionRow } from "@/lib/api";
 
 export type AccountGlyph = "stack" | "coin" | "cube" | "clock" | "percent" | "activity" | "wallet" | "user" | "shield" | "link" | "settings" | "bell";
@@ -89,15 +88,6 @@ export function PrivacyPanel({ compact = false }: { compact?: boolean }) {
       ["Multi-party consent", "You approve actions with your wallet.", <AccountIcon key="user" name="user" />],
       ["Verifiable activity", "Follow transactions on their native chain.", <IconExternal key="external" size={28} />],
     ].map(([title, copy, icon]) => <div key={String(title)}><span aria-hidden="true">{icon}</span><div><strong>{title}</strong>{!compact && <p>{copy}</p>}</div></div>)}</div>
-  </AccountPanel>;
-}
-
-export function CadencePanel() {
-  const { mm, ss, progress } = useRoundCountdown();
-  return <AccountPanel title="Payout cadence" icon="clock" description="Canton Coin reward rounds run every 10 minutes.">
-    <div className="account-cadence" role="progressbar" aria-label="Estimated progress to next scheduled round" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)}>{[0, 1, 2, 3, 4, 5].map(n => <span key={n} style={{ opacity: progress >= n / 6 ? 1 : .3 }}><IconClock size={16} /></span>)}</div>
-    <p className="account-muted">Next scheduled round <strong className="mono">{mm}m {ss}s</strong></p>
-    <small className="account-muted">Estimated cadence. Attribution depends on the completed round.</small>
   </AccountPanel>;
 }
 

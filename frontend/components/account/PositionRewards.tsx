@@ -49,7 +49,7 @@ export function PositionRewards({ positions, totals, allocationsAvailable, holdi
       <div ref={list} className="account-reward-position-scroll" tabIndex={0} role="region" aria-label="Position rewards list">
         <ul className="account-reward-position-list">{visible.map(entry => <RewardPositionCard key={entry.id} entry={entry}
           allocation={totals.get(entry.id) ?? 0} allocationsAvailable={allocationsAvailable}
-          ccDisabled={loopPaymentsDisabled && entry.kind === "validator" && entry.position.ledgerOrigin !== "legacy"}
+          ccDisabled={loopPaymentsDisabled && entry.kind === "validator"}
           updatedAt={entry.kind === "liquid" ? holdings.updatedAt : positionsUpdatedAt} />)}</ul>
       </div>
       <footer className="account-reward-position-footer"><span aria-live="polite">Showing {visible.length} of {entries.length} positions</span><AccountLink href="/positions">Manage positions</AccountLink></footer>

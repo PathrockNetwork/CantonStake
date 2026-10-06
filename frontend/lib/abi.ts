@@ -1,6 +1,6 @@
 /**
  * On-chain interfaces for the Polygon PoS staking flow:
- * `validatorShareAbi`, `stakeManagerAbi`, `stakingLoggerAbi`, `erc20Abi`.
+ * `validatorShareAbi`, `stakingLoggerAbi`, `erc20Abi`.
  * Polygon PoS staking settles on Ethereum L1, StakeManager deploys one
  * ValidatorShare per validator, `buyVoucher` is NOT payable (delegation
  * is an ERC-20 approve + transferFrom through the StakeManager), and
@@ -127,58 +127,6 @@ export const validatorShareAbi = [
     stateMutability: "view",
     inputs: [],
     outputs: [{ type: "uint256" }],
-  },
-] as const;
-
-export const stakeManagerAbi = [
-  {
-    type: "function",
-    name: "validators",
-    stateMutability: "view",
-    inputs: [{ type: "uint256" }],
-    outputs: [
-      { name: "amount", type: "uint256" },
-      { name: "reward", type: "uint256" },
-      { name: "activationEpoch", type: "uint256" },
-      { name: "deactivationEpoch", type: "uint256" },
-      { name: "jailTime", type: "uint256" },
-      { name: "signer", type: "address" },
-      { name: "contractAddress", type: "address" },
-      { name: "status", type: "uint8" },
-      { name: "commissionRate", type: "uint256" },
-      { name: "lastCommissionUpdate", type: "uint256" },
-      { name: "delegatorsReward", type: "uint256" },
-      { name: "delegatedAmount", type: "uint256" },
-      { name: "initialRewardPerStake", type: "uint256" },
-    ],
-  },
-  {
-    type: "function",
-    name: "signerToValidator",
-    stateMutability: "view",
-    inputs: [{ type: "address" }],
-    outputs: [{ type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "epoch",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "withdrawalDelay",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "token",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ type: "address" }],
   },
 ] as const;
 
