@@ -80,10 +80,23 @@ export async function createStakingRequest(body: {
     const { createLoopStakingRequest } = await import("./canton/loop-staking-flow");
     return createLoopStakingRequest(body, signNativeOwnership);
   }
+  const { connectedLoopAuthorization } = await import("./canton/loop-sdk-provider");
+  const { stakingOwnershipMessage } = await import("./canton/request-ownership");
+  const request = { ...body, clientNetworkMode: networkMode, ownershipNonce: crypto.randomUUID(), ownershipSignedAt: Date.now() };
+  const message = stakingOwnershipMessage(request);
+  let nativeSignature: string;
+  if (signNativeOwnership) nativeSignature = await signNativeOwnership(message, body.evmAddress);
+  else {
+    if (!["polygon", "monad", "bnb"].includes(body.chain ?? "polygon")) throw new Error("Connect the native wallet to authorize this request.");
+    const { signMessage } = await import("@wagmi/core");
+    const { wagmiConfig } = await import("./wagmi");
+    nativeSignature = await signMessage(wagmiConfig, { account: body.evmAddress as `0x${string}`, message });
+  }
+  const authorization = await connectedLoopAuthorization(body.delegator);
   const res = await fetch(`${BACKEND_URL}/api/requests`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...body, clientNetworkMode: networkMode }),
+    headers: { "Content-Type": "application/json", Authorization: authorization },
+    body: JSON.stringify({ ...request, nativeSignature }),
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -94,13 +107,30 @@ export async function upsertUser(body: {
   evmAddress?: string;
   displayName?: string;
 }) {
+  const { connectedLoopAuthorization } = await import("./canton/loop-sdk-provider");
+  const authorization = await connectedLoopAuthorization(body.cantonPartyId);
   const res = await fetch(`${BACKEND_URL}/api/users`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", Authorization: authorization },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+export async function verifyUserIdentity(cantonPartyId: string, evmAddress: `0x${string}`) {
+  const { connectedLoopAuthorization } = await import("./canton/loop-sdk-provider");
+  const { identityOwnershipMessage } = await import("./canton/request-ownership");
+  const { signMessage } = await import("@wagmi/core");
+  const { wagmiConfig } = await import("./wagmi");
+  const binding = { delegator: cantonPartyId, evmAddress, clientNetworkMode: networkMode,
+    ownershipNonce: crypto.randomUUID(), ownershipSignedAt: Date.now() };
+  const nativeSignature = await signMessage(wagmiConfig, { account: evmAddress, message: identityOwnershipMessage(binding) });
+  const authorization = await connectedLoopAuthorization(cantonPartyId);
+  const response = await fetch(`${BACKEND_URL}/api/users/verify`, { method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: authorization }, body: JSON.stringify({ ...binding, nativeSignature }) });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
 }
 
 export async function sweepNativeRewards(positionId: string) {
@@ -208,7 +238,11 @@ export interface CantonReadiness {
   canton: "reachable" | "unreachable";
   networkMode: "testnet" | "mainnet";
   time: string;
-  loopStaking?: { status: "ready" | "blocked"; reason: string | null; supportedChains: string[]; ccPaymentsEnabled: false };
+  applicationStatus?: "ready" | "degraded";
+  cantonNetwork?: string;
+  nativeStaking?: Array<{ chain: string; reason: string | null }>;
+  rewards?: { source: string; model: string; payoutsEnabled: boolean; trafficModelIsEstimate: boolean; identityVerificationRequired: boolean };
+  loopStaking?: { status: "ready" | "blocked"; reason: string | null; supportedChains: string[]; ccPaymentsEnabled: boolean };
 }
 
 export async function fetchCantonReadiness(): Promise<CantonReadiness> {
@@ -278,6 +312,7 @@ export interface UserRecord {
   cantonPartyId: string;
   evmAddress: string | null;
   displayName: string | null;
+  identityVerifiedAt?: string | null;
   createdAt: string;
 }
 
@@ -464,7 +499,8 @@ export interface AccountRewards {
   positions: PositionRow[] | null;
   history: RewardHistory | null;
   rounds?: Array<Pick<RoundSummary, "roundNumber" | "status" | "startedAt" | "completedAt" | "totalCcMinted" | "userCcAttributed">> | null;
-  policy: { ccPayments: "disabled" | "unverified"; beneficiarySplit: "not_configured" | "unverified" };
+  policy: { ccPayments: "disabled" | "unverified" | "enabled"; beneficiarySplit: "not_configured" | "unverified";
+    rewardSource?: string; rewardModel?: string; cantonNetwork?: string; identityVerificationRequired?: boolean };
 }
 
 export async function fetchAccountRewards(addresses: string[], days: number, includeRounds: boolean, signal?: AbortSignal): Promise<AccountRewards> {
@@ -479,7 +515,7 @@ export async function fetchAccountRewards(addresses: string[], days: number, inc
   const body = await res.json() as AccountRewards;
   if (body?.networkMode !== networkMode || body.days !== days || !Array.isArray(body.addresses) ||
       JSON.stringify(body.addresses) !== JSON.stringify(scope) || !Number.isFinite(Date.parse(body.checkedAt)) ||
-      !["disabled", "unverified"].includes(body.policy?.ccPayments) ||
+      !["disabled", "unverified", "enabled"].includes(body.policy?.ccPayments) ||
       !["not_configured", "unverified"].includes(body.policy?.beneficiarySplit)) {
     throw new Error("Reward response does not match this connected wallet scope");
   }
@@ -497,4 +533,3 @@ export async function fetchAccountRewards(addresses: string[], days: number, inc
   if (includeRounds && body.rounds !== null && !Array.isArray(body.rounds)) throw new Error("Invalid account round history");
   return body;
 }
-

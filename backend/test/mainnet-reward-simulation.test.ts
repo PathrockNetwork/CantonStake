@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { measureAppTransactions, simulateMainnetReward } from "../src/services/mainnet-reward-simulation.js";
+import { commitAppTraffic, measureAppTransactions, simulateMainnetReward } from "../src/services/mainnet-reward-simulation.js";
 import { fromUnits } from "../src/services/daml-decimal.js";
 
 const params = { usdPerMb: 60, bytesPerTx: 4000, freeBytesPerRound: 100_000, rewardToFeeRatio: 1, maxUsdPerTx: 1.5, minRoundUsd: 0.5 };
@@ -27,14 +27,34 @@ test("app traffic is counted from the stored cursor and starts at the ledger end
   let cursor: string | null = null;
   const db: any = { watcherCursor: {
     findUnique: async () => (cursor ? { lastScannedBlock: cursor } : null),
-    upsert: async (a: any) => { cursor = a.update.lastScannedBlock; },
+    create: async (a: any) => { cursor = a.data.lastScannedBlock; },
+    updateMany: async (a: any) => {
+      if (cursor !== a.where.lastScannedBlock) return { count: 0 };
+      cursor = a.data.lastScannedBlock; return { count: 1 };
+    },
   } };
   let end = 100;
   const ledger = { ledgerEnd: async () => end,
     workflowTransactions: async (_p: string, begin: number) => begin < end ? { matching: 3, lastOffset: end } : { matching: 0, lastOffset: null } };
   const opts = { synchronizerId: "s", provider: "p" };
-  assert.equal(await measureAppTransactions(ledger, db, opts), 0);
+  const first = await measureAppTransactions(ledger, db, opts);
+  assert.equal(first.txCount, 0);
+  assert.equal(cursor, null); // Observation alone must not advance persisted state.
+  await commitAppTraffic(db, first);
   end = 150;
-  assert.equal(await measureAppTransactions(ledger, db, opts), 3);
+  const measured = await measureAppTransactions(ledger, db, opts);
+  assert.equal(measured.txCount, 3);
+  assert.equal(cursor, "100");
+  assert.equal((await measureAppTransactions(ledger, db, opts)).txCount, 3); // A failed round can retry.
+  await commitAppTraffic(db, measured);
   assert.equal(cursor, "150");
+  await assert.rejects(commitAppTraffic(db, measured), /concurrently/);
+});
+
+test("malformed and incomplete traffic traversal never advances its cursor", async () => {
+  const db: any = { watcherCursor: { findUnique: async () => ({ lastScannedBlock: "100" }) } };
+  for (const result of [{ matching: 1, lastOffset: 100 }, { matching: 1, lastOffset: null }, { matching: 1, lastOffset: 151 }, { matching: 1, lastOffset: 110 }]) {
+    const ledger = { ledgerEnd: async () => 150, workflowTransactions: async () => result };
+    await assert.rejects(measureAppTransactions(ledger, db, { synchronizerId: "s", provider: "p", maxPages: 1 }), /malformed|offset|incomplete/);
+  }
 });

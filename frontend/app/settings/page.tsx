@@ -12,6 +12,7 @@ import {
   disableNotificationChannel,
   fetchUserByEvm,
   upsertUser,
+  verifyUserIdentity,
   listNotificationChannels,
   sendTestNotification,
   upsertNotificationChannel,
@@ -58,6 +59,10 @@ export default function SettingsPage() {
     try { setDensity(localStorage.getItem("cantonstake:account-density") === "compact" ? "compact" : "comfortable"); } catch { /* Browser storage is optional. */ }
   }, []);
   const canEdit = isConnected && loopConnected && !!partyId && !!user && user.cantonPartyId === partyId;
+  const verification = useMutation({ mutationFn: () => {
+    if (!address || !partyId || !loopConnected) throw new Error("Connect your EVM and Loop wallets first.");
+    return verifyUserIdentity(partyId, address);
+  }, onSuccess: () => { void qc.invalidateQueries({ queryKey: ["user-by-evm", address] }); } });
   const profileMutation = useMutation({ mutationFn: () => {
     if (!canEdit || !user) throw new Error("Connect the wallets linked to this profile before saving.");
     return upsertUser({ cantonPartyId: user.cantonPartyId, evmAddress: address, displayName: displayName.trim() });
@@ -96,6 +101,10 @@ export default function SettingsPage() {
             <AccountPanel title="Identity & profile" icon="user">
               <div className="account-profile-identity"><span className="account-profile-avatar" aria-hidden="true"><AccountIcon name="cube" size={46} /></span><div><h3>{user?.displayName || "Your Canton identity"}</h3><p>{user ? shortId(user.cantonPartyId, 14) : "Connect your registered wallets"}</p></div>{user && <StatusBadge status="Registered" />}</div>
               <form id="account-profile-form" onSubmit={event => { event.preventDefault(); profileMutation.mutate(); }}>
+                <p className="account-muted">Verify your connected wallets to confirm the CC reward recipient. No funds move and existing wallet links cannot be reassigned.</p>
+                <button className="account-button" type="button" disabled={!address || !partyId || !loopConnected || verification.isPending} onClick={() => verification.mutate()}>{verification.isPending ? "Verifying…" : "Verify reward recipient"}</button>
+                {user && <StatusBadge status={user.identityVerifiedAt ? "Verified" : "Verification required"} />}
+                {verification.isSuccess && <p role="status" className="account-save-success">Reward recipient verified.</p>}{verification.isError && <p role="alert" className="account-save-error">{verification.error.message}</p>}
                 <label><span className="account-field-label">Display name</span><input className="account-field" value={displayName} onChange={event => { setDisplayName(event.target.value); profileMutation.reset(); }} maxLength={80} autoComplete="nickname" disabled={!canEdit || profileMutation.isPending} placeholder="Your display name" /></label>
                 <label><span className="account-field-label">Linked EVM address</span><input className="account-field mono" value={user?.evmAddress ?? address ?? ""} readOnly placeholder="Connect an EVM wallet" /></label>
                 <p className="account-muted">{canEdit ? "Your display name is saved to your registered CantonStake profile." : "Connect the EVM and Loop wallets linked to this profile to edit it."}</p>

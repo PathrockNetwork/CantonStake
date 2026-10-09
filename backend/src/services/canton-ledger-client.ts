@@ -64,7 +64,7 @@ export interface TemplateEvent {
 export interface LedgerTransaction {
   updateId: string;
   synchronizerId: string;
-  events: Array<{ CreatedEvent?: { contractId: string; templateId: string }; ExercisedEvent?: {
+  events: Array<{ CreatedEvent?: { contractId: string; templateId: string; createArgument?: Record<string, unknown> }; ExercisedEvent?: {
     contractId: string; templateId: string; choice: string;
     actingParties: string[]; consuming: boolean;
   } }>;

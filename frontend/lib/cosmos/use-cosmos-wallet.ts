@@ -20,6 +20,9 @@ import { assertWalletOwner } from "../wallet-binding";
 
 const walletEvent = "cantonstake:cosmos-wallet-change";
 const storageKey = (chain: CosmosChainKey) => `cantonstake_${networkMode}_${chain}_address`;
+const providerStorageKey = (chain: CosmosChainKey) => `cantonstake_${networkMode}_${chain}_provider`;
+
+type CosmosProviderId = "keplr" | "leap";
 
 interface KeplrLike {
   enable(chainId: string | string[]): Promise<void>;
@@ -42,9 +45,17 @@ declare global {
   }
 }
 
-function getKeplrLike(): KeplrLike | null {
-  if (typeof window === "undefined") return null;
-  return window.keplr ?? window.leap ?? null;
+function getCosmosProviders(): Array<{ id: CosmosProviderId; name: string; provider: KeplrLike }> {
+  if (typeof window === "undefined") return [];
+  const providers: Array<{ id: CosmosProviderId; name: string; provider: KeplrLike }> = [];
+  if (window.keplr) providers.push({ id: "keplr", name: "Keplr", provider: window.keplr });
+  if (window.leap && window.leap !== window.keplr) providers.push({ id: "leap", name: "Leap Wallet", provider: window.leap });
+  return providers;
+}
+
+function getKeplrLike(preferred?: string | null): KeplrLike | null {
+  const providers = getCosmosProviders();
+  return providers.find((item) => item.id === preferred)?.provider ?? providers[0]?.provider ?? null;
 }
 
 async function suggestCosmosChain(keplr: KeplrLike, network: CosmosNetwork): Promise<void> {
@@ -98,7 +109,8 @@ export interface UseCosmosWalletReturn {
   isConnected: boolean;
   isConnecting: boolean;
   error: string | null;
-  connect: () => Promise<void>;
+  wallets: Array<{ id: CosmosProviderId; name: string }>;
+  connect: (walletId?: string) => Promise<void>;
   disconnect: () => void;
   signAndBroadcast: (args: {
     typeUrl: string;
@@ -114,6 +126,7 @@ export function useCosmosWallet(chain: CosmosChainKey = "cosmos"): UseCosmosWall
   const network = cosmosNetworks[chain];
   const [address, setAddress] = useState<string | null>(null);
   const [name, setName] = useState<string | null>(null);
+  const [providerId, setProviderId] = useState<CosmosProviderId | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -126,11 +139,13 @@ export function useCosmosWallet(chain: CosmosChainKey = "cosmos"): UseCosmosWall
     const sync = async () => {
       const currentRevision = ++revision;
       const saved = localStorage.getItem(storageKey(chain));
-      const extension = getKeplrLike();
+      const preferred = localStorage.getItem(providerStorageKey(chain));
+      const extension = getKeplrLike(preferred);
       if (!saved || !extension) {
         if (active && currentRevision === revision) {
           setAddress(null);
           setName(null);
+          setProviderId(null);
         }
         return;
       }
@@ -142,6 +157,7 @@ export function useCosmosWallet(chain: CosmosChainKey = "cosmos"): UseCosmosWall
         if (!active || currentRevision !== revision) return;
         setAddress(key.bech32Address);
         setName(key.name ?? null);
+        setProviderId(preferred === "leap" ? "leap" : preferred === "keplr" ? "keplr" : window.leap && !window.keplr ? "leap" : "keplr");
         if (saved !== key.bech32Address) localStorage.setItem(storageKey(chain), key.bech32Address);
       } catch {
         if (!active || currentRevision !== revision) return;
@@ -166,11 +182,12 @@ export function useCosmosWallet(chain: CosmosChainKey = "cosmos"): UseCosmosWall
     };
   }, [chain, network]);
 
-  const connect = useCallback(async () => {
+  const connect = useCallback(async (walletId?: string) => {
     setError(null);
     setIsConnecting(true);
     try {
-      const keplr = getKeplrLike();
+      const selected = getCosmosProviders().find((item) => item.id === walletId);
+      const keplr = selected?.provider ?? getKeplrLike(providerId);
       if (!keplr) {
         throw new Error(
           "Keplr / Leap not detected. Install the Keplr extension from keplr.app and reload.",
@@ -184,20 +201,25 @@ export function useCosmosWallet(chain: CosmosChainKey = "cosmos"): UseCosmosWall
       }
       setAddress(key.bech32Address);
       setName(key.name ?? null);
+      const connectedProviderId = selected?.id ?? (window.leap && !window.keplr ? "leap" : providerId ?? "keplr");
+      setProviderId(connectedProviderId);
       localStorage.setItem(storageKey(chain), key.bech32Address);
+      localStorage.setItem(providerStorageKey(chain), connectedProviderId);
       window.dispatchEvent(new Event(walletEvent));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsConnecting(false);
     }
-  }, [chain, network]);
+  }, [chain, network, providerId]);
 
   const disconnect = useCallback(() => {
     setAddress(null);
     setName(null);
+    setProviderId(null);
     if (typeof window !== "undefined") {
       localStorage.removeItem(storageKey(chain));
+      localStorage.removeItem(providerStorageKey(chain));
       window.dispatchEvent(new Event(walletEvent));
     }
   }, [chain]);
@@ -206,7 +228,7 @@ export function useCosmosWallet(chain: CosmosChainKey = "cosmos"): UseCosmosWall
     async (msg: { typeUrl: string; value: Record<string, unknown> }, options?: {
       expectedWallet?: string; onBeforeBroadcast?: (hash: string) => void;
     }) => {
-      const keplr = getKeplrLike();
+      const keplr = getKeplrLike(providerId ?? (typeof window !== "undefined" ? localStorage.getItem(providerStorageKey(chain)) : null));
       if (!keplr || !address) {
         throw new Error("Cosmos wallet not connected");
       }
@@ -276,11 +298,11 @@ export function useCosmosWallet(chain: CosmosChainKey = "cosmos"): UseCosmosWall
         client.disconnect();
       }
     },
-    [address, chain, network],
+    [address, chain, network, providerId],
   );
 
   const signOwnership = useCallback(async (message: string, expectedWallet: string): Promise<string> => {
-    const wallet = getKeplrLike();
+    const wallet = getKeplrLike(providerId ?? (typeof window !== "undefined" ? localStorage.getItem(providerStorageKey(chain)) : null));
     if (!wallet?.signArbitrary || !address) throw new Error("Connect a Keplr/Leap account supporting ADR-36 ownership signatures.");
     assertWalletOwner(network.chainName, address, expectedWallet);
     assertWalletOwner(network.chainName, (await wallet.getKey(network.chainId)).bech32Address, expectedWallet);
@@ -291,7 +313,7 @@ export function useCosmosWallet(chain: CosmosChainKey = "cosmos"): UseCosmosWall
       throw new Error("This Cosmos account type cannot provide a supported native ownership proof.");
     }
     return JSON.stringify(signature);
-  }, [address, network]);
+  }, [address, chain, network, providerId]);
 
   return {
     address,
@@ -299,6 +321,7 @@ export function useCosmosWallet(chain: CosmosChainKey = "cosmos"): UseCosmosWall
     isConnected: !!address,
     isConnecting,
     error,
+    wallets: getCosmosProviders().map(({ id, name }) => ({ id, name })),
     connect,
     disconnect,
     signAndBroadcast,

@@ -55,7 +55,7 @@ import polkadotRoutes from "./routes/polkadot.js";
 import readinessRoutes from "./routes/readiness.js";
 import loopProxyRoutes from "./routes/loop-proxy.js";
 import rpcRoutes from "./routes/rpc.js";
-import { normalizeWalletAddress } from "./services/wallet-address.js";
+import { normalizeWalletAddress, sameWalletAddress } from "./services/wallet-address.js";
 import { assertSolanaNetwork, solanaRpc, SOLANA_STAKE_ACCOUNT_SPACE } from "./services/solana-rpc.js";
 import { polkadotApi, POLKADOT_ASSET_HUB, parsePolkadotPoolKey } from "./services/polkadot-rpc.js";
 import { decodeAddress, encodeAddress } from "@polkadot/util-crypto";
@@ -72,6 +72,9 @@ import { verifyLoopSession, prepareLoopIntent, authorizeLoopIntent, adoptLoopInt
   prepareLoopCancellation, observeLoopCancellation, prepareLoopUnbond, observeLoopUnbond, observeLoopNativeUnbond, LoopWorkflowError } from "./services/loop-staking.js";
 import { LOOP_STAKING_CHAINS, type LoopNativeChain } from "./services/loop-native-ownership.js";
 import { observeLoopRewardEntitlements } from "./services/canton-reward-entitlements.js";
+import { verifyLoopIdentitySession, LoopSessionError } from "./services/loop-session.js";
+import { assertIdentityBinding, IdentityConflictError, identityOwnershipMessage, stakingOwnershipMessage, validOwnershipWindow } from "./services/identity-policy.js";
+import { verifyLoopNativeOwnership } from "./services/loop-native-ownership.js";
 
 function sumWei(values: string[]): bigint {
   return values.reduce((sum, value) => sum + BigInt(value || "0"), 0n);
@@ -81,56 +84,43 @@ function weiToPol(value: bigint): number {
   return Number(formatEther(value));
 }
 
-async function upsertUserIdentity(args: {
+async function registerVerifiedIdentity(args: {
   cantonPartyId: string;
   evmAddress?: string;
-  displayName?: string;
+  allowAdditionalWallet?: boolean;
 }) {
   const evmAddress = args.evmAddress
     ? normalizeWalletAddress(args.evmAddress)
     : undefined;
 
-  const existingByParty = await prisma.user.findUnique({
-    where: { cantonPartyId: args.cantonPartyId },
-  });
-  if (existingByParty) {
-    if (evmAddress && existingByParty.evmAddress !== evmAddress) {
-      const conflict = await prisma.user.findUnique({ where: { evmAddress } });
-      if (conflict && conflict.id !== existingByParty.id) {
-        await prisma.user.update({
-          where: { id: conflict.id },
-          data: { evmAddress: null },
-        });
-      }
-    }
-    return prisma.user.update({
-      where: { id: existingByParty.id },
-      data: { evmAddress, displayName: args.displayName },
-    });
-  }
+  if (!evmAddress) throw new IdentityConflictError("Verified native wallet consent is required");
+  // Called only after both wallet proofs. Never detach a wallet or reparent
+  // positions, even when the caller possesses another genuine Loop session.
+  return prisma.$transaction(async tx => {
+    const [byParty, byWallet] = await Promise.all([
+      tx.user.findUnique({ where: { cantonPartyId: args.cantonPartyId } }),
+      tx.user.findUnique({ where: { evmAddress } }),
+    ]);
+    assertIdentityBinding(byParty, byWallet, evmAddress, args.allowAdditionalWallet);
+    const data = { evmAddress: byParty?.evmAddress ?? evmAddress, identityVerifiedAt: new Date() };
+    const user = byParty ? await tx.user.update({ where: { id: byParty.id }, data }) :
+      await tx.user.create({ data: { ...data, cantonPartyId: args.cantonPartyId } });
+    await tx.userWalletVerification.upsert({ where: { userId_walletAddress: { userId: user.id, walletAddress: evmAddress } },
+      create: { userId: user.id, walletAddress: evmAddress }, update: { verifiedAt: new Date() } });
+    return user;
+  }, { isolationLevel: "Serializable" });
+}
 
-  if (evmAddress) {
-    const existingByAddress = await prisma.user.findUnique({
-      where: { evmAddress },
-    });
-    if (existingByAddress) {
-      return prisma.user.update({
-        where: { id: existingByAddress.id },
-        data: {
-          cantonPartyId: args.cantonPartyId,
-          displayName: args.displayName,
-        },
-      });
-    }
-  }
-
-  return prisma.user.create({
-    data: {
-      cantonPartyId: args.cantonPartyId,
-      evmAddress,
-      displayName: args.displayName,
-    },
-  });
+async function consumeOwnershipNonce(kind: "identity" | "request", nonce: string): Promise<boolean> {
+  if (redisConnection.status !== "ready") throw new Error("Ownership replay protection is unavailable");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const consumed = await Promise.race([
+      redisConnection.set(`cantonstake:${kind}-consent:${nonce}`, "used", "EX", 360, "NX"),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Ownership replay protection timed out")), 5000); }),
+    ]);
+    return consumed === "OK";
+  } finally { if (timer) clearTimeout(timer); }
 }
 
 const app = Fastify({
@@ -222,6 +212,9 @@ app.get("/api/health", async () => ({
   stakeSettlementChainId: config.stakeSettlementChainId,
   featuredAppRight: config.featuredAppRightCid ? "configured" : "missing",
   time: new Date().toISOString(),
+  cantonNetwork: config.cantonNetwork,
+  rewards: { source: config.rewardSource, model: config.rewardModel, payoutsEnabled: config.payoutsEnabled,
+    trafficModelIsEstimate: config.rewardModel === "mainnet-traffic", identityVerificationRequired: true },
 }));
 
 app.get("/api/health/detail", async () => {
@@ -327,24 +320,43 @@ interface UpsertUserBody {
 }
 
 app.post<{ Body: UpsertUserBody }>("/api/users", async (req, reply) => {
-  if (config.networkMode === "testnet" && config.loopStakingEnabled) {
-    return reply.code(409).send({ error: "Wallet linking requires a verified Loop session and native ownership signature through the staking workflow" });
-  }
-  const { cantonPartyId, evmAddress, displayName } = req.body;
-  if (!cantonPartyId) {
-    return reply.code(400).send({ error: "missing cantonPartyId" });
-  }
   try {
-    const user = await upsertUserIdentity({
-      cantonPartyId,
-      evmAddress,
-      displayName,
-    });
+    const { cantonPartyId, evmAddress, displayName } = req.body;
+    await verifyLoopIdentitySession(req.headers.authorization, cantonPartyId);
+    if (typeof displayName !== "string" || displayName.trim().length > 80) {
+      return reply.code(400).send({ error: "displayName must be text of at most 80 characters" });
+    }
+    const existing = await prisma.user.findUnique({ where: { cantonPartyId } });
+    if (!existing) return reply.code(409).send({ error: "Register through the verified staking workflow first" });
+    if (evmAddress && (!existing.evmAddress || !sameWalletAddress(existing.evmAddress, evmAddress))) {
+      return reply.code(409).send({ error: "Profile edits cannot change linked wallets or reward recipients" });
+    }
+    const user = await prisma.user.update({ where: { id: existing.id }, data: { displayName: displayName.trim() } });
     return { user };
   } catch (err) {
+    if (err instanceof LoopSessionError) return reply.code(err.statusCode).send({ error: err.message });
     req.log.error(err);
-    return reply.code(500).send({ error: String(err) });
+    return reply.code(503).send({ error: "Profile update is unavailable" });
   }
+});
+
+// Reverify old links (or register a liquid holder) without staking again.
+// This route never submits a Canton transaction or transfers tokens.
+app.post<{ Body: Omit<CreateRequestBody, "amountPol" | "chain" | "validator" | "stakeAccountAddress"> }>("/api/users/verify", { bodyLimit: 4096 }, async (req, reply) => {
+  const body = req.body;
+  try {
+    if (body.clientNetworkMode !== config.networkMode || !body.delegator || typeof body.evmAddress !== "string" ||
+        !/^0x[a-fA-F0-9]{40}$/.test(body.evmAddress)) return reply.code(400).send({ error: "Verification must match this deployment and your connected EVM wallet" });
+    await verifyLoopIdentitySession(req.headers.authorization, body.delegator);
+    const binding = { ...body, delegator: body.delegator };
+    if (!validOwnershipWindow(binding) || typeof body.nativeSignature !== "string" ||
+        !await verifyLoopNativeOwnership("polygon", body.evmAddress, identityOwnershipMessage(binding), body.nativeSignature)) {
+      return reply.code(401).send({ error: "Fresh consent from the native wallet is required" });
+    }
+    if (redisConnection.status !== "ready") return reply.code(503).send({ error: "Identity replay protection is unavailable" });
+    if (!await consumeOwnershipNonce("identity", body.ownershipNonce!)) return reply.code(409).send({ error: "This verification was already used" });
+    return reply.header("Cache-Control", "no-store").send({ user: await registerVerifiedIdentity({ cantonPartyId: body.delegator, evmAddress: body.evmAddress }) });
+  } catch (error) { return loopWorkflowFailure(error, reply); }
 });
 
 // --- Create a StakingRequest ---
@@ -363,6 +375,9 @@ const VALID_CHAINS = new Set([
 ]);
 
 interface CreateRequestBody {
+  ownershipNonce?: string;
+  ownershipSignedAt?: number;
+  nativeSignature?: string;
   evmAddress: string;
   amountPol: string; // decimal string, e.g. "1.5"
   clientNetworkMode?: "testnet" | "mainnet";
@@ -397,6 +412,20 @@ async function handleStakingRequest(req: FastifyRequest<{ Body: CreateRequestBod
     : null;
   const chain = req.body.chain ?? "polygon";
   const delegator = req.body.delegator || config.cantonDelegatorParty;
+  if (!externalLoop) {
+    try {
+      await verifyLoopIdentitySession(req.headers.authorization, delegator);
+      if (!validOwnershipWindow(req.body) || !LOOP_NATIVE_CHAINS.has(chain) ||
+          typeof req.body.nativeSignature !== "string" || req.body.nativeSignature.length > 16000 ||
+          !await verifyLoopNativeOwnership(chain as LoopNativeChain, evmAddress, stakingOwnershipMessage({ ...req.body, delegator }), req.body.nativeSignature)) {
+        return reply.code(401).send({ error: "A fresh native-wallet signature for this exact staking request is required" });
+      }
+      if (redisConnection.status !== "ready") return reply.code(503).send({ error: "Request replay protection is unavailable" });
+      if (!await consumeOwnershipNonce("request", req.body.ownershipNonce!)) return reply.code(409).send({ error: "This signed request was already used; check pending positions before trying again" });
+    } catch (error) {
+      return loopWorkflowFailure(error, reply);
+    }
+  }
   if (externalLoop) {
     if (!LOOP_NATIVE_CHAINS.has(chain) || !req.body.delegator) {
       return reply.code(400).send({ error: "External Loop staking requires a supported native chain and your connected Loop party; no hosted fallback is available" });
@@ -695,7 +724,7 @@ async function handleStakingRequest(req: FastifyRequest<{ Body: CreateRequestBod
         chain: chain as LoopNativeChain, validator: validator!,
         ...(chain === "solana" ? { stakeAccountAddress, stakeRentLamports: solanaRentLamports! } : {}) });
     }
-    const user = await upsertUserIdentity({ cantonPartyId: delegator, evmAddress });
+    const user = await registerVerifiedIdentity({ cantonPartyId: delegator, evmAddress, allowAdditionalWallet: true });
     const result = await cantonDelegator.createContract({
       templateId: TEMPLATES.StakingRequest,
       argument: {
@@ -733,6 +762,7 @@ async function handleStakingRequest(req: FastifyRequest<{ Body: CreateRequestBod
       ...(solanaRentLamports ? { stakeRentLamports: solanaRentLamports } : {}) };
   } catch (err) {
     if (externalLoop) return loopWorkflowFailure(err, reply);
+    if (err instanceof IdentityConflictError) return reply.code(err.statusCode).send({ error: err.message });
     req.log.error(err);
     return reply.code(500).send({ error: String(err) });
   }
@@ -740,7 +770,7 @@ async function handleStakingRequest(req: FastifyRequest<{ Body: CreateRequestBod
 
 function loopWorkflowFailure(error: unknown, reply: FastifyReply) {
   // Do not expose upstream bodies, account responses, signatures or tokens.
-  if (error instanceof LoopWorkflowError) return reply.code(error.statusCode).send({ error: error.message });
+  if (error instanceof LoopWorkflowError || error instanceof LoopSessionError || error instanceof IdentityConflictError) return reply.code(error.statusCode).send({ error: error.message });
   return reply.code(503).send({ error: "Loop staking preflight or reconciliation is unavailable; no native stake should be sent" });
 }
 
@@ -921,7 +951,8 @@ await app.register(readinessRoutes);
 await app.register(rpcRoutes);
 await app.register(sweepRoutes);
 await app.register(accountRewardRoutesFor({ ledger: canton, db: prisma, template: TEMPLATES.StakingPosition,
-  networkMode: config.networkMode, loopStakingEnabled: config.loopStakingEnabled }));
+  networkMode: config.networkMode, loopStakingEnabled: config.loopStakingEnabled,
+  payoutsEnabled: config.payoutsEnabled, rewardSource: config.rewardSource, rewardModel: config.rewardModel, cantonNetwork: config.cantonNetwork }));
 
 // --- Validator scoring routes ---
 await app.register(validatorRoutes);

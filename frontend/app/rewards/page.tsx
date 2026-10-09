@@ -38,8 +38,8 @@ export default function RewardsPage() {
   const history = rewards?.history?.events ?? [];
   const cc = history.filter(event => event.kind === "cc");
   const ccTotal = historyAvailable ? recordedRewardTotal(cc) : undefined;
-  const loopPaymentsDisabled = networkMode === "testnet" &&
-    (rewards?.policy.ccPayments === "disabled" || process.env.NEXT_PUBLIC_LOOP_STAKING_FLOW === "external");
+  const loopPaymentsDisabled = rewards?.policy.ccPayments === "disabled";
+  const paymentsEnabled = rewards?.policy.ccPayments === "enabled";
   const payoutGroups = isConnected ? nativeRewardGroups(history) : [];
   const singlePayout = payoutGroups.length === 1 ? payoutGroups[0] : undefined;
   const filtered = history.filter(event => (kind === "all" || event.kind === kind) && (positionId === "all" || event.positionId === positionId));
@@ -56,7 +56,7 @@ export default function RewardsPage() {
     <div className={`account-metrics${payoutGroups.length ? "" : " account-rewards-metrics--cc-only"}`}>
       {payoutGroups.length > 0 && <AccountMetric label="Recorded native payouts" value={singlePayout ? singlePayout.total === undefined ? "—" : `${fmt(singlePayout.total, 2)} ${singlePayout.symbol}` : `${payoutGroups.length} assets`} detail={`${rewards?.history?.hasMore ? "Displayed payouts" : "Recorded payouts"} · last ${days} days`} icon="stack" color="#b25cff" />}
       <AccountMetric label="CC allocations" value={ccTotal === undefined ? "—" : `${fmt(ccTotal, 2)} CC`} detail={`${rewards?.history?.hasMore ? "Displayed allocations" : "Recorded allocations"} · last ${days} days`} icon="coin" color="#f3c442" series={cc.slice(0, 8).reverse().map(e => Number(e.amount))} />
-      <AccountMetric label="CC payments" value={loopPaymentsDisabled ? "Disabled" : "Unverified"} detail={loopPaymentsDisabled ? "Loop user claims and splits are not configured" : "Allocation records do not verify payment"} icon="clock" color="#3cacff" />
+      <AccountMetric label="CC payments" value={loopPaymentsDisabled ? "Disabled" : paymentsEnabled ? "Enabled" : "Unverified"} detail={paymentsEnabled ? "Verified recipients only · settlement shown per payout" : "Allocation records do not verify payment"} icon="clock" color="#3cacff" />
       <AccountMetric label="Recorded events" value={historyAvailable ? history.length : "—"} detail={`${rewards?.history?.hasMore ? "Latest displayed events" : "Payouts + allocations"} · ${addresses.length} connected wallet${addresses.length === 1 ? "" : "s"}`} icon="activity" color="#b25cff" />
     </div>
     <div className="account-two-col account-rewards-layout">
@@ -88,7 +88,9 @@ export default function RewardsPage() {
       <summary>How rewards work <span>Payment status and recorded rounds</span></summary>
       {detailsOpen && <div className="account-rewards-footer">
       <AccountPanel title="CC allocation versus payment" icon="coin" description="Recorded activity is separate from claimed rewards and wallet transfers.">
-        <p className="account-muted">{loopPaymentsDisabled ? "CC claims, per-user beneficiary splits and payments are not yet configured for Loop TestNet positions. Existing legacy allocation records remain visible; they are not verified wallet payouts." : "History shows recorded beneficiary allocations. A recorded allocation or round total alone does not prove a reward was claimed or transferred to your wallet."}</p>
+        {rewards?.policy.rewardModel === "mainnet-traffic" && <p className="account-muted">Allocations use an estimated MainNet traffic-fee model capped by observed {rewards.policy.cantonNetwork ?? "Canton"} provider coupons. Estimated bytes and fees are not measured MainNet earnings.</p>}
+        {paymentsEnabled && <p className="account-muted">Payouts require a verified Loop identity and native-wallet consent. Unanswered offers must be accepted in Loop. Old unverified links remain held for review.</p>}
+        <p className="account-muted">{loopPaymentsDisabled ? "CC payments are disabled in this deployment. Recorded allocations remain visible and do not prove wallet settlement." : "History shows recorded beneficiary allocations. A recorded allocation or round total alone does not prove a reward was claimed or transferred to your wallet."}</p>
         <p className="account-muted">Native yield is only included after a payout has been recorded. Liquid holdings and unmeasured yield are excluded. No wallet balance or position amount is counted as earned CC.</p>
         <LoopRewardEntitlements />
       </AccountPanel>

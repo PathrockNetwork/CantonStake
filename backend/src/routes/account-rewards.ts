@@ -43,6 +43,10 @@ export function accountRewardRoutesFor(deps: {
   template: string;
   networkMode: NetworkMode;
   loopStakingEnabled: boolean;
+  payoutsEnabled?: boolean;
+  rewardSource?: string;
+  rewardModel?: string;
+  cantonNetwork?: string;
 }): FastifyPluginAsync {
   return async app => {
     app.post<{ Body: AccountRewardsQuery }>("/api/account/rewards", {
@@ -65,7 +69,7 @@ export function accountRewardRoutesFor(deps: {
       const days = req.body.days ?? 30, limit = req.body.limit ?? 250;
       const since = new Date(Date.now() - days * 86_400_000);
       const chains = PORTFOLIO_CHAINS.flatMap(chain => [chain, `${chain}-${deps.networkMode}`]);
-      if (deps.networkMode === "testnet") chains.push("polygon-amoy");
+      if (deps.networkMode === "testnet") chains.push("polygon-amoy", "polygon-liquid");
       const position = { evmAddress: { in: addresses }, chain: { in: chains } };
       const positionRead = async () => {
         const contracts = await deps.ledger.activeContracts(deps.template, AbortSignal.timeout(8000));
@@ -134,7 +138,10 @@ export function accountRewardRoutesFor(deps: {
         positions: positions.status === "fulfilled" ? positions.value : null,
         history: history.status === "fulfilled" ? history.value : null,
         ...(req.body.includeRounds ? { rounds: rounds.status === "fulfilled" ? rounds.value : null } : {}),
-        policy: { ccPayments: loop ? "disabled" : "unverified", beneficiarySplit: loop ? "not_configured" : "unverified" },
+        policy: { ccPayments: deps.payoutsEnabled ? "enabled" : deps.payoutsEnabled === false || loop ? "disabled" : "unverified",
+          beneficiarySplit: "unverified", rewardSource: deps.rewardSource ?? "unknown", rewardModel: deps.rewardModel ?? "unknown",
+          cantonNetwork: deps.cantonNetwork ?? "unknown", settlementEvidence: "per-payout-ledger-observation",
+          identityVerificationRequired: true },
       };
     });
   };

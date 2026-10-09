@@ -38,6 +38,12 @@ describe("Position rewards", () => {
     const html = render(p);
     expect(html).toContain("1.50 CC");
     expect(html).not.toContain("Not linked");
+    expect(html).not.toContain("CC allocations are disabled for this Amoy test route");
+    expect(html).toContain("recorded beneficiary allocations, not verified payments");
+  });
+  it("preserves allocation history even when CC payments are disabled", () => {
+    const p = { ...props(), loopPaymentsDisabled: true };
+    expect(render(p)).toContain("3.00 CC");
   });
   it("shows liquid reward status without Canton registration or validator positions", () => {
     const p = props(); p.positions = []; p.totals.clear();

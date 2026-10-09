@@ -14,9 +14,10 @@ import { readAptosUnbondReceipt } from "./aptos-unbond-receipt.js";
 import { readPolkadotUnbondReceipt } from "./polkadot-unbond-receipt.js";
 import { parsePolkadotPoolKey } from "./polkadot-rpc.js";
 import { loopWorkflowGate, loopDeployment } from "./loop-deployment.js";
-import { isCantonParty, isContractId } from "./canton-network.js";
+import { isContractId } from "./canton-network.js";
+import { verifyLoopIdentitySession } from "./loop-session.js";
 
-const { label: cantonLabel, loopOrigin } = config.cantonNetworkInfo;
+const { label: cantonLabel } = config.cantonNetworkInfo;
 export { loopWorkflowGate, loopDeployment } from "./loop-deployment.js";
 
 const TTL_SECONDS = 1800;
@@ -30,7 +31,7 @@ export class LoopWorkflowError extends Error {
  * Missing configuration is not permission to abandon the old participant. */
 export async function loopPreservationGate(): Promise<string | null> {
   const mirrors = await prisma.stakingPosition.findMany({
-    where: { status: { in: ["Bonded", "Unbonding"] } },
+    where: { status: { in: ["Bonded", "Unbonding"] }, chain: { not: "polygon-liquid" } },
     select: { contractId: true, evmAddress: true, amountPol: true },
   });
   if (!mirrors.length) return null;
@@ -44,25 +45,7 @@ export async function loopPreservationGate(): Promise<string | null> {
 export async function verifyLoopSession(authorization: string | undefined, expectedParty: string): Promise<void> {
   const gate = loopWorkflowGate();
   if (gate) throw new LoopWorkflowError(503, gate);
-  if (!authorization || !/^Bearer [^\s]{1,8192}$/.test(authorization) || !isCantonParty(expectedParty)) {
-    throw new LoopWorkflowError(401, `A verified Loop wallet session on ${cantonLabel} is required`);
-  }
-  let response: Response;
-  try {
-    // Fixed origin: never send a user's Loop bearer token to a body-supplied
-    // endpoint, arbitrary proxy upstream or redirect.
-    response = await fetch(`${loopOrigin}/api/v1/.connect/pair/account`, {
-      headers: { Authorization: authorization, Accept: "application/json" },
-      redirect: "error", signal: AbortSignal.timeout(5000),
-    });
-  } catch {
-    throw new LoopWorkflowError(503, "Loop session verification is unavailable");
-  }
-  if ([400, 401, 403, 404].includes(response.status)) throw new LoopWorkflowError(401, "Loop session expired or was rejected; reconnect your wallet");
-  if (!response.ok) throw new LoopWorkflowError(503, "Loop session verification is unavailable");
-  let account: { party_id?: string; public_key?: string };
-  try { account = await response.json(); } catch { throw new LoopWorkflowError(503, "Loop returned an invalid account response"); }
-  if (account.party_id !== expectedParty || !account.public_key) throw new LoopWorkflowError(403, "The verified Loop party does not match this staking intent");
+  await verifyLoopIdentitySession(authorization, expectedParty);
 }
 
 export interface PreparedLoopIntent {
@@ -190,8 +173,11 @@ export async function adoptLoopIntent(intent: PreparedLoopIntent) {
     } });
     if (duplicate) throw new LoopWorkflowError(409, "Another request is pending for this wallet and validator; cancel or settle it first");
     const user = byParty ?? await tx.user.create({ data: {
-      cantonPartyId: intent.delegator, evmAddress: byWallet ? null : intent.evmAddress,
+      cantonPartyId: intent.delegator, evmAddress: byWallet ? null : intent.evmAddress, identityVerifiedAt: new Date(),
     } });
+    if (byParty) await tx.user.update({ where: { id: user.id }, data: { identityVerifiedAt: new Date() } });
+    await tx.userWalletVerification.upsert({ where: { userId_walletAddress: { userId: user.id, walletAddress: intent.evmAddress } },
+      create: { userId: user.id, walletAddress: intent.evmAddress }, update: { verifiedAt: new Date() } });
     await tx.stakingIntent.create({ data: { requestContractId: contractId, userId: user.id,
       chain: intent.chain, evmAddress: intent.evmAddress, amountPol: intent.amountPol, validatorAddress: intent.validator,
       stakeAccountAddress: intent.chain === "solana" ? intent.stakeAccountAddress : null,

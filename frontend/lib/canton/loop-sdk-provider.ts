@@ -276,7 +276,8 @@ export async function approveConnectedLoopStake(deployment: LoopStakingDeploymen
 
 /** Short-lived pass-through to our own backend only; never persist or log it. */
 export async function connectedLoopAuthorization(expectedParty: string): Promise<string> {
-  if (!isLoopStakingNetwork(resolveNetwork())) throw new Error("Connect Loop on Canton DevNet or TestNet before preparing a stake.");
+  // Session authentication is also needed for profile edits. This does not
+  // grant on-ledger staking permission; approveConnectedLoopStake stays gated.
   const signer = await getConnectedLoopSigner(expectedParty);
   if (signer !== verifiedProvider) throw new Error("Loop account changed; reconnect before staking.");
   const token = verifiedProvider.getAuthToken();

@@ -31,22 +31,36 @@ export function simulateMainnetReward(txCount: number, ccUsd: number, p: Mainnet
 }
 
 const CURSOR_PREFIX = "canton-app-traffic:";
+export interface AppTrafficMeasurement { txCount: number; key: string; previousCursor: string | null; cursor: string }
 
 /** Count this app's own ledger transactions (workflow "cantonstake…") since the last measurement. */
 export async function measureAppTransactions(ledger: Pick<CantonClient, "ledgerEnd" | "workflowTransactions">,
-  db: Pick<PrismaClient, "watcherCursor">, opts: { synchronizerId: string; provider: string; maxPages?: number }): Promise<number> {
+  db: Pick<PrismaClient, "watcherCursor">, opts: { synchronizerId: string; provider: string; maxPages?: number }): Promise<AppTrafficMeasurement> {
   const key = `${CURSOR_PREFIX}${opts.synchronizerId}:${opts.provider}`;
   const end = await ledger.ledgerEnd();
   const stored = await db.watcherCursor.findUnique({ where: { key } });
   // First run: start from now rather than counting the whole history into one round.
   let cursor = stored ? Number(stored.lastScannedBlock) : end;
-  if (!Number.isSafeInteger(cursor) || cursor < 0) throw new Error("Stored app traffic cursor is invalid");
+  if (!Number.isSafeInteger(end) || !Number.isSafeInteger(cursor) || cursor < 0 || cursor > end) throw new Error("Stored app traffic cursor or ledger end is invalid");
   let count = 0;
   for (let page = 0; page < (opts.maxPages ?? 50) && cursor < end; page++) {
     const { matching, lastOffset } = await ledger.workflowTransactions("cantonstake", cursor, end);
+    if (!Number.isSafeInteger(matching) || matching < 0 || (lastOffset !== null &&
+        (!Number.isSafeInteger(lastOffset) || lastOffset <= cursor || lastOffset > end))) throw new Error("App traffic page is malformed or failed to advance");
+    if (lastOffset === null && matching !== 0) throw new Error("App traffic page has transactions but no offset");
     count += matching;
-    cursor = lastOffset === null || lastOffset <= cursor ? end : lastOffset;
+    cursor = lastOffset === null ? end : lastOffset;
   }
-  await db.watcherCursor.upsert({ where: { key }, create: { key, lastScannedBlock: String(cursor) }, update: { lastScannedBlock: String(cursor) } });
-  return count;
+  if (cursor !== end) throw new Error("App traffic traversal is incomplete; no measurement cursor was advanced");
+  // Observation only: the allocator commits the cursor and reward rows together.
+  return { txCount: count, key, previousCursor: stored?.lastScannedBlock ?? null, cursor: String(cursor) };
+}
+
+export async function commitAppTraffic(db: Pick<PrismaClient, "watcherCursor">, measurement: AppTrafficMeasurement) {
+  const { key, previousCursor, cursor } = measurement;
+  if (previousCursor === null) await db.watcherCursor.create({ data: { key, lastScannedBlock: cursor } });
+  else {
+    const claimed = await db.watcherCursor.updateMany({ where: { key, lastScannedBlock: previousCursor }, data: { lastScannedBlock: cursor } });
+    if (claimed.count !== 1) throw new Error("App traffic was allocated concurrently; roll back this round");
+  }
 }

@@ -7,8 +7,8 @@
  *   3. Calculates beneficiary allocations (75/25)
  *   4. Records those allocations in the database
  *
- * This service does not claim or transfer CC to Loop wallets. Recorded
- * allocations are not settled on-ledger payouts.
+ * The ledger-coupon source can separately offer/settle configured CC payouts.
+ * Recorded allocations alone are never proof of wallet settlement.
  *
  * BullMQ + Redis provides:
  *   - Reliable scheduling with retry logic
@@ -26,7 +26,7 @@ import IORedis from "ioredis";
 import { config } from "./config.js";
 import { canton, TEMPLATES } from "./canton.js";
 import { allocateRound, syncProviderCoupons } from "./services/canton-reward-coupons.js";
-import { measureAppTransactions, simulateMainnetReward } from "./services/mainnet-reward-simulation.js";
+import { commitAppTraffic, measureAppTransactions, simulateMainnetReward } from "./services/mainnet-reward-simulation.js";
 import { getUsdPrices, priceSymbolForChain } from "./services/prices.js";
 import { fromUnits, toUnits } from "./services/daml-decimal.js";
 import { executePayouts, planPayouts, reconcilePayouts } from "./services/reward-payouts.js";
@@ -45,7 +45,7 @@ async function runPayouts() {
     const reconciled = await reconcilePayouts(prisma, canton, registry, cfg);
     const planned = await planPayouts(prisma, cfg);
     const executed = await executePayouts(prisma, canton, registry, cfg);
-    console.log(`[payouts] reconciled ${reconciled.length}, planned ${planned.planned} (skipped ${planned.skippedUsers} without a Canton party), ` +
+    console.log(`[payouts] reconciled ${reconciled.length}, planned ${planned.planned} (skipped ${planned.skippedUsers} with unverified or ineligible recipients), ` +
       `executed ${executed.map(r => `${r.id}:${r.status}`).join(", ") || "none"}`);
     for (const r of executed) if (r.error) console.warn(`[payouts] ${r.id} ${r.status}: ${r.error}`);
   } catch (error) {
@@ -82,14 +82,15 @@ async function processLedgerCouponRound(roundId: string, roundNumber: number, bo
   const { prices } = await getUsdPrices();
   // MainNet model: distribute only what MainNet would pay for this app's traffic,
   // never more than the network actually issued; the rest stays in the provider wallet.
-  const simulation = config.rewardModel === "mainnet-traffic"
-    ? simulateMainnetReward(await measureAppTransactions(canton, prisma, {
+  const measurement = config.rewardModel === "mainnet-traffic"
+    ? await measureAppTransactions(canton, prisma, {
         synchronizerId: config.cantonSynchronizerId, provider: config.cantonAppProviderParty,
-      }), prices.CC ?? 0, config.mainnetRewardParams)
-    : null;
+      }) : null;
+  const simulation = measurement ? simulateMainnetReward(measurement.txCount, prices.CC ?? 0, config.mainnetRewardParams) : null;
   const earned = fromUnits(simulation && simulation.rewardCc < issuedUnits ? simulation.rewardCc : issuedUnits);
   const allocations = allocateRound(earned, valuedStakes(bonded, prices));
   await prisma.$transaction(async tx => {
+    if (measurement) await commitAppTraffic(tx, measurement);
     await tx.rewardEvent.createMany({ data: allocations.map(a => ({ userId: a.userId, positionId: a.positionId, roundId,
       ccAmount: a.total, userShare: a.userShare, treasuryShare: a.treasuryShare, userWeight: 0.75, treasuryWeight: 0.25 })) });
     for (const [index, a] of allocations.entries()) {
@@ -105,7 +106,7 @@ async function processLedgerCouponRound(roundId: string, roundNumber: number, bo
       appTxCount: simulation?.txCount ?? null, appTrafficUsd: simulation ? simulation.trafficUsd.toFixed(6) : null,
       error: toUnits(earned) > 0n && !allocations.length ? `No valued bonded positions: ${earned} CC retained by the treasury` : null,
     } });
-  });
+  }, { isolationLevel: "Serializable" });
   counter("cantonstake_reward_rounds_total", "Completed reward rounds", { source: "ledger-coupons" });
   counter("cantonstake_cc_minted_total", "Cumulative CC minted across rounds", {}, Number(earned));
   console.log(`[reward-rounds] round #${roundNumber} complete from ledger coupons: ${coupons.length} coupon(s) = ${fromUnits(issuedUnits)} CC issued, ` +
@@ -138,7 +139,7 @@ interface RoundPayload {
 }
 
 async function processRound(job: Job<RoundPayload>) {
-  if (config.networkMode === "testnet" && config.loopStakingEnabled) {
+  if (config.networkMode === "testnet" && config.loopStakingEnabled && config.rewardSource !== "ledger-coupons") {
     // Do not inherit LocalNet FeaturedAppRight/split/Scan settings and present
     // bookkeeping as payouts to the newly connected real Loop parties.
     return { skipped: true, reason: "Loop TestNet CC claiming and transfers are not enabled" };

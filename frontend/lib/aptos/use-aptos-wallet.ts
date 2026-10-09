@@ -1,6 +1,8 @@
 "use client";
 
 import { useWallet } from "@aptos-labs/wallet-adapter-react";
+import { getAptosWallets } from "@aptos-labs/wallet-standard";
+import { isPetraWebWallet } from "@aptos-labs/wallet-adapter-core";
 import { AccountAuthenticatorEd25519, Aptos, AptosConfig, Ed25519PublicKey, Ed25519Signature,
   generateSigningMessageForTransaction, generateUserTransactionHash, Network } from "@aptos-labs/ts-sdk";
 import { sha256 } from "@cosmjs/crypto";
@@ -140,7 +142,8 @@ export function useAptosWallet() {
     isConnecting: wallet.isLoading,
     name: wallet.wallet?.name ?? null,
     network: wallet.network,
-    wallets: wallet.wallets.map((item) => ({ name: item.name })),
+    wallets: wallet.wallets.map((item) => ({ name: item.name, icon: item.icon,
+      detected: typeof window !== "undefined" && !isPetraWebWallet(item, false) && getAptosWallets().aptosWallets.some((registered) => registered === item) })),
     error,
     connect,
     switchNetwork,

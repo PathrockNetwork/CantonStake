@@ -1,7 +1,7 @@
 "use client";
 
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
-import { type WalletName } from "@solana/wallet-adapter-base";
+import { WalletReadyState, type WalletName } from "@solana/wallet-adapter-base";
 import { Authorized, Keypair, PublicKey, StakeProgram, Transaction } from "@solana/web3.js";
 import { useCallback, useRef, useState } from "react";
 import { toBase64 } from "@cosmjs/encoding";
@@ -153,7 +153,7 @@ export function useSolanaWallet() {
   return {
     address, isConnected: wallet.connected && !!address, isConnecting: wallet.connecting,
     name: wallet.wallet?.adapter.name ?? null,
-    wallets: wallet.wallets.map((item) => ({ name: item.adapter.name })),
+    wallets: wallet.wallets.map((item) => ({ name: item.adapter.name, icon: item.adapter.icon, detected: item.adapter.readyState === WalletReadyState.Installed })),
     error, connect, disconnect: wallet.disconnect, assertNetwork, signOwnership, prepareStake, stake, deactivate, withdraw,
     connection,
   };

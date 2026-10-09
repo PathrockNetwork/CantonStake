@@ -1,6 +1,8 @@
 "use client";
 
 import { useCurrentAccount, useCurrentClient, useDAppKit, useWalletConnection, useWallets } from "@mysten/dapp-kit-react";
+import { SlushWallet } from "@mysten/slush-wallet";
+import { getWalletForHandle } from "@wallet-standard/ui-registry";
 import { Transaction, TransactionDataBuilder } from "@mysten/sui/transactions";
 import { useCallback, useState } from "react";
 import { assertWalletOwner } from "../wallet-binding";
@@ -20,7 +22,9 @@ export interface UseSuiWalletReturn {
   networkSupported: boolean;
   isConnecting: boolean;
   error: string | null;
-  connect: () => Promise<void>;
+  wallets: ReturnType<typeof useWallets>;
+  detectedWalletNames: string[];
+  connect: (walletName?: string) => Promise<void>;
   disconnect: () => void;
   assertNetwork: () => Promise<void>;
   signOwnership: (message: string, expectedWallet: string) => Promise<string>;
@@ -56,18 +60,17 @@ export function useSuiWallet(): UseSuiWalletReturn {
     assertSuiNetworkIdentifier(result.data?.chainIdentifier);
   }, [client]);
 
-  const connect = useCallback(async () => {
+  const connect = useCallback(async (walletName?: string) => {
     setError(null);
-    if (wallets.length === 0) {
+    const selectedWallet = wallets.find((wallet) => wallet.name === walletName) ?? (walletName ? null : wallets[0]);
+    if (!selectedWallet) {
       setError(
         "No Sui wallet detected. Install Slush, Suiet, or another Sui wallet extension.",
       );
       return;
     }
     try {
-      // Pick the first available wallet — the user is then prompted by
-      // their wallet's native UI to approve.
-      await dAppKit.connectWallet({ wallet: wallets[0]! });
+      await dAppKit.connectWallet({ wallet: selectedWallet });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -170,6 +173,11 @@ export function useSuiWallet(): UseSuiWalletReturn {
     networkSupported: !!account?.chains.includes(`sui:${suiNetwork.name}`),
     isConnecting: connection.isConnecting,
     error,
+    wallets,
+    detectedWalletNames: wallets.filter((wallet) => {
+      try { return !(getWalletForHandle(wallet) instanceof SlushWallet); }
+      catch { return false; }
+    }).map((wallet) => wallet.name),
     connect,
     disconnect: () => { void dAppKit.disconnectWallet(); },
     assertNetwork: assertSuiNetwork,

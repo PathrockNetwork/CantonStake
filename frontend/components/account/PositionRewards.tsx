@@ -49,18 +49,18 @@ export function PositionRewards({ positions, totals, allocationsAvailable, holdi
       <div ref={list} className="account-reward-position-scroll" tabIndex={0} role="region" aria-label="Position rewards list">
         <ul className="account-reward-position-list">{visible.map(entry => <RewardPositionCard key={entry.id} entry={entry}
           allocation={totals.get(entry.id) ?? 0} allocationsAvailable={allocationsAvailable}
-          ccDisabled={loopPaymentsDisabled && entry.kind === "validator"}
           updatedAt={entry.kind === "liquid" ? holdings.updatedAt : positionsUpdatedAt} />)}</ul>
       </div>
       <footer className="account-reward-position-footer"><span aria-live="polite">Showing {visible.length} of {entries.length} positions</span><AccountLink href="/positions">Manage positions</AccountLink></footer>
     </> : <AccountEmpty>{!connected ? "Your positions and reward status appear here." : positionsLoading || holdings.isLoading ? "Loading positions…" : positionsUnavailable || holdings.isError ? "Position rewards are temporarily unavailable." : "No active positions to display."}</AccountEmpty>}
     {networkMode === "testnet" && holdings.isError && <p role="status" className="account-amount-warning">Liquid reward status is temporarily unavailable. <button className="account-button" onClick={() => void holdings.refetch()}>Retry liquid holdings</button></p>}
     {positionsUnavailable && <p role="status" className="account-amount-warning">Validator allocations are temporarily unavailable.</p>}
+    {loopPaymentsDisabled && <p className="account-muted">CC payments are disabled. Recorded allocations remain visible.</p>}
   </AccountPanel>;
 }
 
-function RewardPositionCard({ entry, allocation, allocationsAvailable, updatedAt, ccDisabled }: {
-  entry: ListedPosition; allocation: number; allocationsAvailable: boolean; updatedAt?: number; ccDisabled: boolean;
+function RewardPositionCard({ entry, allocation, allocationsAvailable, updatedAt }: {
+  entry: ListedPosition; allocation: number; allocationsAvailable: boolean; updatedAt?: number;
 }) {
   const [expanded, setExpanded] = useState(false);
   const detailsId = useId();
@@ -69,7 +69,7 @@ function RewardPositionCard({ entry, allocation, allocationsAvailable, updatedAt
   const explorer = entry.kind === "liquid" ? `https://amoy.polygonscan.com/token/${entry.state.token}?a=${entry.state.wallet}`
     : entry.position.chainMeta?.evmTxHash ? chain?.explorer?.tx(entry.position.chainMeta.evmTxHash) : undefined;
   const liquidUnlinked = liquid && !entry.state.ccRewardsEnabled;
-  const allocationText = ccDisabled ? "Disabled" : liquidUnlinked ? "Not linked" : allocationsAvailable && Number.isFinite(allocation) ? `${fmt(allocation, 2)} CC` : "—";
+  const allocationText = liquidUnlinked ? "Not linked" : allocationsAvailable && Number.isFinite(allocation) ? `${fmt(allocation, 2)} CC` : "—";
   const status = liquid ? "Holding" : entry.status;
   return <li className="account-reward-position-card" data-staking-type={entry.kind}>
     <div className="account-reward-position-heading">
@@ -86,12 +86,11 @@ function RewardPositionCard({ entry, allocation, allocationsAvailable, updatedAt
     <strong className="account-reward-position-amount">{liquid ? entry.amount : fmt(Number(entry.amount), 2)} {entry.symbol}{entry.status === "Bonded" ? " bonded" : ""}</strong>
     <dl className="account-reward-position-stats">
       <div><dt title="Native yield measurement is not available for this position.">Native yield <span aria-hidden="true"><I size={11}><circle cx="8" cy="8" r="6" /><path d="M8 7v4M8 4.5v.5" /></I></span></dt><dd>Not measured</dd></div>
-      <div><dt title={liquidUnlinked ? "Link this wallet to a CantonStake account to include its sPOL in CC rewards." : ccDisabled ? "Loop TestNet claims and beneficiary splits are not configured." : "Recorded beneficiary share; not proof of payment."}>CC allocation <span aria-hidden="true"><I size={11}><circle cx="8" cy="8" r="6" /><path d="M8 7v4M8 4.5v.5" /></I></span></dt><dd>{allocationText}</dd></div>
+      <div><dt title={liquidUnlinked ? "Link this wallet to a CantonStake account to include its sPOL in CC rewards." : "Recorded beneficiary share; not proof of payment."}>CC allocation <span aria-hidden="true"><I size={11}><circle cx="8" cy="8" r="6" /><path d="M8 7v4M8 4.5v.5" /></I></span></dt><dd>{allocationText}</dd></div>
     </dl>
     <div id={detailsId} hidden={!expanded} className="account-reward-position-details">
       {entry.kind === "validator" && <p>{rewardPositionLabel(entry.position)}</p>}
-      <p>{liquid ? "Liquid yield reporting is not available yet. CC allocations are disabled for this Amoy test route."
-        : ccDisabled ? "CC claims and per-user beneficiary splits are not configured for this Loop TestNet position."
+      <p>{liquidUnlinked ? "Link this wallet through verified Loop and native-wallet consent to include its liquid stake in CC allocations. Liquid yield is not measured."
         : !allocationsAvailable ? "Recorded CC allocations are temporarily unavailable."
         : allocation === 0 ? "No CC allocations recorded in this period." : "CC amounts show recorded beneficiary allocations, not verified payments."}</p>
       {networkMode === "testnet" && <p>Test tokens have no cash value.</p>}
