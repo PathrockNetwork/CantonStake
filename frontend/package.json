@@ -14,9 +14,9 @@
     "@anza-xyz/solana-rpc-get-stake-activation": "^1.0.1",
     "@aptos-labs/ts-sdk": "^5.2.1",
     "@aptos-labs/wallet-adapter-react": "^8.3.3",
-    "@cosmjs/stargate": "^0.39.0",
     "@cosmjs/crypto": "^0.39.0",
     "@cosmjs/encoding": "^0.39.0",
+    "@cosmjs/stargate": "^0.39.0",
     "@cosmjs/tendermint-rpc": "^0.39.0",
     "@fivenorth/loop-sdk": "0.14.0",
     "@mysten/dapp-kit-react": "^2.1.35",
@@ -34,9 +34,9 @@
     "@x402/svm": "^2.25.0",
     "buffer": "^6.0.3",
     "cosmjs-types": "^0.11.0",
-    "next": "14.2.35",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
+    "next": "15.5.27",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
     "viem": "^2.21.0",
     "wagmi": "^2.12.0"
   },
@@ -45,10 +45,17 @@
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "autoprefixer": "^10.4.19",
-    "postcss": "^8.4.40",
+    "postcss": "8.5.29",
     "tailwindcss": "^3.4.7",
     "typescript": "^5.4.0",
     "vitest": "^2.1.9"
+  },
+  "overrides": {
+    "postcss": "$postcss",
+    "shell-quote": "^1.12.0",
+    "source-map-js": "^1.2.2",
+    "http-cache-semantics": "^4.3.0",
+    "ws@>=8 <9": "^8.22.0"
   },
   "comments": {
     "noble-hashes-version-conflict": "viem/wagmi need @noble/hashes 1.x (paths: ./sha2, ./utils); cosmjs and @mysten/sui need 2.x (paths: ./webcrypto.js). No single version satisfies both, so we let npm hoist each bundled copy."
