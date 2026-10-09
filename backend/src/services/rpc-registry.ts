@@ -17,7 +17,10 @@ export const rpcDefinitions = {
   monad: { protocol: "evm", chainId: mode("10143", "143"), primary: config.monadRpcUrl,
     backups: [mode("https://rpc.ankr.com/monad_testnet", "https://rpc1.monad.xyz")] },
   bnb: { protocol: "evm", chainId: mode("97", "56"), primary: config.bnbRpcUrl,
-    backups: [mode("https://data-seed-prebsc-1-s1.bnbchain.org:8545", "https://bsc-dataseed.bnbchain.org")] },
+    // BNB's official public dataseeds disable MainNet eth_getLogs. The
+    // settlement watcher needs logs, not merely a successful chain-ID probe.
+    backups: mainnet ? ["https://bsc-rpc.publicnode.com", "https://bsc.drpc.org"]
+      : ["https://data-seed-prebsc-1-s1.bnbchain.org:8545"] },
   cosmos: { protocol: "cosmos", chainId: mode("provider", "cosmoshub-4"), primary: config.cosmosRpcUrl,
     backups: [mode("https://cosmos-testnet-rpc.polkachu.com", "https://cosmos-rpc.publicnode.com")] },
   "cosmos-rest": { protocol: "cosmos-rest", chainId: mode("provider", "cosmoshub-4"), primary: config.cosmosRestUrl,

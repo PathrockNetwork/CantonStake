@@ -174,8 +174,12 @@ jobs:
             # Back up before the backend entrypoint applies Prisma migrations.
             umask 077
             mkdir -p .deploy-backups
-            compose exec -T postgres pg_dump -U cantonstake -d cantonstake -Fc \
-              > ".deploy-backups/database-$(date -u +%Y%m%dT%H%M%S)-$$.dump"
+            backup_file=".deploy-backups/database-$(date -u +%Y%m%dT%H%M%S)-$$.dump"
+            compose exec -T postgres pg_dump -U cantonstake -d cantonstake -Fc > "$backup_file"
+            test -s "$backup_file"
+            # Index validation is mandatory, but is not a full restore drill.
+            compose exec -T postgres pg_restore --list < "$backup_file" >/dev/null
+            sha256sum "$backup_file" > "$backup_file.sha256"
             compose up -d --no-deps backend frontend
             # Keep previous images for rollback. Do not prune or recreate data services.
             healthy=false

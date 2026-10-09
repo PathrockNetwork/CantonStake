@@ -49,10 +49,13 @@ test('CLI rejects unknown/duplicate options and remote options on local build', 
   assert.throws(() => parseArgs(['validate', '--network', 'testnet', '--confirm', confirm]));
 });
 
-test('TestNet is configured; MainNet/DevNet do not inherit its endpoint', () => {
+test('DevNet and TestNet have distinct targets; MainNet never inherits either endpoint', () => {
   assert.equal(target.jsonApiUrl, config.testnet.jsonApiUrl);
   assert.throws(() => resolveTarget('mainnet', config, {}), /No verified mainnet/);
-  assert.throws(() => resolveTarget('devnet', config, {}), /No verified devnet/);
+  const devnet = resolveTarget('devnet', config, {});
+  assert.equal(devnet.jsonApiUrl, config.devnet.jsonApiUrl);
+  assert.notEqual(devnet.jsonApiUrl, target.jsonApiUrl);
+  assert.notEqual(devnet.synchronizerId, target.synchronizerId);
 });
 
 test('network-scoped overrides require both URL and complete synchronizer ID', () => {

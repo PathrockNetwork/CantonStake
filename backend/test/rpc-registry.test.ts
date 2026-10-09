@@ -15,3 +15,10 @@ test("Celestia mainnet prefers historical-result providers without changing test
     ? ["https://celestia-mainnet-rpc.itrocket.net", "https://celestia-rpc.publicnode.com"]
     : ["https://rpc-1.testnet.celestia.nodes.guru", "https://celestia-testnet-rpc.itrocket.net"]);
 });
+
+test("BNB mainnet includes log-capable alternatives without leaking them into testnet", () => {
+  assert.deepEqual(rpcDefinitions.bnb.backups, config.networkMode === "mainnet"
+    ? ["https://bsc-rpc.publicnode.com", "https://bsc.drpc.org"]
+    : ["https://data-seed-prebsc-1-s1.bnbchain.org:8545"]);
+  assert.equal(rpcDefinitions.bnb.chainId, config.networkMode === "mainnet" ? "56" : "97");
+});

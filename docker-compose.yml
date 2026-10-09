@@ -32,7 +32,7 @@ services:
     image: postgres:16-alpine
     container_name: ${STACK_NAME:-cantonstake}-postgres
     ports:
-      - "${POSTGRES_PORT:-5433}:5432"
+      - "${POSTGRES_BIND_IP:-127.0.0.1}:${POSTGRES_PORT:-5433}:5432"
     environment:
       POSTGRES_USER: cantonstake
       POSTGRES_PASSWORD: cantonstake
@@ -45,6 +45,14 @@ services:
       timeout: 3s
       retries: 5
     restart: unless-stopped
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-768m}
+    mem_reservation: ${POSTGRES_MEMORY_RESERVATION:-256m}
+    cpus: ${POSTGRES_CPU_LIMIT:-1.0}
+    logging: &bounded-logs
+      driver: json-file
+      options:
+        max-size: "25m"
+        max-file: "4"
 
   redis:
     image: redis:7-alpine
@@ -53,11 +61,12 @@ services:
     # is loopback-only: an unauthenticated public Redis port permits takeover.
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "5"
+    logging: *bounded-logs
+    mem_limit: ${REDIS_MEMORY_LIMIT:-384m}
+    mem_reservation: ${REDIS_MEMORY_RESERVATION:-64m}
+    cpus: ${REDIS_CPU_LIMIT:-0.5}
+    # BullMQ requires noeviction. Refuse extra writes rather than evict jobs.
+    command: ["redis-server", "--maxmemory", "${REDIS_MAXMEMORY:-192mb}", "--maxmemory-policy", "noeviction"]
     volumes:
       - redisdata:/data
     healthcheck:
@@ -78,7 +87,7 @@ services:
     image: ${BACKEND_IMAGE:-cantonstake-backend:local}
     container_name: ${STACK_NAME:-cantonstake}-backend
     ports:
-      - "${BACKEND_PORT:-4001}:4001"
+      - "${BACKEND_BIND_IP:-127.0.0.1}:${BACKEND_PORT:-4001}:4001"
     environment:
       - PORT=4001
       - LOG_LEVEL=info
@@ -120,7 +129,7 @@ services:
       - FEATURED_APP_RIGHT_CID=${FEATURED_APP_RIGHT_CID:-}
       - BENEFICIARY_SPLIT_CID=${BENEFICIARY_SPLIT_CID:-}
       - USE_LEGACY_MARKERS=${USE_LEGACY_MARKERS:-false}
-      - DATABASE_URL=postgresql://cantonstake:cantonstake@postgres:5432/cantonstake
+      - DATABASE_URL=postgresql://cantonstake:cantonstake@postgres:5432/cantonstake?connection_limit=${DATABASE_CONNECTION_LIMIT:-10}&pool_timeout=10
       - REDIS_URL=redis://redis:6379
       - SCAN_API_URL=${SCAN_API_URL:-}
       - REWARD_SOURCE=${REWARD_SOURCE:-}
@@ -174,6 +183,16 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    mem_limit: ${BACKEND_MEMORY_LIMIT:-1536m}
+    mem_reservation: ${BACKEND_MEMORY_RESERVATION:-384m}
+    cpus: ${BACKEND_CPU_LIMIT:-1.5}
+    logging: *bounded-logs
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4001/api/health', {signal: AbortSignal.timeout(4000)}).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
 
   frontend:
     build:
@@ -208,15 +227,28 @@ services:
     image: ${FRONTEND_IMAGE:-cantonstake-frontend:local}
     container_name: ${STACK_NAME:-cantonstake}-frontend
     ports:
-      - "${FRONTEND_PORT:-3001}:3000"
+      - "${FRONTEND_BIND_IP:-127.0.0.1}:${FRONTEND_PORT:-3001}:3000"
     environment:
       - NEXT_PUBLIC_NETWORK_MODE=${NEXT_PUBLIC_NETWORK_MODE:-testnet}
+      # Next standalone otherwise binds Docker's container hostname, excluding
+      # loopback and causing the local health probe to fail despite proxy access.
+      - HOSTNAME=0.0.0.0
       - NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL:-http://localhost:4001}
       - NEXT_PUBLIC_ENABLED_CHAINS=${NEXT_PUBLIC_ENABLED_CHAINS:-polygon}
       - NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=${NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID:-}
     depends_on:
       - backend
     restart: unless-stopped
+    mem_limit: ${FRONTEND_MEMORY_LIMIT:-512m}
+    mem_reservation: ${FRONTEND_MEMORY_RESERVATION:-128m}
+    cpus: ${FRONTEND_CPU_LIMIT:-0.75}
+    logging: *bounded-logs
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000', {signal: AbortSignal.timeout(4000)}).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
 
 volumes:
   pgdata:

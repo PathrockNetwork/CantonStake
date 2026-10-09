@@ -932,6 +932,61 @@ Native staking transactions use the user's wallet; the backend verifies settleme
 
 ## Deployment
 
+### Security release preparation (2026-10-08)
+
+The staged identity migration adds nullable `User.identityVerifiedAt` and
+per-wallet `UserWalletVerification` proofs without rewriting existing identities,
+positions or rewards. Apply migrations before
+starting the new backend (the image entrypoint already does this). Deploy the
+updated frontend alongside it: legacy staking requests now require genuine Loop
+authentication, a native-wallet signature bound to the exact request, and a
+one-use expiring nonce. Profile edits require the genuine Loop session and can
+only update the display name, never wallets or reward recipients.
+
+Old public wallet links are **not automatically trusted** for new CC payouts.
+Users can use **Settings → Verify reward recipient** with their real Loop and
+EVM wallets, without staking again or transferring funds. Conflicting old links
+require operator investigation; never fix them by reassigning positions or
+blindly marking users verified. Existing external Loop/native stake adoption
+also records verification, while preserving the primary wallet.
+Each wallet represented in a staker payout must have its own verified consent;
+verifying one wallet never trusts historical allocations from another wallet.
+
+Payout batches atomically claim every share under Serializable isolation.
+Only selected input holdings count toward funding. A transfer response without
+receiver-owned CC evidence is `uncertain`, not `completed`. Accepted instructions
+may remain pending according to the [token-standard contract](https://docs.sync.global/app_dev/api/splice-api-token-transfer-instruction-v1/Splice-Api-Token-TransferInstructionV1.html).
+Unknown archives, timeouts and interrupted submissions must not be resubmitted.
+Recovery can read stored transaction IDs and instruction history; absent proof,
+keep the batch under review. Failed/rejected/expired shares remain linked to
+their original batch for operator recovery, not automatically paid a second time.
+
+The Compose defaults bind PostgreSQL and app ports to loopback; backend/database
+traffic still uses the unchanged private `postgres:5432` address. Existing
+database credentials and persisted volumes are unchanged. Explicit service
+`*_BIND_IP` overrides are available for reviewed proxy layouts. CPU/RAM budgets,
+health checks, bounded logs, a 10-connection Prisma pool and Redis `noeviction`
+are configurable. These defaults require container recreation to take effect;
+building images alone does not apply them. Verify the proxy reaches loopback
+before the rollout, and apply persistence-service changes in a separate reviewed
+maintenance step. Do not stop LocalNet while any deployment still uses it.
+
+The deployment workflow now validates each backup's nonempty custom-format
+archive index and records its SHA-256 before applying migrations. This is **not
+proof of a full restore**: an operator still needs an isolated restore drill and
+off-host backup/retention evidence. Do not restore over a live production database
+as a test or rotate its password without coordinating every client.
+
+Remaining release gates: supported RPC access for unavailable MainNet chains,
+the MainNet application identities/authenticated runtime handoff and cutover,
+Five North approval and a genuine funded Loop lifecycle, and any unpatched
+transitive wallet-library advisories. DAR deployment itself is already evidenced
+by the 2026-10-05 MainNet upload/inventory/vetting receipts (33 packages, topology
+serial 32); do not upload it again merely to resolve the runtime handoff.
+`LOOP_STAKING_ENABLED` and exact-package approval settings are not enabled by
+these code changes. Test-network traffic-model allocations remain estimates
+capped by observed coupons, not measured MainNet income.
+
 ### RPC failover
 
 All app-owned chain clients (backend watchers/catalogs and browser SDK reads)
@@ -1002,6 +1057,12 @@ during the 2026-09-27 rollout. Publicnode remains a recent-history fallback.
 Monad validator reads are paced in four-item batches; BNB's four-read validator
 lookups are also bounded. Concurrent refreshes for one chain share a fetch so
 they do not multiply RPC load or starve settlement watchers.
+BNB MainNet now includes PublicNode and dRPC backups rather than relying on
+official public dataseeds, whose [`eth_getLogs` is disabled](https://docs.bnbchain.org/bnb-smart-chain/developers/json_rpc/json-rpc-endpoint/).
+On 2026-10-08, both alternatives answered chain 56/head probes; PublicNode also
+answered a 2,001-block historical StakeHub log query. dRPC rate-limited the log
+probe: it is redundancy, not a guaranteed healthy watcher source. Explicit
+`RPC_FALLBACK_URLS.bnb` settings override these defaults and need separate review.
 **Sui GraphQL and the Aptos testnet indexer require operator-supplied compatible
 backups**; they deliberately report no redundancy until configured. Do not use
 another network, obsolete Sui JSON-RPC, or a dead legacy alias as a backup.

@@ -9,7 +9,7 @@ The revenue model is based on Featured App activity on the Canton Coin Network (
 ## Monorepo Structure
 - `daml/`      — Daml 3.3 smart contracts (Canton ledger templates)
 - `evm/`       — Solidity contracts + Hardhat deployment scripts
-- `frontend/`  — Next.js 14 App Router + wagmi v2 + Tailwind CSS
+- `frontend/`  — Next.js 15 App Router + wagmi v2 + Tailwind CSS
 - `backend/`   — Fastify API + Prisma ORM + BullMQ + Canton JSON Ledger API client
 - `docs/`      — Architecture decisions and skill documentation
 
@@ -46,7 +46,7 @@ The revenue model is based on Featured App activity on the Canton Coin Network (
 ### Docker
 - PostgreSQL 16 + Redis 7 + backend + frontend in docker-compose
 - Canton LocalNet runs separately via cn-quickstart
-- Existing backend provider connects to LocalNet via `host.docker.internal:3975`; remote user/synchronizer/endpoint routing must be explicit
+- Canton routing is deployment-specific (DevNet/TestNet/MainNet or the preserved LocalNet source); remote user/synchronizer/endpoint routing must be explicit
 
 ## Common Patterns
 
