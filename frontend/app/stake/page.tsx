@@ -273,7 +273,10 @@ export default function StakePage() {
   const [advancedPolygon, setAdvancedPolygon] = useState(false);
   const [liquidBusy, setLiquidBusy] = useState(false);
   useEffect(() => {
-    setAdvancedPolygon(new URLSearchParams(window.location.search).get("polygon") === "validator");
+    const params = new URLSearchParams(window.location.search);
+    setAdvancedPolygon(params.get("polygon") === "validator");
+    const requested = params.get("chain");
+    if (liveChains().some(chain => chain.id === requested)) setSelectedChainId(requested as ChainConfig["id"]);
   }, []);
   const { address, isConnected, connector, chainId } = useAccount();
   const { switchChainAsync, isPending: switchPending } = useSwitchChain();

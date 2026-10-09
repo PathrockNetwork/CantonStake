@@ -25,7 +25,9 @@ function render(overrides: Partial<React.ComponentProps<typeof StakeChainPicker>
 describe("multichain staking picker", () => {
   it("renders every configured network with its token and selected state", () => {
     const html = render();
-    expect((html.match(/class="account-chain-option"/g) ?? []).length).toBe(10);
+    expect((html.match(/class="account-chain-option"/g) ?? []).length).toBe(11);
+    expect(html).toContain('href="/stake/ethereum"');
+    expect(html).toContain("Lido pool");
     expect((html.match(/aria-pressed="true"/g) ?? []).length).toBe(1);
     for (const chain of CHAINS) {
       expect(html).toContain(chain.id === "polygon" ? "Polygon PoS" : chain.name);
@@ -35,14 +37,14 @@ describe("multichain staking picker", () => {
     expect(html).toContain("Search networks");
     expect(html).toContain("Watcher ready");
     expect(html).not.toContain("Supported");
-    expect((html.match(/<img /g) ?? []).length).toBe(10);
+    expect((html.match(/<img /g) ?? []).length).toBe(11);
   });
 
   it("allows inspecting unavailable networks without claiming they are stake-ready", () => {
     const html = render({ watchers: watchers.map(w => ({ ...w, status: "unreachable" })) });
     expect(html).toContain("Watcher unavailable");
     expect(html).not.toContain("disabled=\"\"");
-    expect(html).toContain("Signing requires a ready watcher and Canton connection");
+    expect(html).toContain("Each route checks its own readiness");
   });
 
   it("distinguishes loading, backend-disabled, and failed status checks", () => {
@@ -53,9 +55,17 @@ describe("multichain staking picker", () => {
     expect(failed).not.toContain("Watcher ready");
   });
 
+  it("keeps Ethereum selected when viewing the Lido pool", () => {
+    const html = render({ selectedChainId: "ethereum" });
+    expect(html).toContain('aria-current="page"');
+    expect(html).toContain("ETH · Lido pool");
+    expect(html).not.toContain('aria-pressed="true"');
+  });
+
   it("locks network selection during an active transaction", () => {
     const html = render({ busy: true });
-    expect((html.match(/<button[^>]*disabled=""/g) ?? []).length).toBe(11);
+    expect((html.match(/<button[^>]*disabled=""/g) ?? []).length).toBe(12);
+    expect(html).not.toContain('href="/stake/ethereum"');
   });
 
   it("starts with a collapsed, labelled mobile network control", () => {

@@ -18,6 +18,7 @@ import { useSolanaWallet } from "@/lib/solana/use-solana-wallet";
 import { usePolkadotWallet } from "@/lib/polkadot/use-polkadot-wallet";
 import { fmt, fmtUsd } from "@/lib/format";
 import { tokens } from "@/lib/tokens";
+import { LidoHoldings } from "@/components/account/LidoHoldings";
 
 /** Canton-recorded positions for every connected wallet family. Query each
  * connected address separately so distinct wallet families aren't conflated. */
@@ -129,6 +130,7 @@ export default function PortfolioPage() {
         </Btn>
       </div>
 
+      <LidoHoldings />
       {/* Aggregate stat row */}
       <div
         style={{

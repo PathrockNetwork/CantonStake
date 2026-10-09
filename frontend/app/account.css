@@ -313,7 +313,7 @@ html[data-account-density=compact] .account-table td { padding-block: 9px; }
 .account-chain-option__details > small { color: #98ada3; }
 .account-chain-option:focus-visible { outline: 2px solid #00e7ad; outline-offset: -3px; }
 .account-chain-option:disabled { cursor: not-allowed; opacity: .55; }
-.account-chain-option[aria-pressed=true] { border-color: #00e7ad; background: #00593844; }
+.account-chain-option[aria-pressed=true], .account-chain-option[aria-current=page] { border-color: #00e7ad; background: #00593844; }
 .account-token-selected { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px; border: 1px solid #00e7ad; background: #00593822; }
 .account-token-selected .account-chain__mark { width: 42px; height: 42px; }
 .account-token-selected .account-chain { font-size: 19px; }
@@ -410,4 +410,16 @@ html[data-account-density=compact] .account-table td { padding-block: 9px; }
   .account-liquid .account-notice { align-items: stretch; flex-direction: column; }
   .account-liquid .account-notice p { margin: 0; }
   .account-liquid-tabs .account-button { font-size: 11px; }
+}
+
+/* Lido uses the shared staking workspace, with its own pool details. */
+.account-lido .account-panel__body { display: flex; flex-direction: column; gap: 12px; }
+.account-lido .account-panel__body > p.account-muted { margin: 0; }
+.account-lido .account-liquid-tabs { margin-bottom: 0; }
+.account-lido-balances { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; font-size: 12px; color: #a4b5b0; }
+.account-lido-balances p { padding: 10px; border: 1px solid #61847544; background: #051510; }
+.account-lido .account-liquid-actions { margin-top: 0; }
+.account-lido-secondary { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); }
+@media (max-width: 760px) {
+  .account-lido-secondary { grid-template-columns: minmax(0, 1fr); }
 }

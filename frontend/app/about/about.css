@@ -1,0 +1,63 @@
+.about-page { --about-line: #00d9a340; --about-accent: #00efbd; max-width: 1440px; margin: 0 auto; padding: 58px 40px 40px; color: #dfece6; }
+.about-page a { text-underline-offset: 4px; }
+.about-page a:focus-visible, .about-page summary:focus-visible { outline: 2px solid var(--about-accent); outline-offset: 5px; }
+.about-eyebrow { color: var(--about-accent); font-size: 11px; letter-spacing: .12em; }
+.about-hero { padding: 24px 0 42px; max-width: 1020px; }
+.about-hero h1 { font-size: clamp(38px, 4.7vw, 64px); line-height: 1.12; letter-spacing: -.035em; margin: 22px 0; }
+.about-hero h1 em { color: var(--about-accent); font-style: normal; }
+.about-hero > p { max-width: 760px; font-size: 17px; line-height: 1.75; color: #b0c3bd; }
+.about-principles { display: flex; gap: 10px; flex-wrap: wrap; margin: 25px 0; }
+.about-principles span { border: 1px solid var(--about-line); padding: 7px 12px; font-size: 12px; background: #00dfaa08; }
+.about-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 30px; }
+.about-index { display: flex; flex-wrap: wrap; gap: 14px 30px; padding: 20px 0; border-block: 1px solid var(--about-line); font-size: 12px; color: #b5cbc1; }
+.about-index a:hover, .about-card a, .about-text-link { color: var(--about-accent); }
+.about-section { padding: 55px 0; scroll-margin-top: 180px; border-bottom: 1px solid var(--about-line); }
+.about-section-heading { max-width: 790px; margin-bottom: 25px; }
+.about-section-heading h2 { font-size: clamp(28px, 3vw, 38px); line-height: 1.2; margin: 12px 0; }
+.about-section-heading > p, .about-card p, .about-steps p, .about-route-list p, .about-note p, .about-details p, .about-footer p { color: #a9c0b6; font-size: 14px; line-height: 1.75; }
+.about-page h3 { font-size: 18px; font-weight: 600; line-height: 1.4; }
+.about-steps { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 16px; list-style: none; padding: 0; margin: 0; }
+.about-steps li, .about-card { border: 1px solid var(--about-line); background: linear-gradient(140deg,#06352833,#04100b55); padding: 24px; }
+.about-step-number { display: inline-block; color: var(--about-accent); font-size: 13px; margin-bottom: 18px; }
+.about-steps h3 { font-size: 25px; margin: 0 0 8px; }
+.about-steps strong { font-size: 13px; font-weight: 500; color: #dbe9e2; }
+.about-steps p { margin: 12px 0 0; }
+.about-two-column, .about-architecture { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 18px; }
+.about-tag { color: var(--about-accent); font-size: 11px; letter-spacing: .07em; }
+.about-card h3 { margin: 14px 0 10px; }
+.about-card p { margin: 12px 0; }
+.about-card a { display: inline-block; font-size: 13px; margin-top: 7px; }
+.about-note { padding: 22px 26px; border-left: 2px solid var(--about-accent); background: #00eeb908; margin-top: 20px; }
+.about-note strong { font-size: 14px; }
+.about-note p { margin: 7px 0 0; }
+.about-route-list { border: 1px solid var(--about-line); }
+.about-route-list article { display: grid; grid-template-columns: minmax(180px,1fr) minmax(0,2fr); gap: 24px; padding: 20px 24px; }
+.about-route-list article + article { border-top: 1px solid var(--about-line); }
+.about-route-list h3 { font-size: 15px; margin: 0 0 5px; }
+.about-route-list span { color: var(--about-accent); font-size: 11px; }
+.about-route-list p { margin: 0; }
+.about-pools { margin-top: 20px; }
+.about-text-link { display: inline-block; margin-top: 23px; font-size: 14px; }
+.about-details details { border: 1px solid var(--about-line); margin-top: 12px; }
+.about-details summary { padding: 21px 24px; cursor: pointer; font-size: 16px; color: #deece6; }
+.about-details summary::marker { color: var(--about-accent); }
+.about-details details[open] { background: #06352822; }
+.about-details details > div { padding: 0 24px 20px; max-width: 1000px; }
+.about-details p { margin: 10px 0; }
+.about-footer { display: flex; align-items: center; justify-content: space-between; gap: 30px; padding: 40px 0 15px; }
+.about-footer h2 { font-size: 28px; margin: 0 0 8px; }
+.about-footer p { margin: 0; }
+.about-footer .home-button { flex-shrink: 0; }
+@media(max-width: 1000px) { .about-steps { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media(max-width: 640px) {
+  .about-page { padding: 26px 20px; }
+  .about-hero { padding-top: 8px; }
+  .about-hero > p { font-size: 15px; }
+  .about-section { padding: 34px 0; scroll-margin-top: 225px; }
+  .about-steps, .about-two-column, .about-architecture, .about-route-list article { grid-template-columns: minmax(0,1fr); }
+  .about-route-list article { gap: 10px; padding: 18px; }
+  .about-steps li, .about-card { padding: 20px; }
+  .about-details summary { padding: 18px; font-size: 15px; }
+  .about-details details > div { padding: 0 18px 18px; }
+  .about-footer { align-items: flex-start; flex-direction: column; }
+}

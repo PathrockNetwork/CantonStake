@@ -31,7 +31,7 @@ const MORE = [
   { href: "/dashboard", label: "Dashboard", icon: <IconDashboard /> },
   { href: "/portfolio", label: "Portfolio", icon: <IconPortfolio /> },
   { href: "/settings", label: "Settings", icon: <IconGear /> },
-  { href: "/#how-it-works", label: "About", icon: <IconAbout /> },
+  { href: "/about", label: "About", icon: <IconAbout /> },
 ];
 
 function routeActive(pathname: string | null, href: string) {

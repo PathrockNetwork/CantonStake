@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { IconArrowRight, IconBolt, IconClock, IconLock, IconShield, I } from "@/components/icons";
 import { Logo } from "@/components/primitives/Logo";
 import { fetchAnalyticsMarkers, fetchProtocolSummary } from "@/lib/api";
-import { isChainEnabled } from "@/lib/chains";
+import { SupportedNetworks } from "@/components/home/SupportedNetworks";
 import { isMainnet, networkMode } from "@/lib/network";
 import { useRoundCountdown } from "@/lib/use-round-countdown";
 import { useProtocolStatus } from "@/lib/use-protocol-status";
@@ -36,26 +36,6 @@ const LIFECYCLE = [
   { n: "04", title: "Unbond", text: "Wait for the chain’s unbond period.", icon: <IconClock size={24} /> },
   { n: "05", title: "Release", text: "Funds back to your wallet.", icon: <I size={24}><rect x="2" y="2" width="12" height="12" rx="1.5" /><path d="m5 8 2 2 4-4" /></I> },
 ];
-
-const NETWORKS = [
-  { id: "polygon", name: "Polygon PoS", symbol: "POL", status: "Coming soon" },
-  { id: "cosmos", name: "Cosmos Hub", symbol: "ATOM", status: "Coming soon" },
-  { id: "sui", name: "Sui", symbol: "SUI", status: "Coming soon" },
-  { id: "monad", name: "Monad", symbol: "MON", status: "Planned" },
-] as const;
-
-function NetworkMark({ chain }: { chain: typeof NETWORKS[number]["id"] }) {
-  return (
-    <span className={`home-network-mark home-network-mark--${chain}`} aria-hidden="true">
-      <svg viewBox="0 0 40 40" fill="none">
-        {chain === "polygon" && <path d="m22 15 5-3 5 3v6l-5 3-5-3v-6l-9 5v6l-5 3-5-3v-6l5-3 5 3m0 6 9-5" stroke="white" strokeWidth="2.6" strokeLinejoin="round" transform="translate(3 -1)" />}
-        {chain === "cosmos" && <g stroke="#bbb9ec" strokeWidth=".8"><ellipse cx="20" cy="20" rx="15" ry="5" /><ellipse cx="20" cy="20" rx="15" ry="5" transform="rotate(60 20 20)" /><ellipse cx="20" cy="20" rx="15" ry="5" transform="rotate(120 20 20)" /><circle cx="20" cy="20" r="2.5" fill="#e4dfff" /><circle cx="12.5" cy="7" r="1.5" fill="white" /><circle cx="34" cy="20" r="1.5" fill="white" /></g>}
-        {chain === "sui" && <path d="M20 7c-3 6-11 12-11 18a11 11 0 0 0 22 0c0-6-8-12-11-18Zm-4 7c-4 10 13 8 10 19" stroke="#e7f6ff" strokeWidth="2" strokeLinecap="round" />}
-        {chain === "monad" && <rect x="10" y="10" width="20" height="20" rx="5" transform="rotate(45 20 20)" stroke="#9981ff" strokeWidth="5" />}
-      </svg>
-    </span>
-  );
-}
 
 function compact(value: number | undefined) {
   if (value === undefined || !Number.isFinite(value)) return "—";
@@ -97,10 +77,10 @@ export default function HomePage() {
         <div className="home-hero__copy">
           <div className="home-kicker mono"><span /> SELF-CUSTODIAL STAKING <b>×</b> CANTON NETWORK</div>
           <h1 className="display" id="home-heading">Stake any chain.<em>Earn on Canton.</em></h1>
-          <p>A self-custodial staking dApp. Stake POL from your own wallet and earn native validator yield plus Canton Coin (CC) rewards, with CC reward rounds every 10 minutes.</p>
+          <p>Stake supported assets from your own wallet. Native yield and Canton Coin (CC) rewards depend on your chosen route and its current availability.</p>
           <div className="home-actions">
             <Link className="home-button home-button--primary mono" href="/stake">Start staking <IconArrowRight /></Link>
-            <Link className="home-button home-button--secondary mono" href="#how-it-works">Learn more</Link>
+            <Link className="home-button home-button--secondary mono" href="/about">Learn more</Link>
           </div>
           <div className="home-trust-row mono">
             <div><IconShield size={30} /><span><b>Self-custodial</b><small>Your keys, your funds</small></span></div>
@@ -133,19 +113,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="home-supported" aria-labelledby="networks-heading">
-        <h2 className="home-section-label mono" id="networks-heading"><span /> Supported chains</h2>
-        <div className="home-chain-row">
-          {NETWORKS.map((chain) => {
-            const enabled = isChainEnabled(chain.id);
-            const content = <><NetworkMark chain={chain.id} /><div className="home-chain-card__body"><strong>{chain.name}</strong><small className="mono">{chain.symbol}</small><b className="mono">{enabled ? "Live" : chain.status}</b><p>{enabled ? `Stake ${chain.symbol} and earn native yield + CC rewards.` : `Native ${chain.symbol} yield + CC rewards.`}</p></div>{enabled && <IconArrowRight className="home-chain-card__arrow" />}</>;
-            return enabled
-              ? <Link href="/stake" key={chain.id} className="home-chain-card home-chain-card--live" aria-label={`Stake ${chain.symbol} on ${networkMode}`}>{content}</Link>
-              : <div key={chain.id} className="home-chain-card">{content}</div>;
-          })}
-          <div className="home-chain-card home-chain-card--future"><span>+</span><small className="mono">More chains<br />coming soon</small></div>
-        </div>
-      </section>
+      <SupportedNetworks />
 
       <section className="home-metrics" aria-label="Protocol activity and rewards">
         <div className="home-metrics__frame">
@@ -173,7 +141,7 @@ export default function HomePage() {
 
       <footer className="home-footer">
         <div><Link href="/" className="home-footer__brand"><Logo size={32} animated={false} /><span className="display">CantonStake</span></Link><small className="mono">Stake any chain. Earn on Canton.</small></div>
-        <nav className="mono" aria-label="Footer navigation"><Link href="/dashboard">Dashboard</Link><Link href="/portfolio">Portfolio</Link><Link href="/analytics">Status</Link><Link href="/settings">Settings</Link></nav>
+        <nav className="mono" aria-label="Footer navigation"><Link href="/dashboard">Dashboard</Link><Link href="/portfolio">Portfolio</Link><Link href="/analytics">Status</Link><Link href="/settings">Settings</Link><Link href="/about">About</Link></nav>
         <div className="mono"><i /> Canton Network <b>—</b> {networkMode.toUpperCase()}</div>
       </footer>
     </main>

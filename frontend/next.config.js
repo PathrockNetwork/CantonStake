@@ -11,8 +11,8 @@ const nextConfig = {
   // from ~1 GB to ~150 MB. Cuts deploy push time and cold-start RAM.
   output: "standalone",
   // All artwork is served directly (the brand mark already uses unoptimized).
-  // Disable the unused image-processing endpoint as defense in depth while
-  // the Next.js major-version security migration is pending.
+  // Keep the unused image-processing endpoint disabled as defense in depth,
+  // including after the patched Next.js 15 migration.
   images: { unoptimized: true },
   // `scripts/build-frontends.sh` runs TypeScript once before starting the
   // mainnet and testnet builds in parallel. One-off builds keep Next's
@@ -26,6 +26,7 @@ const nextConfig = {
     const documentRoutes = [
       "/",
       "/analytics",
+      "/about",
       "/dashboard",
       "/portfolio",
       "/positions",
@@ -33,6 +34,7 @@ const nextConfig = {
       "/settings",
       "/stake",
       "/stake/liquid",
+      "/stake/ethereum",
     ];
 
     return documentRoutes.map((source) => ({

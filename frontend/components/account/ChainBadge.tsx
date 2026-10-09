@@ -21,7 +21,7 @@ export function ChainBadge({ chainId, symbol = "POL", label = "Polygon PoS" }: {
   chainId?: ChainConfig["id"]; symbol?: string; label?: string;
 }) {
   const chain = chainId ?? SYMBOL_CHAINS[symbol.toUpperCase()];
-  const src = chain ? NETWORK_LOGOS[chain] : undefined;
+  const src = chain ? NETWORK_LOGOS[chain] : ["ETH", "STETH"].includes(symbol.toUpperCase()) ? "/networks/ethereum.svg" : undefined;
   const [failedSrc, setFailedSrc] = useState<string>();
   return <span className="account-chain">
     <span className="account-chain__mark" data-network={chain} aria-hidden="true">

@@ -66,3 +66,4 @@ docs/*
 !docs/CANTON_TESTNET_NODE_PROMPT.md
 !docs/CANTON_MAINNET_DAR.md
 !docs/CANTON_MAINNET_DAR_UPLOAD_PREPARATION_PROMPT.md
+!frontend/public/wallets/SOURCES.md

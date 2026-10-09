@@ -44,6 +44,7 @@ import { assertEvmWalletBinding } from "@/lib/wallet-binding";
 import { createExclusiveAction } from "@/lib/exclusive-action";
 import { successfulEvmSettlementHash } from "@/lib/evm-settlement";
 import { LiquidHoldings, useLiquidHoldings } from "@/components/account/LiquidHoldings";
+import { LidoHoldings } from "@/components/account/LidoHoldings";
 import { filterPositionList, positionList } from "@/lib/position-list";
 import { LoopPendingRequests } from "@/components/account/LoopPendingRequests";
 import { LoopUnbondRecovery } from "@/components/account/LoopUnbondRecovery";
@@ -173,6 +174,7 @@ export default function PositionsPage() {
       <AccountMetric label="Bonded validator positions" value={haveData ? bonded.length : "—"} detail="Positions eligible for native yield" icon="cube" color="#34c6f6" />
       <AccountMetric label="Total CC earned" value={rewardsQ.data && !rewardsQ.isError ? `${fmt(rewardsQ.data.totalUserShare, 2)} CC` : "—"} detail="Your recorded beneficiary share" icon="coin" color="#f3c442" />
     </div>
+    <LidoHoldings />
     <div className={`account-two-col account-positions-layout${selected ? "" : " account-positions-layout--empty"}`}>
       <AccountPanel title="Your staking positions" description="Search your positions and select one to view its details." icon="stack" action={<Link href="/stake" className="account-button">+ New stake</Link>}>
         {networkMode === "testnet" && process.env.NEXT_PUBLIC_LOOP_STAKING_FLOW === "external" && <LoopPendingRequests />}
